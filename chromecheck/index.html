@@ -10,10 +10,10 @@
   /* Runs before first paint so the saved theme choice shows immediately, no flash. */
   try{
     var savedBrand = localStorage.getItem('chromecheck-brand');
-    if(savedBrand === 'apple' || savedBrand === 'cmhs'){
-      document.documentElement.setAttribute('data-brand', savedBrand);
-    }
-  }catch(e){}
+    document.documentElement.setAttribute('data-brand', savedBrand === 'apple' ? 'apple' : 'cmhs');
+  }catch(e){
+    document.documentElement.setAttribute('data-brand', 'cmhs');
+  }
 </script>
 <style>
   :root{
