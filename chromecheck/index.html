@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChromeCheck — Chromebook Diagnostics</title>
+<meta name="description" content="An Apple-styled Chromebook hardware diagnostic tool: display, touchscreen, keyboard, trackpad, camera, mic, speaker, battery, storage, Wi-Fi and physical checks, with a pass/fail repair report.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%BB%3C/text%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg-0:#eef0f3;
+    --bg-1:#f7f8fa;
+    --surface:rgba(255,255,255,0.62);
+    --surface-solid:#ffffff;
+    --surface-raised:rgba(255,255,255,0.82);
+    --text:#1d1d1f;
+    --text-2:#6e6e73;
+    --text-3:#8e8e93;
+    --border:rgba(0,0,0,0.08);
+    --border-strong:rgba(0,0,0,0.14);
+    --accent:#0071e3;
+    --accent-2:#5e5ce6;
+    --accent-ink:#ffffff;
+    --success:#248a3d;
+    --success-bg:rgba(52,199,89,0.14);
+    --danger:#d70015;
+    --danger-bg:rgba(255,59,48,0.12);
+    --warning:#b25000;
+    --warning-bg:rgba(255,159,10,0.16);
+    --neutral-bg:rgba(120,120,128,0.14);
+    --shadow-1:0 1px 2px rgba(0,0,0,0.04), 0 12px 32px -12px rgba(0,0,0,0.16);
+    --shadow-2:0 20px 60px -20px rgba(0,0,0,0.28);
+    --radius-lg:24px;
+    --radius-md:16px;
+    --radius-sm:10px;
+    --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg-0:#000000;
+      --bg-1:#0a0a0c;
+      --surface:rgba(40,40,44,0.55);
+      --surface-solid:#1c1c1e;
+      --surface-raised:rgba(50,50,54,0.78);
+      --text:#f5f5f7;
+      --text-2:#a1a1a6;
+      --text-3:#8e8e93;
+      --border:rgba(255,255,255,0.09);
+      --border-strong:rgba(255,255,255,0.16);
+      --accent:#0a84ff;
+      --accent-2:#7d7aff;
+      --success:#32d74b;
+      --success-bg:rgba(50,215,75,0.16);
+      --danger:#ff453a;
+      --danger-bg:rgba(255,69,58,0.18);
+      --warning:#ff9f0a;
+      --warning-bg:rgba(255,159,10,0.18);
+      --neutral-bg:rgba(120,120,128,0.24);
+      --shadow-1:0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -12px rgba(0,0,0,0.6);
+      --shadow-2:0 20px 60px -20px rgba(0,0,0,0.8);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg-0:#000000;
+    --bg-1:#0a0a0c;
+    --surface:rgba(40,40,44,0.55);
+    --surface-solid:#1c1c1e;
+    --surface-raised:rgba(50,50,54,0.78);
+    --text:#f5f5f7;
+    --text-2:#a1a1a6;
+    --text-3:#8e8e93;
+    --border:rgba(255,255,255,0.09);
+    --border-strong:rgba(255,255,255,0.16);
+    --accent:#0a84ff;
+    --accent-2:#7d7aff;
+    --success:#32d74b;
+    --success-bg:rgba(50,215,75,0.16);
+    --danger:#ff453a;
+    --danger-bg:rgba(255,69,58,0.18);
+    --warning:#ff9f0a;
+    --warning-bg:rgba(255,159,10,0.18);
+    --neutral-bg:rgba(120,120,128,0.24);
+    --shadow-1:0 1px 2px rgba(0,0,0,0.3), 0 12px 32px -12px rgba(0,0,0,0.6);
+    --shadow-2:0 20px 60px -20px rgba(0,0,0,0.8);
+  }
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg-0);
+    color:var(--text);
+    font-family:var(--font-ui);
+    font-size:15px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+  h1,h2,h3,h4{text-wrap:balance;margin:0;}
+  ::selection{background:var(--accent);color:#fff;}
+  button{font-family:inherit;}
+  input,textarea{font-family:inherit;}
+
+  /* aurora background */
+  .aurora{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;}
+  .aurora span{
+    position:absolute;border-radius:50%;
+    filter:blur(80px);opacity:0.5;
+    animation:drift 26s ease-in-out infinite;
+  }
+  .aurora span:nth-child(1){width:46vw;height:46vw;left:-12vw;top:-14vw;background:radial-gradient(circle,var(--accent),transparent 70%);animation-delay:0s;}
+  .aurora span:nth-child(2){width:38vw;height:38vw;right:-10vw;top:8vw;background:radial-gradient(circle,var(--accent-2),transparent 70%);animation-delay:-8s;}
+  .aurora span:nth-child(3){width:42vw;height:42vw;left:20vw;bottom:-20vw;background:radial-gradient(circle,#63e6be,transparent 72%);opacity:0.28;animation-delay:-16s;}
+  @keyframes drift{
+    0%,100%{transform:translate(0,0) scale(1);}
+    50%{transform:translate(4%,6%) scale(1.08);}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .aurora span{animation:none;}
+  }
+
+  .app{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;}
+
+  /* navbar */
+  .navbar{
+    position:sticky;top:0;z-index:20;
+    display:flex;align-items:center;gap:14px;
+    padding:12px 22px;
+    background:var(--surface);
+    backdrop-filter:blur(24px) saturate(180%);
+    -webkit-backdrop-filter:blur(24px) saturate(180%);
+    border-bottom:1px solid var(--border);
+  }
+  .navbar .mark{
+    width:34px;height:34px;border-radius:9px;
+    background:linear-gradient(145deg,var(--accent),var(--accent-2));
+    display:flex;align-items:center;justify-content:center;
+    font-size:17px;flex:none;box-shadow:var(--shadow-1);
+  }
+  .navbar .titles{display:flex;flex-direction:column;line-height:1.15;}
+  .navbar .titles b{font-size:16px;font-weight:650;letter-spacing:-0.01em;}
+  .navbar .titles span{font-size:11.5px;color:var(--text-2);}
+  .navbar .spacer{flex:1;}
+  .navbar .progress-chip{
+    display:flex;align-items:center;gap:8px;
+    padding:6px 12px;border-radius:99px;
+    background:var(--surface-raised);border:1px solid var(--border);
+    font-size:12.5px;color:var(--text-2);font-variant-numeric:tabular-nums;
+  }
+  .navbar .progress-chip b{color:var(--text);font-weight:650;}
+  .navbar .dot{width:7px;height:7px;border-radius:50%;background:var(--text-3);}
+  .navbar .dot.ok{background:var(--success);}
+  .navbar .dot.bad{background:var(--danger);}
+
+  /* shell */
+  .shell{flex:1;display:flex;gap:0;max-width:1280px;width:100%;margin:0 auto;padding:22px;padding-top:20px;}
+  .rail{
+    width:250px;flex:none;
+    display:flex;flex-direction:column;gap:4px;
+    padding-right:18px;
+  }
+  .rail .rail-group-label{
+    font-size:11px;font-weight:650;letter-spacing:0.06em;text-transform:uppercase;
+    color:var(--text-3);padding:14px 12px 6px;
+  }
+  .rail-item{
+    display:flex;align-items:center;gap:10px;
+    padding:9px 12px;border-radius:11px;
+    background:transparent;border:1px solid transparent;
+    cursor:pointer;text-align:left;color:var(--text);
+    font-size:13.5px;font-weight:500;
+    transition:background .15s ease;
+  }
+  .rail-item:hover{background:var(--surface);}
+  .rail-item.active{background:var(--surface-raised);border-color:var(--border);box-shadow:var(--shadow-1);}
+  .rail-item .status-dot{
+    width:9px;height:9px;border-radius:50%;flex:none;
+    background:var(--neutral-bg);border:1.5px solid var(--border-strong);
+  }
+  .rail-item .status-dot.pass{background:var(--success);border-color:var(--success);}
+  .rail-item .status-dot.fail{background:var(--danger);border-color:var(--danger);}
+  .rail-item .status-dot.na{background:var(--warning);border-color:var(--warning);}
+  .rail-item .label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .rail-item .kbd{font-size:10px;color:var(--text-3);}
+  .rail-report-btn{
+    margin-top:16px;
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    padding:11px 14px;border-radius:12px;
+    background:linear-gradient(145deg,var(--accent),var(--accent-2));
+    color:#fff;font-weight:650;font-size:13.5px;border:none;cursor:pointer;
+    box-shadow:var(--shadow-1);
+  }
+  .rail-report-btn:active{transform:scale(0.98);}
+
+  .stage{flex:1;min-width:0;}
+  .card{
+    background:var(--surface);
+    backdrop-filter:blur(26px) saturate(180%);
+    -webkit-backdrop-filter:blur(26px) saturate(180%);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+    box-shadow:var(--shadow-1);
+    padding:30px 34px;
+  }
+  .panel{display:none;}
+  .panel.active{display:block;animation:rise .35s ease;}
+  @keyframes rise{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+  @media (prefers-reduced-motion: reduce){.panel.active{animation:none;}}
+
+  .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px;}
+  .panel-head h2{font-size:23px;font-weight:650;letter-spacing:-0.015em;}
+  .panel-head p{margin:6px 0 0;color:var(--text-2);font-size:13.5px;max-width:56ch;}
+  .badge{
+    padding:5px 11px;border-radius:99px;font-size:11.5px;font-weight:650;
+    letter-spacing:0.02em;white-space:nowrap;
+  }
+  .badge.pending{background:var(--neutral-bg);color:var(--text-2);}
+  .badge.pass{background:var(--success-bg);color:var(--success);}
+  .badge.fail{background:var(--danger-bg);color:var(--danger);}
+  .badge.na{background:var(--warning-bg);color:var(--warning);}
+
+  .btn{
+    appearance:none;border:1px solid var(--border-strong);
+    background:var(--surface-raised);color:var(--text);
+    padding:9px 16px;border-radius:11px;font-size:13.5px;font-weight:600;
+    cursor:pointer;transition:transform .1s ease, background .15s ease;
+  }
+  .btn:hover{background:var(--surface-solid);}
+  .btn:active{transform:scale(0.97);}
+  .btn.primary{background:linear-gradient(145deg,var(--accent),var(--accent-2));color:#fff;border:none;}
+  .btn.success{background:var(--success);color:#fff;border:none;}
+  .btn.danger{background:var(--danger);color:#fff;border:none;}
+  .btn:disabled{opacity:0.4;cursor:not-allowed;}
+  .btn-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+
+  .hint{
+    display:flex;gap:10px;align-items:flex-start;
+    background:var(--neutral-bg);border-radius:12px;padding:12px 14px;
+    font-size:13px;color:var(--text-2);margin:16px 0;
+  }
+  .hint.warn{background:var(--warning-bg);color:var(--warning);}
+  .hint.error{background:var(--danger-bg);color:var(--danger);}
+
+  .test-body{margin:18px 0;}
+
+  /* status override control, reused by every test */
+  .verdict{
+    margin-top:24px;padding-top:20px;border-top:1px solid var(--border);
+    display:flex;flex-wrap:wrap;align-items:center;gap:14px;justify-content:space-between;
+  }
+  .verdict .verdict-label{font-size:12.5px;color:var(--text-2);font-weight:600;}
+  .verdict-buttons{display:flex;gap:8px;}
+  .vbtn{
+    padding:8px 14px;border-radius:10px;border:1.5px solid var(--border-strong);
+    background:var(--surface-raised);font-size:12.5px;font-weight:650;cursor:pointer;color:var(--text-2);
+  }
+  .vbtn[data-v="pass"].sel{background:var(--success);border-color:var(--success);color:#fff;}
+  .vbtn[data-v="fail"].sel{background:var(--danger);border-color:var(--danger);color:#fff;}
+  .vbtn[data-v="na"].sel{background:var(--warning);border-color:var(--warning);color:#fff;}
+  .note-field{
+    width:100%;margin-top:12px;padding:10px 12px;border-radius:10px;
+    border:1px solid var(--border);background:var(--surface-solid);color:var(--text);
+    font-size:13px;resize:vertical;min-height:44px;
+  }
+  .note-field::placeholder{color:var(--text-3);}
+
+  /* meter */
+  .meter{width:100%;height:10px;border-radius:99px;background:var(--neutral-bg);overflow:hidden;}
+  .meter > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:99px;transition:width .08s linear;}
+  .meter.level > i{background:linear-gradient(90deg,var(--success),var(--accent));}
+
+  /* keyboard */
+  .kb{display:flex;flex-direction:column;gap:6px;user-select:none;margin-top:6px;}
+  .kb-row{display:flex;gap:6px;}
+  .key{
+    flex:1;min-width:0;height:38px;border-radius:8px;
+    background:var(--surface-raised);border:1px solid var(--border-strong);
+    display:flex;align-items:center;justify-content:center;
+    font-size:11px;font-weight:600;color:var(--text-2);
+    transition:background .12s ease, color .12s ease, transform .08s ease;
+  }
+  .key.hit{background:var(--success);color:#fff;border-color:var(--success);transform:scale(0.96);}
+  .key.wide{flex:1.8;}
+  .key.wider{flex:2.6;}
+  .key.space{flex:6;}
+
+  /* grid pads (touch / trackpad) */
+  .pad-wrap{position:relative;border-radius:16px;overflow:hidden;border:1px solid var(--border-strong);background:var(--surface-solid);touch-action:none;}
+  .pad-grid{position:absolute;inset:0;display:grid;}
+  .pad-cell{border:1px solid var(--border);transition:background .15s ease;}
+  .pad-cell.hit{background:var(--success-bg);}
+  .pad-canvas{position:absolute;inset:0;pointer-events:none;}
+
+  video.preview{width:100%;max-width:420px;border-radius:16px;background:#000;display:block;border:1px solid var(--border-strong);}
+  canvas.snap{width:100%;max-width:420px;border-radius:16px;display:block;border:1px solid var(--border-strong);}
+
+  .info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:16px;}
+  .info-tile{background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;padding:12px 14px;}
+  .info-tile .l{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:0.05em;font-weight:650;}
+  .info-tile .v{font-size:16px;font-weight:650;margin-top:3px;font-variant-numeric:tabular-nums;}
+
+  .checklist{display:flex;flex-direction:column;gap:10px;margin-top:6px;}
+  .check-row{
+    display:flex;align-items:center;gap:14px;
+    background:var(--surface-raised);border:1px solid var(--border);
+    border-radius:12px;padding:11px 14px;
+  }
+  .check-row .ct{flex:1;}
+  .check-row .ct b{font-size:13.5px;font-weight:600;display:block;}
+  .check-row .ct span{font-size:12px;color:var(--text-2);}
+  .toggle3{display:flex;gap:6px;flex:none;}
+
+  .field{display:flex;flex-direction:column;gap:6px;}
+  .field label{font-size:12px;font-weight:650;color:var(--text-2);}
+  .field input[type=text]{
+    padding:10px 12px;border-radius:10px;border:1px solid var(--border-strong);
+    background:var(--surface-solid);color:var(--text);font-size:14px;
+  }
+  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px;max-width:520px;}
+  @media (max-width:560px){.form-grid{grid-template-columns:1fr;}}
+
+  .welcome-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:24px;}
+  .w-tile{background:var(--surface-raised);border:1px solid var(--border);border-radius:14px;padding:14px;text-align:center;}
+  .w-tile .ic{font-size:22px;}
+  .w-tile .t{font-size:12px;font-weight:600;margin-top:6px;color:var(--text-2);}
+
+  /* report */
+  .report-header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:space-between;}
+  .overall-badge{
+    display:flex;align-items:center;gap:10px;padding:10px 18px;border-radius:14px;
+    font-weight:700;font-size:15px;
+  }
+  .overall-badge.pass{background:var(--success-bg);color:var(--success);}
+  .overall-badge.fail{background:var(--danger-bg);color:var(--danger);}
+  .report-table{width:100%;border-collapse:collapse;margin-top:20px;overflow-x:auto;display:block;}
+  .report-table th{
+    text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;
+    color:var(--text-3);padding:8px 10px;border-bottom:1px solid var(--border);
+  }
+  .report-table td{padding:10px 10px;font-size:13.5px;border-bottom:1px solid var(--border);vertical-align:top;}
+  .report-table tr:last-child td{border-bottom:none;}
+  .rec-list{margin:18px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px;}
+  .rec-list li{
+    display:flex;gap:10px;align-items:flex-start;background:var(--danger-bg);color:var(--text);
+    border-radius:12px;padding:11px 14px;font-size:13.5px;
+  }
+  .rec-list li .rc-dot{width:6px;height:6px;border-radius:50%;background:var(--danger);margin-top:6px;flex:none;}
+  .rec-none{color:var(--success);font-weight:600;margin-top:16px;}
+
+  .section-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);margin:26px 0 4px;}
+
+  ::-webkit-scrollbar{width:10px;height:10px;}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:99px;}
+
+  @media (max-width:840px){
+    .shell{flex-direction:column;padding:14px;}
+    .rail{width:100%;flex-direction:row;overflow-x:auto;padding-right:0;gap:8px;padding-bottom:8px;}
+    .rail .rail-group-label{display:none;}
+    .rail-item{flex:none;white-space:nowrap;}
+    .rail-report-btn{margin-top:0;flex:none;}
+    .card{padding:20px;}
+  }
+
+  @media print{
+    .navbar,.rail,.aurora{display:none !important;}
+    body{background:#fff;}
+    .card{box-shadow:none;border:1px solid #ccc;backdrop-filter:none;}
+    .panel{display:none !important;}
+    #panel-report{display:block !important;}
+  }
+</style>
+</head>
+<body>
+
+<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+
+<div class="app">
+  <header class="navbar">
+    <div class="mark">💻</div>
+    <div class="titles">
+      <b>ChromeCheck</b>
+      <span>Chromebook hardware diagnostics</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="progress-chip" id="progressChip">
+      <span class="dot" id="progressDot"></span>
+      <span><b id="progressCount">0</b>/<span id="progressTotal">0</span> checked</span>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="rail" id="rail"></nav>
+    <main class="stage">
+      <div class="card">
+
+        <section class="panel active" id="panel-welcome">
+          <div class="panel-head">
+            <div>
+              <h2>New diagnostic session</h2>
+              <p>Enter the device details, then work through each check on the left. Every result can be confirmed or overridden by the technician before the final report is generated.</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="techName">Technician</label>
+              <input type="text" id="techName" placeholder="Your name">
+            </div>
+            <div class="field">
+              <label for="assetTag">Asset tag / serial</label>
+              <input type="text" id="assetTag" placeholder="e.g. CM201-004821">
+            </div>
+            <div class="field">
+              <label for="model">Model</label>
+              <input type="text" id="model" placeholder="e.g. Lenovo 100e Gen 4">
+            </div>
+            <div class="field">
+              <label for="ticket">Ticket / repair ID</label>
+              <input type="text" id="ticket" placeholder="Optional">
+            </div>
+          </div>
+          <div class="welcome-tiles">
+            <div class="w-tile"><div class="ic">🖥️</div><div class="t">Display</div></div>
+            <div class="w-tile"><div class="ic">👆</div><div class="t">Touchscreen</div></div>
+            <div class="w-tile"><div class="ic">⌨️</div><div class="t">Keyboard</div></div>
+            <div class="w-tile"><div class="ic">🖱️</div><div class="t">Trackpad</div></div>
+            <div class="w-tile"><div class="ic">🎥</div><div class="t">Camera</div></div>
+            <div class="w-tile"><div class="ic">🎙️</div><div class="t">Microphone</div></div>
+            <div class="w-tile"><div class="ic">🔊</div><div class="t">Speakers</div></div>
+            <div class="w-tile"><div class="ic">🔋</div><div class="t">Battery</div></div>
+            <div class="w-tile"><div class="ic">💾</div><div class="t">Storage</div></div>
+            <div class="w-tile"><div class="ic">📶</div><div class="t">Wi-Fi</div></div>
+            <div class="w-tile"><div class="ic">🔩</div><div class="t">Ports &amp; body</div></div>
+          </div>
+          <div class="btn-row" style="margin-top:24px;">
+            <button class="btn primary" id="beginBtn">Begin diagnostics →</button>
+          </div>
+        </section>
+
+        <!-- test panels injected by JS -->
+        <div id="testPanels"></div>
+
+        <section class="panel" id="panel-report"></section>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------- test registry ---------- */
+  const TESTS = [
+    {id:'display', group:'Screen', label:'Display', icon:'🖥️', fixFail:'Replace LCD/display panel — check for dead pixels, backlight bleed or discoloration.'},
+    {id:'touch', group:'Screen', label:'Touchscreen', icon:'👆', fixFail:'Replace digitizer / touch panel assembly.'},
+    {id:'keyboard', group:'Input', label:'Keyboard', icon:'⌨️', fixFail:'Replace keyboard assembly — note which keys failed below.'},
+    {id:'trackpad', group:'Input', label:'Trackpad', icon:'🖱️', fixFail:'Replace trackpad / clickpad, or reseat its ribbon cable.'},
+    {id:'camera', group:'Media', label:'Camera', icon:'🎥', fixFail:'Replace camera module or reseat its cable.'},
+    {id:'mic', group:'Media', label:'Microphone', icon:'🎙️', fixFail:'Replace microphone / check motherboard audio connector.'},
+    {id:'speaker', group:'Media', label:'Speakers', icon:'🔊', fixFail:'Replace speaker(s) — note left/right result below.'},
+    {id:'battery', group:'System', label:'Battery', icon:'🔋', fixFail:'Replace battery — will not hold charge or reports abnormal health.'},
+    {id:'storage', group:'System', label:'Storage', icon:'💾', fixFail:'Investigate storage — run chrome://diagnostics or consider board replacement.'},
+    {id:'network', group:'System', label:'Wi-Fi', icon:'📶', fixFail:'Check Wi-Fi card / antenna connections, or replace wireless module.'},
+    {id:'ports', group:'Physical', label:'Ports & body', icon:'🔩', fixFail:''},
+  ];
+
+  const state = {
+    meta:{tech:'',asset:'',model:'',ticket:''},
+    results:{}, // id -> {status:'pending'|'pass'|'fail'|'na', note, detail}
+    portsChecklist:{
+      charging:{label:'Charging port', desc:'Charges reliably, no loose connection', status:'pending'},
+      usb:{label:'USB-C / USB-A ports', desc:'Data + power work on all ports', status:'pending'},
+      headphone:{label:'Headphone jack', desc:'Audio routes correctly, no static', status:'pending'},
+      hinge:{label:'Hinge', desc:'Opens/closes smoothly, no wobble or grinding', status:'pending'},
+      chassis:{label:'Chassis / housing', desc:'No cracks, missing screws or bent corners', status:'pending'},
+      screenGlass:{label:'Screen surface', desc:'No physical cracks or chips in the glass', status:'pending'},
+    },
+  };
+  TESTS.forEach(t => state.results[t.id] = {status:'pending', note:'', detail:''});
+
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+
+  /* ---------- rail ---------- */
+  function buildRail(){
+    const rail = $('#rail');
+    rail.innerHTML = '';
+    let lastGroup = null;
+    TESTS.forEach(t => {
+      if(t.group !== lastGroup){
+        const gl = document.createElement('div');
+        gl.className = 'rail-group-label';
+        gl.textContent = t.group;
+        rail.appendChild(gl);
+        lastGroup = t.group;
+      }
+      const btn = document.createElement('button');
+      btn.className = 'rail-item';
+      btn.dataset.target = t.id;
+      btn.innerHTML = `<span class="status-dot" id="dot-${t.id}"></span><span class="label">${t.icon} ${t.label}</span>`;
+      btn.addEventListener('click', () => showPanel(t.id));
+      rail.appendChild(btn);
+    });
+    const rb = document.createElement('button');
+    rb.className = 'rail-report-btn';
+    rb.textContent = '📋  View report';
+    rb.addEventListener('click', () => showPanel('report'));
+    rail.appendChild(rb);
+  }
+
+  function refreshRailDots(){
+    let checked = 0, anyFail = false;
+    TESTS.forEach(t => {
+      const st = state.results[t.id].status;
+      const dot = $('#dot-'+t.id);
+      if(dot){
+        dot.className = 'status-dot' + (st==='pass'?' pass':st==='fail'?' fail':st==='na'?' na':'');
+      }
+      if(st !== 'pending') checked++;
+      if(st === 'fail') anyFail = true;
+    });
+    $('#progressCount').textContent = checked;
+    $('#progressTotal').textContent = TESTS.length;
+    $('#progressDot').className = 'dot' + (checked===TESTS.length ? (anyFail?' bad':' ok') : '');
+    $$('.rail-item').forEach(el => el.classList.toggle('active', el.dataset.target === currentPanel));
+  }
+
+  let currentPanel = 'welcome';
+  function showPanel(id){
+    currentPanel = id;
+    $$('.panel').forEach(p => p.classList.remove('active'));
+    const target = document.getElementById('panel-'+id);
+    if(target) target.classList.add('active');
+    if(id === 'report') renderReport();
+    refreshRailDots();
+    window.scrollTo({top:0, behavior:'smooth'});
+  }
+
+  /* ---------- generic verdict control ---------- */
+  function verdictHTML(id, opts){
+    opts = opts || {};
+    return `
+      <div class="verdict">
+        <div>
+          <div class="verdict-label">Technician result${opts.auto ? ' (auto-filled, override if needed)' : ''}</div>
+          <div class="verdict-buttons" data-verdict-for="${id}">
+            <button class="vbtn" data-v="pass">Pass</button>
+            <button class="vbtn" data-v="fail">Fail</button>
+            <button class="vbtn" data-v="na">N/A</button>
+          </div>
+        </div>
+        <div style="flex:1;min-width:220px;">
+          <textarea class="note-field" data-note-for="${id}" placeholder="Optional note (e.g. which key, which speaker)…"></textarea>
+        </div>
+      </div>`;
+  }
+
+  function wireVerdict(id){
+    const group = document.querySelector(`[data-verdict-for="${id}"]`);
+    if(!group) return;
+    group.querySelectorAll('.vbtn').forEach(b => {
+      b.addEventListener('click', () => setStatus(id, b.dataset.v));
+    });
+    const note = document.querySelector(`[data-note-for="${id}"]`);
+    if(note){
+      note.value = state.results[id].note || '';
+      note.addEventListener('input', () => { state.results[id].note = note.value; });
+    }
+    syncVerdictUI(id);
+  }
+
+  function syncVerdictUI(id){
+    const group = document.querySelector(`[data-verdict-for="${id}"]`);
+    if(!group) return;
+    group.querySelectorAll('.vbtn').forEach(b => b.classList.toggle('sel', b.dataset.v === state.results[id].status));
+    const dot = $('#dot-'+id);
+    if(dot) dot.className = 'status-dot' + (state.results[id].status==='pass'?' pass':state.results[id].status==='fail'?' fail':state.results[id].status==='na'?' na':'');
+  }
+
+  function setStatus(id, v, detail){
+    state.results[id].status = v;
+    if(detail !== undefined) state.results[id].detail = detail;
+    syncVerdictUI(id);
+    refreshRailDots();
+  }
+
+  function badge(id){
+    const st = state.results[id].status;
+    const map = {pending:['pending','Not run'], pass:['pass','Pass'], fail:['fail','Fail'], na:['na','N/A']};
+    const [cls,label] = map[st];
+    return `<span class="badge ${cls}" id="badge-${id}">${label}</span>`;
+  }
+  function refreshBadge(id){
+    const el = $('#badge-'+id);
+    if(!el) return;
+    const map = {pending:['pending','Not run'], pass:['pass','Pass'], fail:['fail','Fail'], na:['na','N/A']};
+    const [cls,label] = map[state.results[id].status];
+    el.className = 'badge '+cls;
+    el.textContent = label;
+  }
+
+  /* ================= PANEL BUILDERS ================= */
+  const panels = $('#testPanels');
+
+  function mountPanel(id, html){
+    const sec = document.createElement('section');
+    sec.className = 'panel';
+    sec.id = 'panel-'+id;
+    sec.innerHTML = html;
+    panels.appendChild(sec);
+  }
+
+  /* ---- Display ---- */
+  mountPanel('display', `
+    <div class="panel-head">
+      <div><h2>🖥️ Display test</h2><p>Step through each fill color and look closely for dead pixels, stuck pixels, discoloration or backlight bleed at the edges.</p></div>
+      ${badge('display')}
+    </div>
+    <div class="test-body">
+      <div class="btn-row">
+        <button class="btn primary" id="displayStart">Start color sequence</button>
+        <span id="displayStep" style="color:var(--text-2);font-size:13px;"></span>
+      </div>
+    </div>
+    ${verdictHTML('display')}
+  `);
+  (function(){
+    const colors = [
+      {name:'White', css:'#ffffff'}, {name:'Black', css:'#000000'},
+      {name:'Red', css:'#ff0000'}, {name:'Green', css:'#00ff00'},
+      {name:'Blue', css:'#0000ff'}, {name:'Gray', css:'#808080'},
+    ];
+    let overlay = null, idx = 0;
+    function step(){
+      if(idx >= colors.length){ close(); setStatus('display', state.results.display.status==='pending' ? 'pass' : state.results.display.status); return; }
+      overlay.style.background = colors[idx].css;
+      overlay.querySelector('.lbl').textContent = colors[idx].name + '  —  ' + (idx+1) + ' / ' + colors.length + '   (click anywhere to continue, Esc to stop)';
+      overlay.querySelector('.lbl').style.color = (colors[idx].name==='White'||colors[idx].name==='Green') ? '#000' : '#fff';
+      idx++;
+    }
+    function open(){
+      overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:999;cursor:pointer;display:flex;align-items:flex-end;justify-content:center;padding-bottom:40px;';
+      overlay.innerHTML = '<span class="lbl" style="font:600 14px var(--font-ui);"></span>';
+      overlay.addEventListener('click', step);
+      document.addEventListener('keydown', escClose);
+      document.body.appendChild(overlay);
+      idx = 0; step();
+    }
+    function escClose(e){ if(e.key === 'Escape') close(); }
+    function close(){
+      if(overlay){ overlay.remove(); overlay = null; }
+      document.removeEventListener('keydown', escClose);
+    }
+    $('#displayStart').addEventListener('click', open);
+    wireVerdict('display');
+  })();
+
+  /* ---- Touchscreen ---- */
+  mountPanel('touch', `
+    <div class="panel-head">
+      <div><h2>👆 Touchscreen test</h2><p>Drag a finger across every cell of the grid below. Cells you've touched turn green; cover the whole grid to confirm full digitizer response.</p></div>
+      ${badge('touch')}
+    </div>
+    <div class="test-body">
+      <div class="hint" id="touchSupportHint"></div>
+      <div class="pad-wrap" id="touchPad" style="height:280px;"></div>
+      <div class="btn-row" style="margin-top:12px;">
+        <span style="font-size:13px;color:var(--text-2);">Coverage: <b id="touchCoverage" style="color:var(--text);font-variant-numeric:tabular-nums;">0%</b></span>
+        <button class="btn" id="touchReset">Reset grid</button>
+      </div>
+    </div>
+    ${verdictHTML('touch', {auto:true})}
+  `);
+  (function(){
+    const supportsTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    $('#touchSupportHint').textContent = supportsTouch
+      ? 'Touch input detected on this device.'
+      : 'No touch input detected on this device/browser — mark N/A if this Chromebook has no touchscreen, or drag with a mouse to test anyway.';
+    $('#touchSupportHint').classList.add(supportsTouch ? '' : 'warn');
+    const cols = 8, rows = 5;
+    const pad = $('#touchPad');
+    const grid = document.createElement('div');
+    grid.className = 'pad-grid';
+    grid.style.gridTemplateColumns = `repeat(${cols},1fr)`;
+    grid.style.gridTemplateRows = `repeat(${rows},1fr)`;
+    const cells = [];
+    for(let i=0;i<cols*rows;i++){
+      const c = document.createElement('div');
+      c.className = 'pad-cell';
+      grid.appendChild(c);
+      cells.push(c);
+    }
+    pad.appendChild(grid);
+    let hitCount = 0;
+    function markAt(clientX, clientY){
+      const r = pad.getBoundingClientRect();
+      const x = clientX - r.left, y = clientY - r.top;
+      if(x<0||y<0||x>r.width||y>r.height) return;
+      const cx = Math.min(cols-1, Math.floor(x / (r.width/cols)));
+      const cy = Math.min(rows-1, Math.floor(y / (r.height/rows)));
+      const cell = cells[cy*cols+cx];
+      if(!cell.classList.contains('hit')){
+        cell.classList.add('hit');
+        hitCount++;
+        const pct = Math.round(hitCount / cells.length * 100);
+        $('#touchCoverage').textContent = pct + '%';
+        if(pct >= 95) setStatus('touch','pass');
+      }
+    }
+    function onMove(e){
+      if(e.touches){ Array.from(e.touches).forEach(t => markAt(t.clientX, t.clientY)); }
+      else if(e.buttons === 1){ markAt(e.clientX, e.clientY); }
+    }
+    pad.addEventListener('touchstart', onMove, {passive:true});
+    pad.addEventListener('touchmove', onMove, {passive:true});
+    pad.addEventListener('mousedown', onMove);
+    pad.addEventListener('mousemove', onMove);
+    $('#touchReset').addEventListener('click', () => {
+      cells.forEach(c => c.classList.remove('hit'));
+      hitCount = 0;
+      $('#touchCoverage').textContent = '0%';
+    });
+    wireVerdict('touch');
+  })();
+
+  /* ---- Keyboard ---- */
+  mountPanel('keyboard', `
+    <div class="panel-head">
+      <div><h2>⌨️ Keyboard test</h2><p>Press every key on the physical keyboard. Keys light up green as they're detected. Chromebook top-row icons are approximated.</p></div>
+      ${badge('keyboard')}
+    </div>
+    <div class="test-body">
+      <div class="kb" id="kbLayout"></div>
+      <div class="btn-row" style="margin-top:14px;">
+        <span style="font-size:13px;color:var(--text-2);">Keys detected: <b id="kbCount" style="color:var(--text);font-variant-numeric:tabular-nums;">0</b> / <span id="kbTotal">0</span></span>
+        <button class="btn" id="kbReset">Reset</button>
+      </div>
+      <div class="hint" id="kbMissingHint" style="display:none;"></div>
+    </div>
+    ${verdictHTML('keyboard')}
+  `);
+  (function(){
+    const rows = [
+      [['Esc','Escape'],['Back','F1'],['Fwd','F2'],['Reload','F3'],['Full','F4'],['Overview','F5'],['Bright−','F6'],['Bright+','F7'],['Mute','F8'],['Vol−','F9'],['Vol+','F10']],
+      [['`','Backquote'],['1','Digit1'],['2','Digit2'],['3','Digit3'],['4','Digit4'],['5','Digit5'],['6','Digit6'],['7','Digit7'],['8','Digit8'],['9','Digit9'],['0','Digit0'],['-','Minus'],['=','Equal'],['⌫','Backspace']],
+      [['Tab','Tab'],['Q','KeyQ'],['W','KeyW'],['E','KeyE'],['R','KeyR'],['T','KeyT'],['Y','KeyY'],['U','KeyU'],['I','KeyI'],['O','KeyO'],['P','KeyP'],['[','BracketLeft'],[']','BracketRight'],['\\\\','Backslash']],
+      [['Search','MetaLeft'],['A','KeyA'],['S','KeyS'],['D','KeyD'],['F','KeyF'],['G','KeyG'],['H','KeyH'],['J','KeyJ'],['K','KeyK'],['L','KeyL'],[';','Semicolon'],["'",'Quote'],['Enter','Enter']],
+      [['Shift','ShiftLeft'],['Z','KeyZ'],['X','KeyX'],['C','KeyC'],['V','KeyV'],['B','KeyB'],['N','KeyN'],['M','KeyM'],[',','Comma'],['.','Period'],['/','Slash'],['Shift','ShiftRight']],
+      [['Ctrl','ControlLeft'],['Alt','AltLeft'],['Space','Space'],['Alt','AltRight'],['◀','ArrowLeft'],['▲▼','ArrowUp'],['▶','ArrowRight'],['Ctrl','ControlRight']],
+    ];
+    const wrap = $('#kbLayout');
+    const codeToEl = {};
+    let total = 0;
+    rows.forEach(r => {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'kb-row';
+      r.forEach(([label,code]) => {
+        const k = document.createElement('div');
+        k.className = 'key';
+        if(code==='Space') k.classList.add('space');
+        else if(code==='Enter'||code==='ShiftLeft'||code==='Backspace') k.classList.add('wide');
+        else if(code==='Tab'||code==='MetaLeft'||code==='ShiftRight'||code==='ControlLeft') k.classList.add('wider');
+        k.textContent = label;
+        k.dataset.code = code;
+        rowEl.appendChild(k);
+        if(!codeToEl[code]){ codeToEl[code] = []; total++; }
+        codeToEl[code].push(k);
+      });
+      wrap.appendChild(rowEl);
+    });
+    $('#kbTotal').textContent = total;
+    const hitCodes = new Set();
+    function onKey(e){
+      if(currentPanel !== 'keyboard') return;
+      const els = codeToEl[e.code];
+      if(els){
+        els.forEach(el => el.classList.add('hit'));
+        if(!hitCodes.has(e.code)){ hitCodes.add(e.code); $('#kbCount').textContent = hitCodes.size; }
+        if(e.code !== 'F5' && e.code !== 'F11') e.preventDefault();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    $('#kbReset').addEventListener('click', () => {
+      hitCodes.clear();
+      $('#kbCount').textContent = '0';
+      Object.values(codeToEl).flat().forEach(el => el.classList.remove('hit'));
+      $('#kbMissingHint').style.display = 'none';
+    });
+    const group = document.querySelector('[data-verdict-for="keyboard"]');
+    group.querySelectorAll('.vbtn').forEach(b => b.addEventListener('click', () => {
+      if(b.dataset.v === 'pass' || b.dataset.v === 'fail'){
+        const missing = Object.keys(codeToEl).filter(c => !hitCodes.has(c));
+        const hint = $('#kbMissingHint');
+        if(missing.length){
+          hint.style.display = 'flex';
+          hint.className = 'hint warn';
+          hint.textContent = missing.length + ' key(s) never registered a press: ' + missing.slice(0,12).join(', ') + (missing.length>12?'…':'');
+        } else {
+          hint.style.display = 'none';
+        }
+      }
+    }));
+    wireVerdict('keyboard');
+  })();
+
+  /* ---- Trackpad ---- */
+  mountPanel('trackpad', `
+    <div class="panel-head">
+      <div><h2>🖱️ Trackpad test</h2><p>Glide a finger over the whole surface to paint the pad green, then confirm the physical click and two-finger scroll below.</p></div>
+      ${badge('trackpad')}
+    </div>
+    <div class="test-body">
+      <div class="pad-wrap" id="tpPad" style="height:220px;"></div>
+      <div class="btn-row" style="margin-top:12px;flex-wrap:wrap;">
+        <span style="font-size:13px;color:var(--text-2);">Coverage: <b id="tpCoverage" style="color:var(--text);font-variant-numeric:tabular-nums;">0%</b></span>
+        <span style="font-size:13px;color:var(--text-2);">Clicks: <b id="tpClicks" style="color:var(--text);font-variant-numeric:tabular-nums;">0</b></span>
+        <span style="font-size:13px;color:var(--text-2);">Scroll delta: <b id="tpScroll" style="color:var(--text);font-variant-numeric:tabular-nums;">0</b></span>
+        <button class="btn" id="tpReset">Reset</button>
+      </div>
+    </div>
+    ${verdictHTML('trackpad')}
+  `);
+  (function(){
+    const cols = 10, rows = 4;
+    const pad = $('#tpPad');
+    const grid = document.createElement('div');
+    grid.className = 'pad-grid';
+    grid.style.gridTemplateColumns = `repeat(${cols},1fr)`;
+    grid.style.gridTemplateRows = `repeat(${rows},1fr)`;
+    const cells = [];
+    for(let i=0;i<cols*rows;i++){ const c=document.createElement('div'); c.className='pad-cell'; grid.appendChild(c); cells.push(c); }
+    pad.appendChild(grid);
+    let hitCount=0, clicks=0, scrollAbs=0;
+    function markAt(clientX, clientY){
+      const r = pad.getBoundingClientRect();
+      const x = clientX-r.left, y = clientY-r.top;
+      if(x<0||y<0||x>r.width||y>r.height) return;
+      const cx = Math.min(cols-1, Math.floor(x/(r.width/cols)));
+      const cy = Math.min(rows-1, Math.floor(y/(r.height/rows)));
+      const cell = cells[cy*cols+cx];
+      if(!cell.classList.contains('hit')){ cell.classList.add('hit'); hitCount++; $('#tpCoverage').textContent = Math.round(hitCount/cells.length*100)+'%'; }
+    }
+    pad.addEventListener('mousemove', e => { if(e.buttons===1 || true) markAt(e.clientX,e.clientY); });
+    pad.addEventListener('touchmove', e => Array.from(e.touches).forEach(t=>markAt(t.clientX,t.clientY)), {passive:true});
+    pad.addEventListener('click', () => { clicks++; $('#tpClicks').textContent = clicks; });
+    pad.addEventListener('wheel', e => { scrollAbs += Math.abs(Math.round(e.deltaY)); $('#tpScroll').textContent = scrollAbs; e.preventDefault(); }, {passive:false});
+    $('#tpReset').addEventListener('click', () => {
+      cells.forEach(c=>c.classList.remove('hit')); hitCount=0; clicks=0; scrollAbs=0;
+      $('#tpCoverage').textContent='0%'; $('#tpClicks').textContent='0'; $('#tpScroll').textContent='0';
+    });
+    wireVerdict('trackpad');
+  })();
+
+  /* ---- Camera ---- */
+  mountPanel('camera', `
+    <div class="panel-head">
+      <div><h2>🎥 Camera test</h2><p>Start the preview, confirm the image is clear and correctly oriented, then capture a still frame.</p></div>
+      ${badge('camera')}
+    </div>
+    <div class="test-body">
+      <div class="btn-row" style="margin-bottom:14px;">
+        <button class="btn primary" id="camStart">Start camera</button>
+        <button class="btn" id="camSnap" disabled>Capture frame</button>
+        <button class="btn" id="camStop" disabled>Stop</button>
+      </div>
+      <video class="preview" id="camVideo" autoplay playsinline muted></video>
+      <canvas class="snap" id="camCanvas" style="display:none;margin-top:12px;"></canvas>
+      <div class="hint" id="camHint" style="display:none;"></div>
+    </div>
+    ${verdictHTML('camera')}
+  `);
+  (function(){
+    let stream = null;
+    const video = $('#camVideo'), canvas = $('#camCanvas'), hint = $('#camHint');
+    $('#camStart').addEventListener('click', async () => {
+      hint.style.display = 'none';
+      try{
+        stream = await navigator.mediaDevices.getUserMedia({video:true});
+        video.srcObject = stream;
+        $('#camSnap').disabled = false;
+        $('#camStop').disabled = false;
+        $('#camStart').disabled = true;
+      }catch(err){
+        hint.style.display = 'flex';
+        hint.className = 'hint error';
+        hint.textContent = 'Could not access the camera (' + err.name + '). This can happen if the browser sandbox blocks camera access here — test with a native camera app, then record the result manually below.';
+      }
+    });
+    $('#camSnap').addEventListener('click', () => {
+      canvas.width = video.videoWidth || 320;
+      canvas.height = video.videoHeight || 240;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.style.display = 'block';
+    });
+    $('#camStop').addEventListener('click', stopCam);
+    function stopCam(){
+      if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+      video.srcObject = null;
+      $('#camSnap').disabled = true; $('#camStop').disabled = true; $('#camStart').disabled = false;
+    }
+    wireVerdict('camera');
+  })();
+
+  /* ---- Microphone (automatic level detection) ---- */
+  mountPanel('mic', `
+    <div class="panel-head">
+      <div><h2>🎙️ Microphone test</h2><p>Automatic — start listening, then talk or tap near the microphone. The level meter reacts live and the test auto-passes once it detects sustained input.</p></div>
+      ${badge('mic')}
+    </div>
+    <div class="test-body">
+      <div class="btn-row" style="margin-bottom:14px;">
+        <button class="btn primary" id="micStart">Start listening</button>
+        <button class="btn" id="micStop" disabled>Stop</button>
+        <span id="micTimer" style="font-size:13px;color:var(--text-2);"></span>
+      </div>
+      <div class="meter level"><i id="micLevel" style="width:0%;"></i></div>
+      <div class="hint" id="micHint" style="display:none;"></div>
+    </div>
+    ${verdictHTML('mic', {auto:true})}
+  `);
+  (function(){
+    let ctx=null, stream=null, raf=null, timerInt=null, elapsed=0, sustained=0;
+    const level = $('#micLevel'), hint = $('#micHint');
+    async function start(){
+      hint.style.display='none';
+      try{
+        stream = await navigator.mediaDevices.getUserMedia({audio:true});
+        ctx = new (window.AudioContext||window.webkitAudioContext)();
+        const src = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        src.connect(analyser);
+        const data = new Uint8Array(analyser.fftSize);
+        $('#micStart').disabled = true; $('#micStop').disabled = false;
+        elapsed = 0; sustained = 0;
+        timerInt = setInterval(() => {
+          elapsed++;
+          $('#micTimer').textContent = elapsed + 's — speak or tap near the mic';
+          if(elapsed >= 20 && state.results.mic.status === 'pending'){
+            hint.style.display='flex'; hint.className='hint warn';
+            hint.textContent = 'No clear input detected after 20s. Check the mic isn\\'t muted, or mark the result manually below.';
+          }
+        }, 1000);
+        function loop(){
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for(let i=0;i<data.length;i++){ const v=(data[i]-128)/128; sum += v*v; }
+          const rms = Math.sqrt(sum/data.length);
+          const pct = Math.min(100, Math.round(rms*400));
+          level.style.width = pct+'%';
+          if(rms > 0.06) sustained++; else sustained = Math.max(0, sustained-2);
+          if(sustained > 12 && state.results.mic.status === 'pending'){
+            setStatus('mic','pass');
+            hint.style.display='flex'; hint.className='hint';
+            hint.textContent = 'Input detected — microphone looks good. You can still override below.';
+          }
+          raf = requestAnimationFrame(loop);
+        }
+        loop();
+      }catch(err){
+        hint.style.display='flex'; hint.className='hint error';
+        hint.textContent = 'Could not access the microphone (' + err.name + '). The sandbox may be blocking mic access here — test with a native app, then record the result manually below.';
+      }
+    }
+    function stop(){
+      if(raf) cancelAnimationFrame(raf);
+      if(timerInt) clearInterval(timerInt);
+      if(stream) stream.getTracks().forEach(t=>t.stop());
+      if(ctx) ctx.close();
+      stream=null; ctx=null; raf=null;
+      level.style.width='0%';
+      $('#micStart').disabled=false; $('#micStop').disabled=true;
+      $('#micTimer').textContent='';
+    }
+    $('#micStart').addEventListener('click', start);
+    $('#micStop').addEventListener('click', stop);
+    wireVerdict('mic');
+  })();
+
+  /* ---- Speaker ---- */
+  mountPanel('speaker', `
+    <div class="panel-head">
+      <div><h2>🔊 Speaker test</h2><p>Play each channel and confirm whether you actually heard it. Volume should be turned up and unmuted.</p></div>
+      ${badge('speaker')}
+    </div>
+    <div class="test-body">
+      <div class="btn-row">
+        <button class="btn primary" id="playLeft">▶ Play left</button>
+        <button class="btn primary" id="playRight">▶ Play right</button>
+        <button class="btn primary" id="playBoth">▶ Play both</button>
+      </div>
+      <div class="checklist" style="margin-top:18px;">
+        <div class="check-row">
+          <div class="ct"><b>Did you hear the tone from the LEFT speaker?</b><span>Play left, then answer</span></div>
+          <div class="toggle3">
+            <button class="vbtn" data-side="left" data-v="pass">Yes</button>
+            <button class="vbtn" data-side="left" data-v="fail">No</button>
+          </div>
+        </div>
+        <div class="check-row">
+          <div class="ct"><b>Did you hear the tone from the RIGHT speaker?</b><span>Play right, then answer</span></div>
+          <div class="toggle3">
+            <button class="vbtn" data-side="right" data-v="pass">Yes</button>
+            <button class="vbtn" data-side="right" data-v="fail">No</button>
+          </div>
+        </div>
+      </div>
+      <div class="hint" id="spkHint" style="display:none;"></div>
+    </div>
+    ${verdictHTML('speaker')}
+  `);
+  (function(){
+    let ctx = null;
+    function tone(pan, dur){
+      try{
+        ctx = ctx || new (window.AudioContext||window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+        osc.frequency.value = 528;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime+0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+dur);
+        osc.connect(gain);
+        if(panner){ panner.pan.value = pan; gain.connect(panner); panner.connect(ctx.destination); }
+        else gain.connect(ctx.destination);
+        osc.start(); osc.stop(ctx.currentTime+dur+0.05);
+      }catch(err){
+        const hint = $('#spkHint');
+        hint.style.display='flex'; hint.className='hint error';
+        hint.textContent = 'Audio playback failed (' + err.name + '). Try a native audio test, then record the result manually.';
+      }
+    }
+    $('#playLeft').addEventListener('click', () => tone(-1, 0.9));
+    $('#playRight').addEventListener('click', () => tone(1, 0.9));
+    $('#playBoth').addEventListener('click', () => tone(0, 0.9));
+    const sides = {left:'pending', right:'pending'};
+    document.querySelectorAll('[data-side]').forEach(b => {
+      b.addEventListener('click', () => {
+        sides[b.dataset.side] = b.dataset.v;
+        document.querySelectorAll(`[data-side="${b.dataset.side}"]`).forEach(x => x.classList.toggle('sel', x===b));
+        if(sides.left !== 'pending' && sides.right !== 'pending'){
+          const overall = (sides.left==='pass' && sides.right==='pass') ? 'pass' : 'fail';
+          setStatus('speaker', overall, `Left: ${sides.left}, Right: ${sides.right}`);
+        }
+      });
+    });
+    wireVerdict('speaker');
+  })();
+
+  /* ---- Battery ---- */
+  mountPanel('battery', `
+    <div class="panel-head">
+      <div><h2>🔋 Battery</h2><p>Reads live status from the browser's Battery Status API where supported.</p></div>
+      ${badge('battery')}
+    </div>
+    <div class="test-body">
+      <div id="batBody" class="info-grid"></div>
+      <div class="hint" id="batHint" style="display:none;"></div>
+    </div>
+    ${verdictHTML('battery', {auto:true})}
+  `);
+  (function(){
+    const body = $('#batBody'), hint = $('#batHint');
+    if(navigator.getBattery){
+      navigator.getBattery().then(bat => {
+        function render(){
+          const pct = Math.round(bat.level*100);
+          body.innerHTML = `
+            <div class="info-tile"><div class="l">Charge</div><div class="v">${pct}%</div></div>
+            <div class="info-tile"><div class="l">Charging</div><div class="v">${bat.charging ? 'Yes' : 'No'}</div></div>
+            <div class="info-tile"><div class="l">Time to full</div><div class="v">${bat.charging && isFinite(bat.chargingTime) ? Math.round(bat.chargingTime/60)+' min' : '—'}</div></div>
+            <div class="info-tile"><div class="l">Time remaining</div><div class="v">${!bat.charging && isFinite(bat.dischargingTime) ? Math.round(bat.dischargingTime/60)+' min' : '—'}</div></div>
+          `;
+          if(state.results.battery.status === 'pending'){
+            setStatus('battery', pct > 0 ? 'pass' : 'fail', `${pct}% · ${bat.charging?'charging':'on battery'}`);
+          }
+        }
+        render();
+        bat.addEventListener('levelchange', render);
+        bat.addEventListener('chargingchange', render);
+      }).catch(() => { showUnsupported(); });
+    } else {
+      showUnsupported();
+    }
+    function showUnsupported(){
+      hint.style.display='flex'; hint.className='hint warn';
+      hint.textContent = 'Battery Status API isn\\'t available in this context. Check the charge indicator in the shelf, confirm it charges when plugged in, then record the result manually.';
+      body.innerHTML = `<div class="info-tile"><div class="l">Status</div><div class="v">Unavailable</div></div>`;
+    }
+    wireVerdict('battery');
+  })();
+
+  /* ---- Storage ---- */
+  mountPanel('storage', `
+    <div class="panel-head">
+      <div><h2>💾 Storage</h2><p>Checks how much of the device's storage quota is available to the browser as a rough health signal.</p></div>
+      ${badge('storage')}
+    </div>
+    <div class="test-body">
+      <div id="stoBody" class="info-grid"></div>
+      <div class="meter" style="margin-top:16px;"><i id="stoMeter" style="width:0%;"></i></div>
+      <div class="hint" id="stoHint" style="display:none;"></div>
+    </div>
+    ${verdictHTML('storage', {auto:true})}
+  `);
+  (function(){
+    const body = $('#stoBody'), hint = $('#stoHint');
+    if(navigator.storage && navigator.storage.estimate){
+      navigator.storage.estimate().then(est => {
+        const usedGB = (est.usage/1e9).toFixed(2);
+        const quotaGB = (est.quota/1e9).toFixed(1);
+        const pct = est.quota ? Math.round(est.usage/est.quota*100) : 0;
+        body.innerHTML = `
+          <div class="info-tile"><div class="l">Used</div><div class="v">${usedGB} GB</div></div>
+          <div class="info-tile"><div class="l">Available quota</div><div class="v">${quotaGB} GB</div></div>
+          <div class="info-tile"><div class="l">Utilization</div><div class="v">${pct}%</div></div>
+        `;
+        $('#stoMeter').style.width = pct + '%';
+        if(state.results.storage.status === 'pending') setStatus('storage', 'pass', `${usedGB}GB / ${quotaGB}GB`);
+      }).catch(() => showUnsupported());
+    } else {
+      showUnsupported();
+    }
+    function showUnsupported(){
+      hint.style.display='flex'; hint.className='hint warn';
+      hint.textContent = 'Storage estimate isn\\'t available in this context. Check available space in the Files app or chrome://diagnostics, then record the result manually.';
+    }
+    wireVerdict('storage');
+  })();
+
+  /* ---- Network ---- */
+  mountPanel('network', `
+    <div class="panel-head">
+      <div><h2>📶 Wi-Fi &amp; network</h2><p>Basic connectivity read-out from the browser.</p></div>
+      ${badge('network')}
+    </div>
+    <div class="test-body">
+      <div id="netBody" class="info-grid"></div>
+      <div class="btn-row" style="margin-top:14px;"><button class="btn" id="netRecheck">Recheck</button></div>
+    </div>
+    ${verdictHTML('network', {auto:true})}
+  `);
+  (function(){
+    const body = $('#netBody');
+    function render(){
+      const online = navigator.onLine;
+      const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      body.innerHTML = `
+        <div class="info-tile"><div class="l">Status</div><div class="v">${online ? 'Online' : 'Offline'}</div></div>
+        <div class="info-tile"><div class="l">Type</div><div class="v">${conn && conn.effectiveType ? conn.effectiveType.toUpperCase() : '—'}</div></div>
+        <div class="info-tile"><div class="l">Downlink</div><div class="v">${conn && conn.downlink ? conn.downlink+' Mbps' : '—'}</div></div>
+        <div class="info-tile"><div class="l">Round-trip</div><div class="v">${conn && conn.rtt ? conn.rtt+' ms' : '—'}</div></div>
+      `;
+      if(state.results.network.status === 'pending' || state.results.network.status === 'pass' || state.results.network.status === 'fail'){
+        setStatus('network', online ? 'pass' : 'fail', online ? 'Connected' : 'No connection');
+      }
+    }
+    render();
+    window.addEventListener('online', render);
+    window.addEventListener('offline', render);
+    $('#netRecheck').addEventListener('click', render);
+    wireVerdict('network');
+  })();
+
+  /* ---- Ports & body (manual checklist) ---- */
+  (function(){
+    const rows = Object.entries(state.portsChecklist).map(([key, item]) => `
+      <div class="check-row">
+        <div class="ct"><b>${item.label}</b><span>${item.desc}</span></div>
+        <div class="toggle3" data-port="${key}">
+          <button class="vbtn" data-v="pass">Pass</button>
+          <button class="vbtn" data-v="fail">Fail</button>
+          <button class="vbtn" data-v="na">N/A</button>
+        </div>
+      </div>
+    `).join('');
+    mountPanel('ports', `
+      <div class="panel-head">
+        <div><h2>🔩 Ports &amp; physical inspection</h2><p>Manual checklist — inspect and test each item, then mark it directly.</p></div>
+        ${badge('ports')}
+      </div>
+      <div class="checklist">${rows}</div>
+      <textarea class="note-field" id="portsNote" placeholder="Optional note…" style="margin-top:16px;"></textarea>
+    `);
+    document.querySelectorAll('[data-port]').forEach(group => {
+      const key = group.dataset.port;
+      group.querySelectorAll('.vbtn').forEach(b => {
+        b.addEventListener('click', () => {
+          state.portsChecklist[key].status = b.dataset.v;
+          group.querySelectorAll('.vbtn').forEach(x => x.classList.toggle('sel', x===b));
+          const statuses = Object.values(state.portsChecklist).map(i => i.status);
+          const allSet = statuses.every(s => s !== 'pending');
+          const anyFail = statuses.some(s => s === 'fail');
+          if(allSet) setStatus('ports', anyFail ? 'fail' : 'pass');
+          else state.results.ports.status = 'pending';
+          refreshBadge('ports');
+          refreshRailDots();
+        });
+      });
+    });
+    $('#portsNote').addEventListener('input', e => { state.results.ports.note = e.target.value; });
+  })();
+
+  /* ---------- welcome -> begin ---------- */
+  $('#beginBtn').addEventListener('click', () => {
+    state.meta.tech = $('#techName').value.trim();
+    state.meta.asset = $('#assetTag').value.trim();
+    state.meta.model = $('#model').value.trim();
+    state.meta.ticket = $('#ticket').value.trim();
+    showPanel('display');
+  });
+
+  /* ---------- report ---------- */
+  function renderReport(){
+    state.meta.tech = $('#techName').value.trim() || state.meta.tech;
+    state.meta.asset = $('#assetTag').value.trim() || state.meta.asset;
+    state.meta.model = $('#model').value.trim() || state.meta.model;
+    state.meta.ticket = $('#ticket').value.trim() || state.meta.ticket;
+
+    const fails = TESTS.filter(t => state.results[t.id].status === 'fail');
+    const overall = fails.length === 0 ? 'pass' : 'fail';
+    const now = new Date();
+    const stamp = now.toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
+
+    const rows = TESTS.map(t => {
+      const r = state.results[t.id];
+      const statusLabel = {pending:'Not run', pass:'Pass', fail:'Fail', na:'N/A'}[r.status];
+      let detail = r.detail || '';
+      if(t.id === 'ports'){
+        const failed = Object.values(state.portsChecklist).filter(i=>i.status==='fail').map(i=>i.label);
+        detail = failed.length ? 'Failed: ' + failed.join(', ') : Object.values(state.portsChecklist).every(i=>i.status==='pass') ? 'All items pass' : '';
+      }
+      return `<tr>
+        <td>${t.icon} ${t.label}</td>
+        <td><span class="badge ${r.status}">${statusLabel}</span></td>
+        <td style="color:var(--text-2);">${detail || '—'}</td>
+        <td style="color:var(--text-2);">${(r.note||'').replace(/</g,'&lt;') || '—'}</td>
+      </tr>`;
+    }).join('');
+
+    const recs = [];
+    fails.forEach(t => {
+      if(t.id === 'ports'){
+        Object.entries(state.portsChecklist).filter(([,i]) => i.status==='fail').forEach(([,i]) => {
+          const map = {'Charging port':'Replace/clean charging port connector.','USB-C / USB-A ports':'Replace or reseat USB port assembly.','Headphone jack':'Replace headphone jack / audio board.','Hinge':'Replace hinge assembly / top case.','Chassis / housing':'Replace chassis panel or housing.','Screen surface':'Replace outer glass / screen assembly.'};
+          recs.push(map[i.label] || `Address issue: ${i.label}`);
+        });
+      } else if(t.fixFail){
+        recs.push(t.fixFail);
+      }
+    });
+
+    $('#panel-report').innerHTML = `
+      <div class="report-header">
+        <div>
+          <h2 style="font-size:23px;font-weight:650;letter-spacing:-0.015em;">Diagnostic report</h2>
+          <p style="margin:6px 0 0;color:var(--text-2);font-size:13.5px;">${stamp}</p>
+        </div>
+        <div class="overall-badge ${overall}">${overall === 'pass' ? '✓ All checks passed' : '⚠ Needs attention — ' + fails.length + ' issue' + (fails.length===1?'':'s')}</div>
+      </div>
+
+      <div class="info-grid" style="margin-top:20px;">
+        <div class="info-tile"><div class="l">Technician</div><div class="v" style="font-size:14px;">${state.meta.tech || '—'}</div></div>
+        <div class="info-tile"><div class="l">Asset tag</div><div class="v" style="font-size:14px;font-family:var(--font-mono);">${state.meta.asset || '—'}</div></div>
+        <div class="info-tile"><div class="l">Model</div><div class="v" style="font-size:14px;">${state.meta.model || '—'}</div></div>
+        <div class="info-tile"><div class="l">Ticket</div><div class="v" style="font-size:14px;">${state.meta.ticket || '—'}</div></div>
+      </div>
+
+      <div class="section-title">Results</div>
+      <table class="report-table">
+        <thead><tr><th>Component</th><th>Result</th><th>Detail</th><th>Note</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+
+      <div class="section-title">Recommended actions</div>
+      ${recs.length ? `<ul class="rec-list">${recs.map(r=>`<li><span class="rc-dot"></span>${r}</li>`).join('')}</ul>` : `<p class="rec-none">No repairs indicated — this Chromebook passed every check that was run.</p>`}
+
+      <div class="btn-row" style="margin-top:26px;">
+        <button class="btn primary" id="copyReportBtn">Copy report as text</button>
+        <button class="btn" id="printReportBtn">Print report</button>
+        <button class="btn" id="restartBtn">Start new session</button>
+      </div>
+      <div class="hint" id="copyHint" style="display:none;"></div>
+    `;
+
+    $('#copyReportBtn').addEventListener('click', async () => {
+      const text = buildPlainReport(overall, fails, stamp, recs);
+      const hint = $('#copyHint');
+      try{
+        await navigator.clipboard.writeText(text);
+        hint.style.display='flex'; hint.className='hint';
+        hint.textContent = 'Report copied to clipboard.';
+      }catch(err){
+        hint.style.display='flex'; hint.className='hint warn';
+        hint.textContent = 'Could not copy automatically — select and copy the text below.';
+      }
+    });
+    $('#printReportBtn').addEventListener('click', () => window.print());
+    $('#restartBtn').addEventListener('click', () => {
+      if(confirm('Start a new diagnostic session? Current results will be cleared.')) location.reload();
+    });
+  }
+
+  function buildPlainReport(overall, fails, stamp, recs){
+    let out = `ChromeCheck — Diagnostic Report\\n${stamp}\\n`;
+    out += `Technician: ${state.meta.tech||'—'}   Asset: ${state.meta.asset||'—'}   Model: ${state.meta.model||'—'}   Ticket: ${state.meta.ticket||'—'}\\n`;
+    out += `Overall: ${overall === 'pass' ? 'PASS' : 'NEEDS ATTENTION ('+fails.length+' issue'+(fails.length===1?'':'s')+')'}\\n\\n`;
+    TESTS.forEach(t => {
+      const r = state.results[t.id];
+      const label = {pending:'NOT RUN', pass:'PASS', fail:'FAIL', na:'N/A'}[r.status];
+      out += `- ${t.label}: ${label}${r.note ? '  ['+r.note+']' : ''}\\n`;
+    });
+    out += `\\nRecommended actions:\\n`;
+    out += recs.length ? recs.map(r=>'- '+r).join('\\n') : '- None. Device passed all checks run.';
+    return out;
+  }
+
+  /* ---------- init ---------- */
+  buildRail();
+  refreshRailDots();
+})();
+</script>
+</body>
+</html>
