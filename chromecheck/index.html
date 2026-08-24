@@ -1,13 +1,108 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-brand="cmhs">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chrome Depot — CMHS Chromebook Diagnostics</title>
 <meta name="description" content="Chrome Depot at Crete-Monee High School: a free Chromebook hardware diagnostic tool covering display, touchscreen, keyboard, trackpad, camera, mic, speaker, battery, storage, Wi-Fi and physical checks, with a pass/fail repair report.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%BB%3C/text%3E%3C/svg%3E">
+<script>
+  /* Runs before first paint so the saved theme choice shows immediately, no flash. */
+  try{
+    var savedBrand = localStorage.getItem('chromecheck-brand');
+    if(savedBrand === 'apple' || savedBrand === 'cmhs'){
+      document.documentElement.setAttribute('data-brand', savedBrand);
+    }
+  }catch(e){}
+</script>
 <style>
   :root{
+    --radius-lg:24px;
+    --radius-md:16px;
+    --radius-sm:10px;
+    --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --font-crest:Georgia,"Times New Roman",serif;
+  }
+
+  /* ===== CMHS brand (default) — navy + gold, flatter "school site" surfaces ===== */
+  :root, [data-brand="cmhs"]{
+    --bg-0:#eef1f7;
+    --bg-1:#f7f9fc;
+    --surface:rgba(255,255,255,0.96);
+    --surface-solid:#ffffff;
+    --surface-raised:#ffffff;
+    --text:#0f1b33;
+    --text-2:#49536a;
+    --text-3:#7c8598;
+    --border:rgba(12,47,110,0.12);
+    --border-strong:rgba(12,47,110,0.24);
+    --accent:#0c2f6e;
+    --accent-2:#f0b429;
+    --gold-deep:#8a6614;
+    --accent-ink:#ffffff;
+    --success:#248a3d;
+    --success-bg:rgba(52,199,89,0.14);
+    --danger:#d70015;
+    --danger-bg:rgba(255,59,48,0.12);
+    --warning:#b25000;
+    --warning-bg:rgba(255,159,10,0.16);
+    --neutral-bg:rgba(12,47,110,0.08);
+    --shadow-1:0 1px 2px rgba(12,20,40,0.06), 0 12px 28px -14px rgba(12,20,40,0.22);
+    --shadow-2:0 20px 50px -18px rgba(12,20,40,0.32);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]):not([data-brand="apple"]),
+    [data-brand="cmhs"]:not([data-theme="light"]){
+      --bg-0:#050b1a;
+      --bg-1:#081227;
+      --surface:rgba(16,26,52,0.9);
+      --surface-solid:#0d1830;
+      --surface-raised:#132449;
+      --text:#f2f5fb;
+      --text-2:#a9b4c9;
+      --text-3:#7c869a;
+      --border:rgba(255,255,255,0.10);
+      --border-strong:rgba(255,255,255,0.18);
+      --accent:#4d80dd;
+      --accent-2:#f3c34d;
+      --success:#32d74b;
+      --success-bg:rgba(50,215,75,0.16);
+      --danger:#ff453a;
+      --danger-bg:rgba(255,69,58,0.18);
+      --warning:#ff9f0a;
+      --warning-bg:rgba(255,159,10,0.18);
+      --neutral-bg:rgba(255,255,255,0.08);
+      --shadow-1:0 1px 2px rgba(0,0,0,0.4), 0 12px 32px -12px rgba(0,0,0,0.65);
+      --shadow-2:0 20px 60px -20px rgba(0,0,0,0.85);
+    }
+  }
+  [data-theme="dark"]:not([data-brand="apple"]){
+    --bg-0:#050b1a;
+    --bg-1:#081227;
+    --surface:rgba(16,26,52,0.9);
+    --surface-solid:#0d1830;
+    --surface-raised:#132449;
+    --text:#f2f5fb;
+    --text-2:#a9b4c9;
+    --text-3:#7c869a;
+    --border:rgba(255,255,255,0.10);
+    --border-strong:rgba(255,255,255,0.18);
+    --accent:#4d80dd;
+    --accent-2:#f3c34d;
+    --success:#32d74b;
+    --success-bg:rgba(50,215,75,0.16);
+    --danger:#ff453a;
+    --danger-bg:rgba(255,69,58,0.18);
+    --warning:#ff9f0a;
+    --warning-bg:rgba(255,159,10,0.18);
+    --neutral-bg:rgba(255,255,255,0.08);
+    --shadow-1:0 1px 2px rgba(0,0,0,0.4), 0 12px 32px -12px rgba(0,0,0,0.65);
+    --shadow-2:0 20px 60px -20px rgba(0,0,0,0.85);
+  }
+
+  /* ===== Apple brand — liquid glass, blue + gold ===== */
+  [data-brand="apple"]{
     --bg-0:#eef0f3;
     --bg-1:#f7f8fa;
     --surface:rgba(255,255,255,0.62);
@@ -31,14 +126,9 @@
     --neutral-bg:rgba(120,120,128,0.14);
     --shadow-1:0 1px 2px rgba(0,0,0,0.04), 0 12px 32px -12px rgba(0,0,0,0.16);
     --shadow-2:0 20px 60px -20px rgba(0,0,0,0.28);
-    --radius-lg:24px;
-    --radius-md:16px;
-    --radius-sm:10px;
-    --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Helvetica,Arial,sans-serif;
-    --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   }
   @media (prefers-color-scheme: dark){
-    :root:not([data-theme="light"]){
+    [data-brand="apple"]:not([data-theme="light"]){
       --bg-0:#000000;
       --bg-1:#0a0a0c;
       --surface:rgba(40,40,44,0.55);
@@ -62,7 +152,7 @@
       --shadow-2:0 20px 60px -20px rgba(0,0,0,0.8);
     }
   }
-  :root[data-theme="dark"]{
+  [data-brand="apple"][data-theme="dark"]{
     --bg-0:#000000;
     --bg-1:#0a0a0c;
     --surface:rgba(40,40,44,0.55);
@@ -134,16 +224,34 @@
     border-bottom:1px solid var(--border);
   }
   .navbar .mark{
-    width:34px;height:34px;border-radius:9px;
-    background:linear-gradient(145deg,var(--accent),var(--accent-2));
+    width:36px;height:30px;flex:none;
     display:flex;align-items:center;justify-content:center;
-    font-size:17px;flex:none;box-shadow:var(--shadow-1);
+    filter:drop-shadow(0 1px 2px rgba(0,0,0,0.2));
   }
+  .navbar .mark svg{display:block;width:100%;height:100%;}
   .navbar .titles{display:flex;flex-direction:column;line-height:1.15;}
   .navbar .titles b{font-size:16px;font-weight:650;letter-spacing:-0.01em;}
   .navbar .titles .brand-sep{color:var(--accent);font-weight:650;padding:0 1px;}
   .navbar .titles span{font-size:11.5px;color:var(--text-2);}
   .navbar .spacer{flex:1;}
+  .navbar .navbar-actions{display:flex;align-items:center;gap:10px;}
+  .navbar .icon-btn{
+    display:flex;align-items:center;gap:6px;
+    padding:7px 11px;border-radius:99px;border:1px solid var(--border);
+    background:var(--surface-raised);color:var(--text-2);
+    font-size:12.5px;font-weight:600;cursor:pointer;
+  }
+  .navbar .icon-btn:hover{color:var(--text);}
+  .brand-toggle{
+    display:flex;align-items:center;padding:3px;border-radius:99px;
+    background:var(--neutral-bg);border:1px solid var(--border);gap:2px;
+  }
+  .brand-toggle button{
+    appearance:none;border:none;cursor:pointer;
+    padding:6px 12px;border-radius:99px;font-size:11.5px;font-weight:650;
+    background:transparent;color:var(--text-2);letter-spacing:0.01em;
+  }
+  .brand-toggle button.active{background:var(--surface-solid);color:var(--text);box-shadow:var(--shadow-1);}
   .navbar .progress-chip{
     display:flex;align-items:center;gap:8px;
     padding:6px 12px;border-radius:99px;
@@ -363,6 +471,36 @@
   .site-footer b{color:var(--text-2);font-weight:650;}
   .site-footer .dot-sep{opacity:0.5;}
 
+  /* ===== CMHS brand: solid navy header, flatter surfaces, no aurora glow ===== */
+  [data-brand="cmhs"] .aurora{display:none;}
+  [data-brand="cmhs"] .navbar{
+    background:linear-gradient(180deg,var(--accent),var(--bg-0) 340%);
+    backdrop-filter:none;-webkit-backdrop-filter:none;
+    border-bottom:3px solid var(--accent-2);
+  }
+  [data-brand="cmhs"] .navbar .titles b{color:#ffffff;}
+  [data-brand="cmhs"] .navbar .titles b .brand-sep{color:var(--accent-2);}
+  [data-brand="cmhs"] .navbar .titles span{color:rgba(255,255,255,0.72);}
+  [data-brand="cmhs"] .navbar .progress-chip{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.22);color:rgba(255,255,255,0.85);}
+  [data-brand="cmhs"] .navbar .progress-chip b{color:#fff;}
+  [data-brand="cmhs"] .navbar .icon-btn{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.22);color:#fff;}
+  [data-brand="cmhs"] .brand-toggle{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.22);}
+  [data-brand="cmhs"] .brand-toggle button{color:rgba(255,255,255,0.75);}
+  [data-brand="cmhs"] .brand-toggle button.active{background:#ffffff;color:var(--accent);}
+  [data-brand="cmhs"] .card{backdrop-filter:none;-webkit-backdrop-filter:none;border-width:1px;}
+
+  /* ===== About panel ===== */
+  .about-hero{display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
+  .about-hero .crest{flex:none;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.18));}
+  .about-hero h2{font-size:22px;font-weight:700;letter-spacing:-0.01em;}
+  .about-hero p{margin:4px 0 0;color:var(--text-2);font-size:13.5px;}
+  .credit-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:24px;}
+  .credit-card{background:var(--surface-raised);border:1px solid var(--border);border-radius:14px;padding:16px 18px;}
+  .credit-card .role{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);}
+  .credit-card .name{font-size:15px;font-weight:650;margin-top:4px;}
+  .credit-card .sub{font-size:12.5px;color:var(--text-2);margin-top:2px;}
+  .field-hint{font-size:11.5px;color:var(--text-3);margin-top:5px;}
+
   @media (max-width:840px){
     .shell{flex-direction:column;padding:14px;}
     .rail{width:100%;flex-direction:row;overflow-x:auto;padding-right:0;gap:8px;padding-bottom:8px;}
@@ -387,15 +525,22 @@
 
 <div class="app">
   <header class="navbar">
-    <div class="mark">💻</div>
+    <div class="mark" id="navMark"></div>
     <div class="titles">
       <b>Chrome Depot <span class="brand-sep">·</span> CMHS</b>
       <span>ChromeCheck — Chromebook hardware diagnostics</span>
     </div>
     <div class="spacer"></div>
-    <div class="progress-chip" id="progressChip">
-      <span class="dot" id="progressDot"></span>
-      <span><b id="progressCount">0</b>/<span id="progressTotal">0</span> checked</span>
+    <div class="navbar-actions">
+      <div class="brand-toggle" id="brandToggle" role="group" aria-label="Color theme">
+        <button type="button" data-brand-choice="cmhs">CMHS</button>
+        <button type="button" data-brand-choice="apple">Apple</button>
+      </div>
+      <button type="button" class="icon-btn" id="aboutBtn">ℹ️ About</button>
+      <div class="progress-chip" id="progressChip">
+        <span class="dot" id="progressDot"></span>
+        <span><b id="progressCount">0</b>/<span id="progressTotal">0</span> checked</span>
+      </div>
     </div>
   </header>
 
@@ -419,6 +564,7 @@
             <div class="field">
               <label for="assetTag">Asset tag / serial</label>
               <input type="text" id="assetTag" placeholder="e.g. CM201-004821">
+              <div class="field-hint">Entered by hand — Chrome's browser sandbox doesn't let a web page read a device's serial or asset ID directly.</div>
             </div>
             <div class="field">
               <label for="model">Model</label>
@@ -451,6 +597,7 @@
         <div id="testPanels"></div>
 
         <section class="panel" id="panel-report"></section>
+        <section class="panel" id="panel-about"></section>
 
       </div>
     </main>
@@ -549,6 +696,7 @@
     const target = document.getElementById('panel-'+id);
     if(target) target.classList.add('active');
     if(id === 'report') renderReport();
+    if(id === 'about') renderAbout();
     refreshRailDots();
     window.scrollTo({top:0, behavior:'smooth'});
   }
@@ -1272,9 +1420,12 @@
 
     $('#panel-report').innerHTML = `
       <div class="report-header">
-        <div>
-          <h2 style="font-size:23px;font-weight:650;letter-spacing:-0.015em;">Diagnostic report</h2>
-          <p style="margin:6px 0 0;color:var(--text-2);font-size:13.5px;">Chrome Depot · Crete-Monee High School — ${stamp}</p>
+        <div style="display:flex;align-items:center;gap:14px;">
+          ${crestSVG(40)}
+          <div>
+            <h2 style="font-size:23px;font-weight:650;letter-spacing:-0.015em;">Diagnostic report</h2>
+            <p style="margin:6px 0 0;color:var(--text-2);font-size:13.5px;">Chrome Depot · Crete-Monee High School — ${stamp}</p>
+          </div>
         </div>
         <div class="overall-badge ${overall}">${overall === 'pass' ? '✓ All checks passed' : '⚠ Needs attention — ' + fails.length + ' issue' + (fails.length===1?'':'s')}</div>
       </div>
@@ -1333,6 +1484,58 @@
     out += `\nRecommended actions:\n`;
     out += recs.length ? recs.map(r=>'- '+r).join('\n') : '- None. Device passed all checks run.';
     return out;
+  }
+
+  /* ---------- crest logo ---------- */
+  function crestSVG(px){
+    const h = Math.round(px*100/120);
+    return `<svg viewBox="0 0 120 100" width="${px}" height="${h}" role="img" aria-label="Crete-Monee crest">
+      <ellipse cx="60" cy="50" rx="58" ry="47" fill="#f0b429"/>
+      <ellipse cx="60" cy="50" rx="51" ry="41" fill="#0c2f6e"/>
+      <ellipse cx="60" cy="50" rx="44" ry="35" fill="#ffffff"/>
+      <text x="39" y="67" font-family="Georgia,'Times New Roman',serif" font-weight="700" font-size="56" fill="#0c2f6e" text-anchor="middle">C</text>
+      <text x="80" y="67" font-family="Georgia,'Times New Roman',serif" font-weight="700" font-size="56" fill="#0c2f6e" text-anchor="middle">M</text>
+    </svg>`;
+  }
+  $('#navMark').innerHTML = crestSVG(36);
+
+  /* ---------- brand toggle (CMHS / Apple) ---------- */
+  function applyBrand(brand){
+    document.documentElement.setAttribute('data-brand', brand);
+    try{ localStorage.setItem('chromecheck-brand', brand); }catch(e){}
+    $$('#brandToggle button').forEach(b => b.classList.toggle('active', b.dataset.brandChoice === brand));
+  }
+  $$('#brandToggle button').forEach(b => b.addEventListener('click', () => applyBrand(b.dataset.brandChoice)));
+  applyBrand(document.documentElement.getAttribute('data-brand') || 'cmhs');
+
+  /* ---------- about panel ---------- */
+  $('#aboutBtn').addEventListener('click', () => showPanel('about'));
+  function renderAbout(){
+    $('#panel-about').innerHTML = `
+      <div class="about-hero">
+        <div class="crest">${crestSVG(72)}</div>
+        <div>
+          <h2>About Chrome Depot</h2>
+          <p>Crete-Monee High School's student &amp; staff Chromebook repair program. ChromeCheck is the intake diagnostic tool the depot runs on every device that comes in for service.</p>
+        </div>
+      </div>
+      <div class="credit-grid">
+        <div class="credit-card">
+          <div class="role">Chrome Depot Director</div>
+          <div class="name">Mr. Steele</div>
+          <div class="sub">IT Technician, CMHS</div>
+        </div>
+        <div class="credit-card">
+          <div class="role">Built by</div>
+          <div class="name">Quentin Pullum &amp; Claude</div>
+          <div class="sub">ChromeCheck diagnostic tool, and stuff</div>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:22px;">
+        Free to use, hosted on GitHub Pages — no account or sign-in required. Source lives in the
+        <code style="font-family:var(--font-mono);">mrrdo/gta-x</code> repository under <code style="font-family:var(--font-mono);">chromecheck/</code>.
+      </div>
+    `;
   }
 
   /* ---------- init ---------- */
