@@ -864,7 +864,7 @@
   /* ---- Display ---- */
   mountPanel('display', `
     <div class="panel-head">
-      <div><h2>🖥️ Display test</h2><p>Step through each fill color and look closely for dead pixels, stuck pixels, discoloration or backlight bleed at the edges.</p></div>
+      <div><h2>🖥️ Display test</h2><p>Plays through each fill color on its own — look closely for dead pixels, stuck pixels, discoloration or backlight bleed. Passes automatically when it finishes; press Esc the moment something looks wrong.</p></div>
       ${badge('display')}
     </div>
     <div class="test-body">
@@ -873,7 +873,7 @@
         <span id="displayStep" style="color:var(--text-2);font-size:13px;"></span>
       </div>
     </div>
-    ${verdictHTML('display')}
+    ${verdictHTML('display', {auto:true})}
   `);
   (function(){
     const colors = [
@@ -881,27 +881,37 @@
       {name:'Red', css:'#ff0000'}, {name:'Green', css:'#00ff00'},
       {name:'Blue', css:'#0000ff'}, {name:'Gray', css:'#808080'},
     ];
-    let overlay = null, idx = 0;
+    const STEP_MS = 1400;
+    let overlay = null, idx = 0, timer = null;
     function step(){
-      if(idx >= colors.length){ close(); setStatus('display', state.results.display.status==='pending' ? 'pass' : state.results.display.status); return; }
+      if(idx >= colors.length){ close(); setStatus('display', 'pass'); return; }
       overlay.style.background = colors[idx].css;
-      overlay.querySelector('.lbl').textContent = colors[idx].name + '  —  ' + (idx+1) + ' / ' + colors.length + '   (click anywhere to continue, Esc to stop)';
+      overlay.querySelector('.lbl').textContent = colors[idx].name + '  —  ' + (idx+1) + ' / ' + colors.length + '   (auto-advancing — click to skip ahead, Esc if something looks wrong)';
       overlay.querySelector('.lbl').style.color = (colors[idx].name==='White'||colors[idx].name==='Green') ? '#000' : '#fff';
       idx++;
+      clearTimeout(timer);
+      timer = setTimeout(step, STEP_MS);
     }
     function open(){
       overlay = document.createElement('div');
       overlay.style.cssText = 'position:fixed;inset:0;z-index:999;cursor:pointer;display:flex;align-items:flex-end;justify-content:center;padding-bottom:40px;';
       overlay.innerHTML = '<span class="lbl" style="font:600 14px var(--font-ui);"></span>';
-      overlay.addEventListener('click', step);
-      document.addEventListener('keydown', escClose);
+      overlay.addEventListener('click', () => { clearTimeout(timer); step(); });
+      document.addEventListener('keydown', onKey);
       document.body.appendChild(overlay);
       idx = 0; step();
     }
-    function escClose(e){ if(e.key === 'Escape') close(); }
+    function onKey(e){ if(e.key === 'Escape') flagIssue(); }
+    function flagIssue(){
+      close();
+      setStatus('display', 'fail');
+      const note = document.querySelector('[data-note-for="display"]');
+      if(note) note.focus();
+    }
     function close(){
+      clearTimeout(timer);
       if(overlay){ overlay.remove(); overlay = null; }
-      document.removeEventListener('keydown', escClose);
+      document.removeEventListener('keydown', onKey);
     }
     $('#displayStart').addEventListener('click', open);
     wireVerdict('display');
@@ -1126,7 +1136,7 @@
   /* ---- Trackpad ---- */
   mountPanel('trackpad', `
     <div class="panel-head">
-      <div><h2>🖱️ Trackpad test</h2><p>Glide a finger over the whole surface to paint the pad green, then confirm the physical click and two-finger scroll below.</p></div>
+      <div><h2>🖱️ Trackpad test</h2><p>Glide a finger over the whole surface to paint the pad green, then confirm the physical click and two-finger scroll below. Passes automatically once most of the pad registers.</p></div>
       ${badge('trackpad')}
     </div>
     <div class="test-body">
@@ -1138,7 +1148,7 @@
         <button class="btn" id="tpReset">Reset</button>
       </div>
     </div>
-    ${verdictHTML('trackpad')}
+    ${verdictHTML('trackpad', {auto:true})}
   `);
   (function(){
     const cols = 10, rows = 4;
@@ -1158,7 +1168,12 @@
       const cx = Math.min(cols-1, Math.floor(x/(r.width/cols)));
       const cy = Math.min(rows-1, Math.floor(y/(r.height/rows)));
       const cell = cells[cy*cols+cx];
-      if(!cell.classList.contains('hit')){ cell.classList.add('hit'); hitCount++; $('#tpCoverage').textContent = Math.round(hitCount/cells.length*100)+'%'; }
+      if(!cell.classList.contains('hit')){
+        cell.classList.add('hit'); hitCount++;
+        const pct = Math.round(hitCount/cells.length*100);
+        $('#tpCoverage').textContent = pct+'%';
+        if(pct >= 85 && state.results.trackpad.status === 'pending') setStatus('trackpad','pass');
+      }
     }
     pad.addEventListener('mousemove', e => { if(e.buttons===1 || true) markAt(e.clientX,e.clientY); });
     pad.addEventListener('touchmove', e => Array.from(e.touches).forEach(t=>markAt(t.clientX,t.clientY)), {passive:true});
@@ -1174,7 +1189,7 @@
   /* ---- Camera ---- */
   mountPanel('camera', `
     <div class="panel-head">
-      <div><h2>🎥 Camera test</h2><p>Start the preview, confirm the image is clear and correctly oriented, then capture a still frame.</p></div>
+      <div><h2>🎥 Camera test</h2><p>Start the preview and confirm the image is clear and correctly oriented — passes automatically once the feed is live. Capture a frame for a closer look, and mark Fail if the picture is blank, frozen, or obviously wrong.</p></div>
       ${badge('camera')}
     </div>
     <div class="test-body">
@@ -1187,7 +1202,7 @@
       <canvas class="snap" id="camCanvas" style="display:none;margin-top:12px;"></canvas>
       <div class="hint" id="camHint" style="display:none;"></div>
     </div>
-    ${verdictHTML('camera')}
+    ${verdictHTML('camera', {auto:true})}
   `);
   (function(){
     let stream = null;
@@ -1200,6 +1215,7 @@
         $('#camSnap').disabled = false;
         $('#camStop').disabled = false;
         $('#camStart').disabled = true;
+        setStatus('camera', 'pass');
       }catch(err){
         hint.style.display = 'flex';
         hint.className = 'hint error';
