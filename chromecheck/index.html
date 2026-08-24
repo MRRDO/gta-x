@@ -19,7 +19,8 @@
     --border:rgba(0,0,0,0.08);
     --border-strong:rgba(0,0,0,0.14);
     --accent:#0071e3;
-    --accent-2:#5e5ce6;
+    --accent-2:#c9971f;
+    --gold-deep:#8a6614;
     --accent-ink:#ffffff;
     --success:#248a3d;
     --success-bg:rgba(52,199,89,0.14);
@@ -49,7 +50,7 @@
       --border:rgba(255,255,255,0.09);
       --border-strong:rgba(255,255,255,0.16);
       --accent:#0a84ff;
-      --accent-2:#7d7aff;
+      --accent-2:#e3b341;
       --success:#32d74b;
       --success-bg:rgba(50,215,75,0.16);
       --danger:#ff453a;
@@ -73,7 +74,7 @@
     --border:rgba(255,255,255,0.09);
     --border-strong:rgba(255,255,255,0.16);
     --accent:#0a84ff;
-    --accent-2:#7d7aff;
+    --accent-2:#e3b341;
     --success:#32d74b;
     --success-bg:rgba(50,215,75,0.16);
     --danger:#ff453a;
@@ -111,7 +112,7 @@
   }
   .aurora span:nth-child(1){width:46vw;height:46vw;left:-12vw;top:-14vw;background:radial-gradient(circle,var(--accent),transparent 70%);animation-delay:0s;}
   .aurora span:nth-child(2){width:38vw;height:38vw;right:-10vw;top:8vw;background:radial-gradient(circle,var(--accent-2),transparent 70%);animation-delay:-8s;}
-  .aurora span:nth-child(3){width:42vw;height:42vw;left:20vw;bottom:-20vw;background:radial-gradient(circle,#63e6be,transparent 72%);opacity:0.28;animation-delay:-16s;}
+  .aurora span:nth-child(3){width:42vw;height:42vw;left:20vw;bottom:-20vw;background:radial-gradient(circle,var(--accent),transparent 72%);opacity:0.22;animation-delay:-16s;}
   @keyframes drift{
     0%,100%{transform:translate(0,0) scale(1);}
     50%{transform:translate(4%,6%) scale(1.08);}
@@ -188,7 +189,7 @@
     margin-top:16px;
     display:flex;align-items:center;justify-content:center;gap:8px;
     padding:11px 14px;border-radius:12px;
-    background:linear-gradient(145deg,var(--accent),var(--accent-2));
+    background:linear-gradient(145deg,var(--accent),var(--gold-deep));
     color:#fff;font-weight:650;font-size:13.5px;border:none;cursor:pointer;
     box-shadow:var(--shadow-1);
   }
@@ -229,7 +230,7 @@
   }
   .btn:hover{background:var(--surface-solid);}
   .btn:active{transform:scale(0.97);}
-  .btn.primary{background:linear-gradient(145deg,var(--accent),var(--accent-2));color:#fff;border:none;}
+  .btn.primary{background:linear-gradient(145deg,var(--accent),var(--gold-deep));color:#fff;border:none;}
   .btn.success{background:var(--success);color:#fff;border:none;}
   .btn.danger{background:var(--danger);color:#fff;border:none;}
   .btn:disabled{opacity:0.4;cursor:not-allowed;}
