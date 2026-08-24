@@ -405,6 +405,23 @@
   .pad-cell.hit{background:var(--success-bg);}
   .pad-canvas{position:absolute;inset:0;pointer-events:none;}
 
+  /* swipe (touchscreen) test */
+  .swipe-instruction{font-size:13.5px;font-weight:600;color:var(--text);margin-bottom:10px;}
+  .swipe-dot{
+    position:absolute;width:22px;height:22px;border-radius:50%;
+    transform:translate(-50%,-50%);pointer-events:none;
+  }
+  .swipe-dot.start{background:var(--accent);box-shadow:0 0 0 5px var(--neutral-bg);}
+  .swipe-dot.end{background:transparent;border:3px solid var(--accent-2);box-sizing:border-box;}
+  .swipe-chips{display:flex;gap:6px;}
+  .swipe-chip{
+    width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+    background:var(--neutral-bg);border:1.5px solid var(--border-strong);color:var(--text-3);
+    font-size:15px;font-weight:700;
+  }
+  .swipe-chip.active{border-color:var(--accent);color:var(--accent);}
+  .swipe-chip.done{background:var(--success-bg);border-color:var(--success);color:var(--success);}
+
   video.preview{width:100%;max-width:420px;border-radius:16px;background:#000;display:block;border:1px solid var(--border-strong);}
   canvas.snap{width:100%;max-width:420px;border-radius:16px;display:block;border:1px solid var(--border-strong);}
 
@@ -780,6 +797,7 @@
     state.results[id].status = v;
     if(detail !== undefined) state.results[id].detail = detail;
     syncVerdictUI(id);
+    refreshBadge(id);
     refreshRailDots();
   }
 
@@ -855,18 +873,23 @@
     wireVerdict('display');
   })();
 
-  /* ---- Touchscreen ---- */
+  /* ---- Touchscreen (point-to-point swipes) ---- */
   mountPanel('touch', `
     <div class="panel-head">
-      <div><h2>👆 Touchscreen test</h2><p>Drag a finger across every cell of the grid below. Cells you've touched turn green; cover the whole grid to confirm full digitizer response.</p></div>
+      <div><h2>👆 Touchscreen test</h2><p>Swipe point to point in each direction — drag from the filled dot to the ringed target. Confirms the digitizer tracks a full-length drag cleanly in every direction, not just isolated taps.</p></div>
       ${badge('touch')}
     </div>
     <div class="test-body">
       <div class="hint" id="touchSupportHint"></div>
-      <div class="pad-wrap" id="touchPad" style="height:280px;"></div>
+      <div class="swipe-instruction" id="swipeInstruction"></div>
+      <div class="pad-wrap swipe-pad" id="touchPad" style="height:280px;">
+        <canvas class="pad-canvas" id="touchTrail"></canvas>
+        <div class="swipe-dot start" id="swipeStartDot"></div>
+        <div class="swipe-dot end" id="swipeEndDot"></div>
+      </div>
       <div class="btn-row" style="margin-top:12px;">
-        <span style="font-size:13px;color:var(--text-2);">Coverage: <b id="touchCoverage" style="color:var(--text);font-variant-numeric:tabular-nums;">0%</b></span>
-        <button class="btn" id="touchReset">Reset grid</button>
+        <div class="swipe-chips" id="swipeChips"></div>
+        <button class="btn" id="touchReset">Reset swipes</button>
       </div>
     </div>
     ${verdictHTML('touch', {auto:true})}
@@ -877,49 +900,112 @@
       ? 'Touch input detected on this device.'
       : 'No touch input detected on this device/browser — mark N/A if this Chromebook has no touchscreen, or drag with a mouse to test anyway.';
     $('#touchSupportHint').classList.add(supportsTouch ? '' : 'warn');
-    const cols = 8, rows = 5;
+
+    const DIRS = [
+      {key:'right', arrow:'→', label:'left to right', from:{x:0.10,y:0.50}, to:{x:0.90,y:0.50}},
+      {key:'down',  arrow:'↓', label:'top to bottom',  from:{x:0.50,y:0.18}, to:{x:0.50,y:0.86}},
+      {key:'left',  arrow:'←', label:'right to left',  from:{x:0.90,y:0.50}, to:{x:0.10,y:0.50}},
+      {key:'up',    arrow:'↑', label:'bottom to top',  from:{x:0.50,y:0.86}, to:{x:0.50,y:0.18}},
+    ];
     const pad = $('#touchPad');
-    const grid = document.createElement('div');
-    grid.className = 'pad-grid';
-    grid.style.gridTemplateColumns = `repeat(${cols},1fr)`;
-    grid.style.gridTemplateRows = `repeat(${rows},1fr)`;
-    const cells = [];
-    for(let i=0;i<cols*rows;i++){
-      const c = document.createElement('div');
-      c.className = 'pad-cell';
-      grid.appendChild(c);
-      cells.push(c);
-    }
-    pad.appendChild(grid);
-    let hitCount = 0;
-    function markAt(clientX, clientY){
+    const canvas = $('#touchTrail');
+    const startDot = $('#swipeStartDot');
+    const endDot = $('#swipeEndDot');
+    const ctx = canvas.getContext('2d');
+    let idx = 0, dragging = false;
+
+    $('#swipeChips').innerHTML = DIRS.map(d => `<span class="swipe-chip" id="chip-${d.key}">${d.arrow}</span>`).join('');
+
+    function placeDot(el, pt, rect){ el.style.left = (pt.x*100)+'%'; el.style.top = (pt.y*100)+'%'; }
+    function sizeCanvas(){
       const r = pad.getBoundingClientRect();
-      const x = clientX - r.left, y = clientY - r.top;
-      if(x<0||y<0||x>r.width||y>r.height) return;
-      const cx = Math.min(cols-1, Math.floor(x / (r.width/cols)));
-      const cy = Math.min(rows-1, Math.floor(y / (r.height/rows)));
-      const cell = cells[cy*cols+cx];
-      if(!cell.classList.contains('hit')){
-        cell.classList.add('hit');
-        hitCount++;
-        const pct = Math.round(hitCount / cells.length * 100);
-        $('#touchCoverage').textContent = pct + '%';
-        if(pct >= 95) setStatus('touch','pass');
+      canvas.width = r.width; canvas.height = r.height;
+    }
+    function render(){
+      sizeCanvas();
+      if(idx >= DIRS.length){
+        $('#swipeInstruction').textContent = 'All four swipes complete.';
+        startDot.style.display = 'none';
+        endDot.style.display = 'none';
+        return;
+      }
+      const d = DIRS[idx];
+      startDot.style.display = 'block';
+      endDot.style.display = 'block';
+      placeDot(startDot, d.from);
+      placeDot(endDot, d.to);
+      $('#swipeInstruction').textContent = `Swipe ${idx+1} of 4 — drag ${d.label} (${d.arrow})`;
+      $$('.swipe-chip').forEach(c => c.classList.remove('active'));
+      const chip = $('#chip-'+d.key);
+      if(chip) chip.classList.add('active');
+    }
+
+    function toLocal(clientX, clientY){
+      const r = pad.getBoundingClientRect();
+      return {x:(clientX-r.left)/r.width, y:(clientY-r.top)/r.height, r};
+    }
+    function dist(a, b, r){
+      const dx = (a.x-b.x)*r.width, dy = (a.y-b.y)*r.height;
+      return Math.sqrt(dx*dx+dy*dy);
+    }
+    function drawTrail(path, r){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if(path.length < 2) return;
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#0071e3';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(path[0].x*r.width, path[0].y*r.height);
+      for(let i=1;i<path.length;i++) ctx.lineTo(path[i].x*r.width, path[i].y*r.height);
+      ctx.stroke();
+    }
+
+    let path = [];
+    function onDown(e){
+      if(idx >= DIRS.length) return;
+      const loc = toLocal(e.clientX, e.clientY);
+      const d = DIRS[idx];
+      const tol = Math.max(30, Math.min(loc.r.width, loc.r.height) * 0.16);
+      if(dist(loc, d.from, loc.r) <= tol){
+        dragging = true;
+        path = [{x:d.from.x, y:d.from.y}];
+        pad.setPointerCapture && e.pointerId != null && pad.setPointerCapture(e.pointerId);
       }
     }
     function onMove(e){
-      if(e.touches){ Array.from(e.touches).forEach(t => markAt(t.clientX, t.clientY)); }
-      else if(e.buttons === 1){ markAt(e.clientX, e.clientY); }
+      if(!dragging || idx >= DIRS.length) return;
+      const loc = toLocal(e.clientX, e.clientY);
+      path.push({x:loc.x, y:loc.y});
+      drawTrail(path, loc.r);
+      const d = DIRS[idx];
+      const tol = Math.max(30, Math.min(loc.r.width, loc.r.height) * 0.16);
+      if(dist(loc, d.to, loc.r) <= tol){
+        dragging = false;
+        const chip = $('#chip-'+d.key);
+        if(chip) chip.classList.add('done');
+        idx++;
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        render();
+        if(idx >= DIRS.length) setStatus('touch','pass');
+      }
     }
-    pad.addEventListener('touchstart', onMove, {passive:true});
-    pad.addEventListener('touchmove', onMove, {passive:true});
-    pad.addEventListener('mousedown', onMove);
-    pad.addEventListener('mousemove', onMove);
+    function onUp(){
+      dragging = false;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+    }
+
+    pad.addEventListener('pointerdown', onDown);
+    pad.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('resize', render);
     $('#touchReset').addEventListener('click', () => {
-      cells.forEach(c => c.classList.remove('hit'));
-      hitCount = 0;
-      $('#touchCoverage').textContent = '0%';
+      idx = 0; dragging = false;
+      $$('.swipe-chip').forEach(c => c.classList.remove('done','active'));
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      render();
     });
+    render();
     wireVerdict('touch');
   })();
 
