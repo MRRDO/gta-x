@@ -234,7 +234,7 @@
   .navbar .titles .brand-sep{color:var(--accent);font-weight:650;padding:0 1px;}
   .navbar .titles span{font-size:11.5px;color:var(--text-2);}
   .navbar .spacer{flex:1;}
-  .navbar .navbar-actions{display:flex;align-items:center;gap:10px;}
+  .navbar .navbar-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;}
   .navbar .icon-btn{
     display:flex;align-items:center;gap:6px;
     padding:7px 11px;border-radius:99px;border:1px solid var(--border);
@@ -545,6 +545,18 @@
     .rail-item{flex:none;white-space:nowrap;}
     .rail-report-btn{margin-top:0;flex:none;}
     .card{padding:20px;}
+  }
+
+  @media (max-width:600px){
+    .navbar{padding:10px 14px;row-gap:8px;flex-wrap:wrap;}
+    .navbar .titles span{display:none;}
+    .navbar .titles b{font-size:14px;}
+    .navbar .spacer{flex-basis:100%;height:0;}
+    .navbar-actions{width:100%;justify-content:space-between;}
+    .navbar .progress-chip span{white-space:nowrap;}
+    .home-hero h2{font-size:22px;}
+    .home-actions{flex-direction:column;align-items:stretch;}
+    .btn.big{width:100%;}
   }
 
   @media print{
@@ -899,7 +911,7 @@
     $('#touchSupportHint').textContent = supportsTouch
       ? 'Touch input detected on this device.'
       : 'No touch input detected on this device/browser — mark N/A if this Chromebook has no touchscreen, or drag with a mouse to test anyway.';
-    $('#touchSupportHint').classList.add(supportsTouch ? '' : 'warn');
+    if(!supportsTouch) $('#touchSupportHint').classList.add('warn');
 
     const DIRS = [
       {key:'right', arrow:'→', label:'left to right', from:{x:0.10,y:0.50}, to:{x:0.90,y:0.50}},
