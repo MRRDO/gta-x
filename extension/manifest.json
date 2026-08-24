@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome Depot Device Info",
+  "short_name": "Chrome Depot",
+  "version": "1.0.0",
+  "description": "Feeds this Chromebook's enterprise-managed serial number and asset ID into the Chrome Depot ChromeCheck diagnostic tool. Requires the device to be enrolled and this extension force-installed via the Google Admin console; otherwise ChromeCheck falls back to manual entry with no error.",
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "permissions": ["enterprise.deviceAttributes"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mrrdo.github.io/gta-x/*",
+        "https://htmlpreview.github.io/*",
+        "file:///*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

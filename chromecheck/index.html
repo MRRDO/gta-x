@@ -507,6 +507,25 @@
   .site-footer b{color:var(--text-2);font-weight:650;}
   .site-footer .dot-sep{opacity:0.5;}
 
+  /* device-info corner badge, filled in by the companion extension */
+  .device-badge{
+    position:fixed;right:16px;bottom:16px;z-index:25;
+    display:flex;align-items:center;gap:8px;
+    padding:8px 13px;border-radius:99px;
+    background:var(--surface-raised);border:1px solid var(--border);
+    box-shadow:var(--shadow-1);font-size:12px;color:var(--text-2);
+    backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);
+    max-width:calc(100vw - 32px);
+  }
+  .device-badge[hidden]{display:none;}
+  .device-badge b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:650;}
+  .device-badge .dbdot{width:6px;height:6px;border-radius:50%;background:var(--success);flex:none;}
+  .device-badge.local .dbdot{background:var(--text-3);}
+  @media (max-width:600px){
+    .device-badge{left:14px;right:14px;bottom:14px;justify-content:center;font-size:11.5px;}
+  }
+  @media print{ .device-badge{display:none !important;} }
+
   /* ===== CMHS brand: solid navy header, flatter surfaces, no aurora glow ===== */
   [data-brand="cmhs"] .aurora{display:none;}
   [data-brand="cmhs"] .navbar{
@@ -629,6 +648,7 @@
     <span class="dot-sep">·</span>
     <span>Free to use — no account or sign-in required</span>
   </footer>
+  <div class="device-badge" id="deviceBadge" hidden></div>
 </div>
 
 <script>
@@ -652,11 +672,13 @@
 
   const state = {
     results:{}, // id -> {status:'pending'|'pass'|'fail'|'na', note, detail}
+    deviceInfo: null, // filled in by the companion extension, if present — see extension/README.md
     portsChecklist:{
       charging:{label:'Charging port', desc:'Charges reliably, no loose connection', status:'pending'},
       usb:{label:'USB-C / USB-A ports', desc:'Data + power work on all ports', status:'pending'},
       headphone:{label:'Headphone jack', desc:'Audio routes correctly, no static', status:'pending'},
-      hinge:{label:'Hinge', desc:'Opens/closes smoothly, no wobble or grinding', status:'pending'},
+      hinge:{label:'Hinge', desc:'360° convertible hinge opens/closes smoothly, no wobble or grinding', status:'pending'},
+      stylus:{label:'Stylus / pen', desc:'Garaged stylus present, charges/pairs, tip responds (300e Yoga models)', status:'pending'},
       chassis:{label:'Chassis / housing', desc:'No cracks, missing screws or bent corners', status:'pending'},
       screenGlass:{label:'Screen surface', desc:'No physical cracks or chips in the glass', status:'pending'},
     },
@@ -1600,7 +1622,7 @@
     fails.forEach(t => {
       if(t.id === 'ports'){
         Object.entries(state.portsChecklist).filter(([,i]) => i.status==='fail').forEach(([,i]) => {
-          const map = {'Charging port':'Replace/clean charging port connector.','USB-C / USB-A ports':'Replace or reseat USB port assembly.','Headphone jack':'Replace headphone jack / audio board.','Hinge':'Replace hinge assembly / top case.','Chassis / housing':'Replace chassis panel or housing.','Screen surface':'Replace outer glass / screen assembly.'};
+          const map = {'Charging port':'Replace/clean charging port connector.','USB-C / USB-A ports':'Replace or reseat USB port assembly.','Headphone jack':'Replace headphone jack / audio board.','Hinge':'Replace hinge assembly / top case.','Stylus / pen':'Replace stylus, or check garage sensor/charging contacts.','Chassis / housing':'Replace chassis panel or housing.','Screen surface':'Replace outer glass / screen assembly.'};
           recs.push(map[i.label] || `Address issue: ${i.label}`);
         });
       } else if(t.fixFail){
@@ -1624,6 +1646,8 @@
         <div class="info-tile"><div class="l">Tests run</div><div class="v">${ran.length} / ${TESTS.length}</div></div>
         <div class="info-tile"><div class="l">Passed</div><div class="v">${TESTS.filter(t=>state.results[t.id].status==='pass').length}</div></div>
         <div class="info-tile"><div class="l">Failed</div><div class="v">${fails.length}</div></div>
+        ${state.deviceInfo && state.deviceInfo.managed && state.deviceInfo.serialNumber ? `<div class="info-tile"><div class="l">Serial</div><div class="v" style="font-size:14px;font-family:var(--font-mono);">${state.deviceInfo.serialNumber}</div></div>` : ''}
+        ${state.deviceInfo && state.deviceInfo.managed && state.deviceInfo.assetId ? `<div class="info-tile"><div class="l">Asset ID</div><div class="v" style="font-size:14px;font-family:var(--font-mono);">${state.deviceInfo.assetId}</div></div>` : ''}
       </div>
 
       <div class="section-title">Results</div>
@@ -1663,6 +1687,10 @@
 
   function buildPlainReport(overall, fails, stamp, recs){
     let out = `Chrome Depot — CMHS Chromebook Diagnostic Report\n${stamp}\n`;
+    const di = state.deviceInfo;
+    if(di && di.managed && (di.serialNumber || di.assetId)){
+      out += `Serial: ${di.serialNumber||'—'}   Asset ID: ${di.assetId||'—'}\n`;
+    }
     out += `Overall: ${overall === 'pass' ? 'PASS' : 'NEEDS ATTENTION ('+fails.length+' issue'+(fails.length===1?'':'s')+')'}\n\n`;
     TESTS.forEach(t => {
       const r = state.results[t.id];
@@ -1702,7 +1730,7 @@
         <div class="crest">${crestSVG(72)}</div>
         <div>
           <h2>About Chrome Depot</h2>
-          <p>Crete-Monee High School's student &amp; staff Chromebook repair program. ChromeCheck is the intake diagnostic tool the depot runs on every device that comes in for service.</p>
+          <p>Crete-Monee High School's student &amp; staff Chromebook repair program. ChromeCheck is the intake diagnostic tool the depot runs on every device that comes in for service — tuned for the Lenovo 300e fleet (Gen 2–5), but works on any Chromebook.</p>
         </div>
       </div>
       <div class="credit-grid">
@@ -1724,9 +1752,40 @@
     `;
   }
 
+  /* ---------- device info (from the companion extension, if installed) ---------- */
+  function renderDeviceBadge(){
+    const badge = $('#deviceBadge');
+    const info = state.deviceInfo;
+    if(!info || !info.available){ badge.hidden = true; return; }
+    badge.hidden = false;
+    if(info.managed){
+      badge.classList.remove('local');
+      const parts = [];
+      if(info.serialNumber) parts.push(`<span><b>${info.serialNumber}</b></span>`);
+      if(info.assetId) parts.push(`<span>Asset <b>${info.assetId}</b></span>`);
+      badge.innerHTML = `<span class="dbdot"></span>${parts.join(' <span class="dot-sep">·</span> ') || 'Managed device'}`;
+    } else {
+      badge.classList.add('local');
+      badge.innerHTML = `<span class="dbdot"></span>Local device — no managed asset data`;
+    }
+  }
+
+  function initDeviceInfoBridge(){
+    window.addEventListener('message', (e) => {
+      const d = e.data;
+      if(!d || d.source !== 'chromecheck-device-info-extension' || d.type !== 'device-info') return;
+      state.deviceInfo = d.payload;
+      renderDeviceBadge();
+    });
+    // If the companion extension (extension/) isn't installed, or this page
+    // isn't in its match list, no message ever arrives — that's expected,
+    // not an error, and the badge just stays hidden. See extension/README.md.
+  }
+
   /* ---------- init ---------- */
   buildRail();
   updateRunStatusUI();
+  initDeviceInfoBridge();
   showPanel('home');
 })();
 </script>
