@@ -265,6 +265,9 @@
 
   /* shell */
   .shell{flex:1;display:flex;gap:0;max-width:1280px;width:100%;margin:0 auto;padding:22px;padding-top:20px;}
+  .shell.menu-mode{max-width:640px;}
+  .shell.menu-mode .rail{display:none;}
+  .shell.menu-mode .stage{width:100%;}
   .rail{
     width:250px;flex:none;
     display:flex;flex-direction:column;gap:4px;
@@ -421,19 +424,35 @@
   .check-row .ct span{font-size:12px;color:var(--text-2);}
   .toggle3{display:flex;gap:6px;flex:none;}
 
-  .field{display:flex;flex-direction:column;gap:6px;}
-  .field label{font-size:12px;font-weight:650;color:var(--text-2);}
-  .field input[type=text]{
-    padding:10px 12px;border-radius:10px;border:1px solid var(--border-strong);
-    background:var(--surface-solid);color:var(--text);font-size:14px;
+  /* home menu */
+  .home-hero{text-align:center;padding:18px 0 8px;}
+  .home-hero .crest{display:flex;justify-content:center;margin-bottom:14px;filter:drop-shadow(0 3px 8px rgba(0,0,0,0.2));}
+  .home-hero h2{font-size:26px;font-weight:700;letter-spacing:-0.01em;}
+  .home-hero p{margin:6px 0 0;color:var(--text-2);font-size:14px;}
+  .home-actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap;margin-top:28px;}
+  .btn.big{padding:13px 28px;font-size:15px;border-radius:14px;}
+  .home-hint{text-align:center;margin:22px 0 4px;font-size:12.5px;color:var(--text-3);}
+  .home-hint kbd{
+    font-family:var(--font-mono);font-size:11px;background:var(--neutral-bg);
+    border:1px solid var(--border-strong);border-radius:5px;padding:1px 6px;
   }
-  .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px;max-width:520px;}
-  @media (max-width:560px){.form-grid{grid-template-columns:1fr;}}
 
-  .welcome-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:24px;}
-  .w-tile{background:var(--surface-raised);border:1px solid var(--border);border-radius:14px;padding:14px;text-align:center;}
-  .w-tile .ic{font-size:22px;}
-  .w-tile .t{font-size:12px;font-weight:600;margin-top:6px;color:var(--text-2);}
+  /* run status (navbar, shown mid-run) */
+  .run-status{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--text-2);}
+  .run-status[hidden]{display:none;}
+  .run-status #runStatusText{font-variant-numeric:tabular-nums;font-weight:600;}
+
+  /* test picker */
+  .picker-list{display:flex;flex-direction:column;gap:8px;margin-top:18px;}
+  .picker-group-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-3);margin:14px 0 2px;}
+  .picker-row{
+    display:flex;align-items:center;gap:12px;
+    background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;
+    padding:11px 14px;cursor:pointer;user-select:none;
+  }
+  .picker-row input{width:17px;height:17px;accent-color:var(--accent);flex:none;}
+  .picker-row .lbl{font-size:13.5px;font-weight:600;flex:1;}
+  .picker-actions{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;}
 
   /* report */
   .report-header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:space-between;}
@@ -484,6 +503,7 @@
   [data-brand="cmhs"] .navbar .progress-chip{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.22);color:rgba(255,255,255,0.85);}
   [data-brand="cmhs"] .navbar .progress-chip b{color:#fff;}
   [data-brand="cmhs"] .navbar .icon-btn{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.22);color:#fff;}
+  [data-brand="cmhs"] .navbar .run-status{color:rgba(255,255,255,0.85);}
   [data-brand="cmhs"] .brand-toggle{background:rgba(255,255,255,0.14);border-color:rgba(255,255,255,0.22);}
   [data-brand="cmhs"] .brand-toggle button{color:rgba(255,255,255,0.75);}
   [data-brand="cmhs"] .brand-toggle button.active{background:#ffffff;color:var(--accent);}
@@ -532,11 +552,11 @@
     </div>
     <div class="spacer"></div>
     <div class="navbar-actions">
-      <div class="brand-toggle" id="brandToggle" role="group" aria-label="Color theme">
-        <button type="button" data-brand-choice="cmhs">CMHS</button>
-        <button type="button" data-brand-choice="apple">Apple</button>
+      <div class="run-status" id="runStatus" hidden>
+        <span id="runStatusText"></span>
+        <button type="button" class="icon-btn" id="exitRunBtn">✕ End run</button>
       </div>
-      <button type="button" class="icon-btn" id="aboutBtn">ℹ️ About</button>
+      <button type="button" class="icon-btn" id="homeBtn">🏠 Menu</button>
       <div class="progress-chip" id="progressChip">
         <span class="dot" id="progressDot"></span>
         <span><b id="progressCount">0</b>/<span id="progressTotal">0</span> checked</span>
@@ -544,60 +564,33 @@
     </div>
   </header>
 
-  <div class="shell">
+  <div class="shell" id="shell">
     <nav class="rail" id="rail"></nav>
     <main class="stage">
       <div class="card">
 
-        <section class="panel active" id="panel-welcome">
-          <div class="panel-head">
-            <div>
-              <h2>New diagnostic session</h2>
-              <p>Enter the device details, then work through each check on the left. Every result can be confirmed or overridden by the technician before the final report is generated.</p>
-            </div>
+        <section class="panel active" id="panel-home">
+          <div class="home-hero">
+            <div class="crest" id="homeCrest"></div>
+            <h2>Chrome Depot</h2>
+            <p>Crete-Monee High School Chromebook diagnostics</p>
           </div>
-          <div class="form-grid">
-            <div class="field">
-              <label for="techName">Technician</label>
-              <input type="text" id="techName" placeholder="Your name">
-            </div>
-            <div class="field">
-              <label for="assetTag">Asset tag / serial</label>
-              <input type="text" id="assetTag" placeholder="e.g. CM201-004821">
-              <div class="field-hint">Entered by hand — Chrome's browser sandbox doesn't let a web page read a device's serial or asset ID directly.</div>
-            </div>
-            <div class="field">
-              <label for="model">Model</label>
-              <input type="text" id="model" placeholder="e.g. Lenovo 100e Gen 4">
-            </div>
-            <div class="field">
-              <label for="ticket">Ticket / repair ID</label>
-              <input type="text" id="ticket" placeholder="Optional">
-            </div>
+          <div class="home-actions">
+            <button class="btn primary big" id="startBtn">▶ Start</button>
+            <button class="btn" id="homeAboutBtn">ℹ️ About</button>
+            <button class="btn" id="homeSettingsBtn">⚙️ Settings</button>
           </div>
-          <div class="welcome-tiles">
-            <div class="w-tile"><div class="ic">🖥️</div><div class="t">Display</div></div>
-            <div class="w-tile"><div class="ic">👆</div><div class="t">Touchscreen</div></div>
-            <div class="w-tile"><div class="ic">⌨️</div><div class="t">Keyboard</div></div>
-            <div class="w-tile"><div class="ic">🖱️</div><div class="t">Trackpad</div></div>
-            <div class="w-tile"><div class="ic">🎥</div><div class="t">Camera</div></div>
-            <div class="w-tile"><div class="ic">🎙️</div><div class="t">Microphone</div></div>
-            <div class="w-tile"><div class="ic">🔊</div><div class="t">Speakers</div></div>
-            <div class="w-tile"><div class="ic">🔋</div><div class="t">Battery</div></div>
-            <div class="w-tile"><div class="ic">💾</div><div class="t">Storage</div></div>
-            <div class="w-tile"><div class="ic">📶</div><div class="t">Wi-Fi</div></div>
-            <div class="w-tile"><div class="ic">🔩</div><div class="t">Ports &amp; body</div></div>
-          </div>
-          <div class="btn-row" style="margin-top:24px;">
-            <button class="btn primary" id="beginBtn">Begin diagnostics →</button>
-          </div>
+          <p class="home-hint">Hold <kbd>Shift</kbd> and click Start to choose specific tests instead of running all 11.</p>
         </section>
+
+        <section class="panel" id="panel-select"></section>
 
         <!-- test panels injected by JS -->
         <div id="testPanels"></div>
 
         <section class="panel" id="panel-report"></section>
         <section class="panel" id="panel-about"></section>
+        <section class="panel" id="panel-settings"></section>
 
       </div>
     </main>
@@ -629,7 +622,6 @@
   ];
 
   const state = {
-    meta:{tech:'',asset:'',model:'',ticket:''},
     results:{}, // id -> {status:'pending'|'pass'|'fail'|'na', note, detail}
     portsChecklist:{
       charging:{label:'Charging port', desc:'Charges reliably, no loose connection', status:'pending'},
@@ -689,7 +681,7 @@
     $$('.rail-item').forEach(el => el.classList.toggle('active', el.dataset.target === currentPanel));
   }
 
-  let currentPanel = 'welcome';
+  let currentPanel = 'home';
   function showPanel(id){
     currentPanel = id;
     $$('.panel').forEach(p => p.classList.remove('active'));
@@ -697,8 +689,50 @@
     if(target) target.classList.add('active');
     if(id === 'report') renderReport();
     if(id === 'about') renderAbout();
+    if(id === 'settings') renderSettings();
+    if(id === 'select') renderSelect();
+    $('#shell').classList.toggle('menu-mode', ['home','select','about','settings'].includes(id));
     refreshRailDots();
     window.scrollTo({top:0, behavior:'smooth'});
+  }
+
+  /* ---------- guided run (Start walks through tests one by one) ---------- */
+  let runActive = false;
+  let runSequence = [];
+  let runIndex = 0;
+
+  function updateRunStatusUI(){
+    const el = $('#runStatus');
+    el.hidden = !runActive;
+    if(runActive) $('#runStatusText').textContent = `Test ${runIndex+1} of ${runSequence.length}`;
+  }
+  function startRun(ids){
+    runSequence = ids.length ? ids : TESTS.map(t => t.id);
+    runIndex = 0;
+    runActive = true;
+    updateRunStatusUI();
+    showPanel(runSequence[0]);
+  }
+  function advanceRun(){
+    if(!runActive) return;
+    runIndex++;
+    if(runIndex < runSequence.length){
+      updateRunStatusUI();
+      showPanel(runSequence[runIndex]);
+    } else {
+      runActive = false;
+      updateRunStatusUI();
+      showPanel('report');
+    }
+  }
+  function afterVerdict(testId){
+    if(runActive && runSequence[runIndex] === testId) setTimeout(advanceRun, 500);
+  }
+  function endRun(){
+    if(runActive && !confirm('End this run and go back to the menu?')) return;
+    runActive = false;
+    updateRunStatusUI();
+    showPanel('home');
   }
 
   /* ---------- generic verdict control ---------- */
@@ -724,7 +758,7 @@
     const group = document.querySelector(`[data-verdict-for="${id}"]`);
     if(!group) return;
     group.querySelectorAll('.vbtn').forEach(b => {
-      b.addEventListener('click', () => setStatus(id, b.dataset.v));
+      b.addEventListener('click', () => { setStatus(id, b.dataset.v); afterVerdict(id); });
     });
     const note = document.querySelector(`[data-note-for="${id}"]`);
     if(note){
@@ -1209,6 +1243,7 @@
         if(sides.left !== 'pending' && sides.right !== 'pending'){
           const overall = (sides.left==='pass' && sides.right==='pass') ? 'pass' : 'fail';
           setStatus('speaker', overall, `Left: ${sides.left}, Right: ${sides.right}`);
+          afterVerdict('speaker');
         }
       });
     });
@@ -1359,7 +1394,7 @@
           const statuses = Object.values(state.portsChecklist).map(i => i.status);
           const allSet = statuses.every(s => s !== 'pending');
           const anyFail = statuses.some(s => s === 'fail');
-          if(allSet) setStatus('ports', anyFail ? 'fail' : 'pass');
+          if(allSet){ setStatus('ports', anyFail ? 'fail' : 'pass'); afterVerdict('ports'); }
           else state.results.ports.status = 'pending';
           refreshBadge('ports');
           refreshRailDots();
@@ -1369,23 +1404,80 @@
     $('#portsNote').addEventListener('input', e => { state.results.ports.note = e.target.value; });
   })();
 
-  /* ---------- welcome -> begin ---------- */
-  $('#beginBtn').addEventListener('click', () => {
-    state.meta.tech = $('#techName').value.trim();
-    state.meta.asset = $('#assetTag').value.trim();
-    state.meta.model = $('#model').value.trim();
-    state.meta.ticket = $('#ticket').value.trim();
-    showPanel('display');
+  /* ---------- home menu ---------- */
+  $('#startBtn').addEventListener('click', (e) => {
+    if(e.shiftKey) showPanel('select');
+    else startRun(TESTS.map(t => t.id));
   });
+  $('#homeAboutBtn').addEventListener('click', () => showPanel('about'));
+  $('#homeSettingsBtn').addEventListener('click', () => showPanel('settings'));
+  $('#homeBtn').addEventListener('click', endRun);
+  $('#exitRunBtn').addEventListener('click', endRun);
+
+  /* ---------- test picker (Shift+Start) ---------- */
+  function renderSelect(){
+    let lastGroup = null;
+    const rows = TESTS.map(t => {
+      let label = '';
+      if(t.group !== lastGroup){ label = `<div class="picker-group-label">${t.group}</div>`; lastGroup = t.group; }
+      return `${label}<label class="picker-row">
+        <input type="checkbox" value="${t.id}" checked>
+        <span class="lbl">${t.icon} ${t.label}</span>
+      </label>`;
+    }).join('');
+    $('#panel-select').innerHTML = `
+      <div class="panel-head">
+        <div>
+          <h2>Choose tests</h2>
+          <p>Pick the checks to run this session — the rest are skipped.</p>
+        </div>
+      </div>
+      <div class="picker-list">${rows}</div>
+      <div class="picker-actions">
+        <button class="btn primary" id="beginSelectedBtn">Begin selected →</button>
+        <button class="btn" id="selectAllBtn">Select all</button>
+        <button class="btn" id="selectNoneBtn">Select none</button>
+        <button class="btn" id="cancelSelectBtn">Cancel</button>
+      </div>
+    `;
+    $('#beginSelectedBtn').addEventListener('click', () => {
+      const ids = $$('#panel-select input[type=checkbox]:checked').map(cb => cb.value);
+      if(ids.length) startRun(ids);
+    });
+    $('#selectAllBtn').addEventListener('click', () => $$('#panel-select input[type=checkbox]').forEach(cb => cb.checked = true));
+    $('#selectNoneBtn').addEventListener('click', () => $$('#panel-select input[type=checkbox]').forEach(cb => cb.checked = false));
+    $('#cancelSelectBtn').addEventListener('click', () => showPanel('home'));
+  }
+
+  /* ---------- settings panel ---------- */
+  function renderSettings(){
+    const current = document.documentElement.getAttribute('data-brand') || 'cmhs';
+    $('#panel-settings').innerHTML = `
+      <div class="panel-head">
+        <div>
+          <h2>⚙️ Settings</h2>
+          <p>Adjust how ChromeCheck looks.</p>
+        </div>
+      </div>
+      <div style="margin-top:8px;">
+        <div class="verdict-label" style="margin-bottom:10px;">Color theme</div>
+        <div class="brand-toggle" id="brandToggle" role="group" aria-label="Color theme">
+          <button type="button" data-brand-choice="cmhs" class="${current==='cmhs'?'active':''}">CMHS</button>
+          <button type="button" data-brand-choice="apple" class="${current==='apple'?'active':''}">Apple</button>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:26px;">
+        <button class="btn" id="settingsBackBtn">← Back to menu</button>
+      </div>
+    `;
+    $$('#brandToggle button').forEach(b => b.addEventListener('click', () => applyBrand(b.dataset.brandChoice)));
+    $('#settingsBackBtn').addEventListener('click', () => showPanel('home'));
+  }
 
   /* ---------- report ---------- */
   function renderReport(){
-    state.meta.tech = $('#techName').value.trim() || state.meta.tech;
-    state.meta.asset = $('#assetTag').value.trim() || state.meta.asset;
-    state.meta.model = $('#model').value.trim() || state.meta.model;
-    state.meta.ticket = $('#ticket').value.trim() || state.meta.ticket;
-
     const fails = TESTS.filter(t => state.results[t.id].status === 'fail');
+    const ran = TESTS.filter(t => state.results[t.id].status !== 'pending');
     const overall = fails.length === 0 ? 'pass' : 'fail';
     const now = new Date();
     const stamp = now.toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
@@ -1431,10 +1523,9 @@
       </div>
 
       <div class="info-grid" style="margin-top:20px;">
-        <div class="info-tile"><div class="l">Technician</div><div class="v" style="font-size:14px;">${state.meta.tech || '—'}</div></div>
-        <div class="info-tile"><div class="l">Asset tag</div><div class="v" style="font-size:14px;font-family:var(--font-mono);">${state.meta.asset || '—'}</div></div>
-        <div class="info-tile"><div class="l">Model</div><div class="v" style="font-size:14px;">${state.meta.model || '—'}</div></div>
-        <div class="info-tile"><div class="l">Ticket</div><div class="v" style="font-size:14px;">${state.meta.ticket || '—'}</div></div>
+        <div class="info-tile"><div class="l">Tests run</div><div class="v">${ran.length} / ${TESTS.length}</div></div>
+        <div class="info-tile"><div class="l">Passed</div><div class="v">${TESTS.filter(t=>state.results[t.id].status==='pass').length}</div></div>
+        <div class="info-tile"><div class="l">Failed</div><div class="v">${fails.length}</div></div>
       </div>
 
       <div class="section-title">Results</div>
@@ -1474,7 +1565,6 @@
 
   function buildPlainReport(overall, fails, stamp, recs){
     let out = `Chrome Depot — CMHS Chromebook Diagnostic Report\n${stamp}\n`;
-    out += `Technician: ${state.meta.tech||'—'}   Asset: ${state.meta.asset||'—'}   Model: ${state.meta.model||'—'}   Ticket: ${state.meta.ticket||'—'}\n`;
     out += `Overall: ${overall === 'pass' ? 'PASS' : 'NEEDS ATTENTION ('+fails.length+' issue'+(fails.length===1?'':'s')+')'}\n\n`;
     TESTS.forEach(t => {
       const r = state.results[t.id];
@@ -1498,6 +1588,7 @@
     </svg>`;
   }
   $('#navMark').innerHTML = crestSVG(36);
+  $('#homeCrest').innerHTML = crestSVG(64);
 
   /* ---------- brand toggle (CMHS / Apple) ---------- */
   function applyBrand(brand){
@@ -1505,11 +1596,8 @@
     try{ localStorage.setItem('chromecheck-brand', brand); }catch(e){}
     $$('#brandToggle button').forEach(b => b.classList.toggle('active', b.dataset.brandChoice === brand));
   }
-  $$('#brandToggle button').forEach(b => b.addEventListener('click', () => applyBrand(b.dataset.brandChoice)));
-  applyBrand(document.documentElement.getAttribute('data-brand') || 'cmhs');
 
   /* ---------- about panel ---------- */
-  $('#aboutBtn').addEventListener('click', () => showPanel('about'));
   function renderAbout(){
     $('#panel-about').innerHTML = `
       <div class="about-hero">
@@ -1540,7 +1628,8 @@
 
   /* ---------- init ---------- */
   buildRail();
-  refreshRailDots();
+  updateRunStatusUI();
+  showPanel('home');
 })();
 </script>
 </body>
