@@ -761,7 +761,7 @@
     const rows = [
       [['Esc','Escape'],['Back','F1'],['Fwd','F2'],['Reload','F3'],['Full','F4'],['Overview','F5'],['Bright−','F6'],['Bright+','F7'],['Mute','F8'],['Vol−','F9'],['Vol+','F10']],
       [['`','Backquote'],['1','Digit1'],['2','Digit2'],['3','Digit3'],['4','Digit4'],['5','Digit5'],['6','Digit6'],['7','Digit7'],['8','Digit8'],['9','Digit9'],['0','Digit0'],['-','Minus'],['=','Equal'],['⌫','Backspace']],
-      [['Tab','Tab'],['Q','KeyQ'],['W','KeyW'],['E','KeyE'],['R','KeyR'],['T','KeyT'],['Y','KeyY'],['U','KeyU'],['I','KeyI'],['O','KeyO'],['P','KeyP'],['[','BracketLeft'],[']','BracketRight'],['\\\\','Backslash']],
+      [['Tab','Tab'],['Q','KeyQ'],['W','KeyW'],['E','KeyE'],['R','KeyR'],['T','KeyT'],['Y','KeyY'],['U','KeyU'],['I','KeyI'],['O','KeyO'],['P','KeyP'],['[','BracketLeft'],[']','BracketRight'],['\\','Backslash']],
       [['Search','MetaLeft'],['A','KeyA'],['S','KeyS'],['D','KeyD'],['F','KeyF'],['G','KeyG'],['H','KeyH'],['J','KeyJ'],['K','KeyK'],['L','KeyL'],[';','Semicolon'],["'",'Quote'],['Enter','Enter']],
       [['Shift','ShiftLeft'],['Z','KeyZ'],['X','KeyX'],['C','KeyC'],['V','KeyV'],['B','KeyB'],['N','KeyN'],['M','KeyM'],[',','Comma'],['.','Period'],['/','Slash'],['Shift','ShiftRight']],
       [['Ctrl','ControlLeft'],['Alt','AltLeft'],['Space','Space'],['Alt','AltRight'],['◀','ArrowLeft'],['▲▼','ArrowUp'],['▶','ArrowRight'],['Ctrl','ControlRight']],
@@ -956,7 +956,7 @@
           $('#micTimer').textContent = elapsed + 's — speak or tap near the mic';
           if(elapsed >= 20 && state.results.mic.status === 'pending'){
             hint.style.display='flex'; hint.className='hint warn';
-            hint.textContent = 'No clear input detected after 20s. Check the mic isn\\'t muted, or mark the result manually below.';
+            hint.textContent = 'No clear input detected after 20s. Check the mic isn\'t muted, or mark the result manually below.';
           }
         }, 1000);
         function loop(){
@@ -1104,7 +1104,7 @@
     }
     function showUnsupported(){
       hint.style.display='flex'; hint.className='hint warn';
-      hint.textContent = 'Battery Status API isn\\'t available in this context. Check the charge indicator in the shelf, confirm it charges when plugged in, then record the result manually.';
+      hint.textContent = 'Battery Status API isn\'t available in this context. Check the charge indicator in the shelf, confirm it charges when plugged in, then record the result manually.';
       body.innerHTML = `<div class="info-tile"><div class="l">Status</div><div class="v">Unavailable</div></div>`;
     }
     wireVerdict('battery');
@@ -1143,7 +1143,7 @@
     }
     function showUnsupported(){
       hint.style.display='flex'; hint.className='hint warn';
-      hint.textContent = 'Storage estimate isn\\'t available in this context. Check available space in the Files app or chrome://diagnostics, then record the result manually.';
+      hint.textContent = 'Storage estimate isn\'t available in this context. Check available space in the Files app or chrome://diagnostics, then record the result manually.';
     }
     wireVerdict('storage');
   })();
@@ -1322,16 +1322,16 @@
   }
 
   function buildPlainReport(overall, fails, stamp, recs){
-    let out = `Chrome Depot — CMHS Chromebook Diagnostic Report\\n${stamp}\\n`;
-    out += `Technician: ${state.meta.tech||'—'}   Asset: ${state.meta.asset||'—'}   Model: ${state.meta.model||'—'}   Ticket: ${state.meta.ticket||'—'}\\n`;
-    out += `Overall: ${overall === 'pass' ? 'PASS' : 'NEEDS ATTENTION ('+fails.length+' issue'+(fails.length===1?'':'s')+')'}\\n\\n`;
+    let out = `Chrome Depot — CMHS Chromebook Diagnostic Report\n${stamp}\n`;
+    out += `Technician: ${state.meta.tech||'—'}   Asset: ${state.meta.asset||'—'}   Model: ${state.meta.model||'—'}   Ticket: ${state.meta.ticket||'—'}\n`;
+    out += `Overall: ${overall === 'pass' ? 'PASS' : 'NEEDS ATTENTION ('+fails.length+' issue'+(fails.length===1?'':'s')+')'}\n\n`;
     TESTS.forEach(t => {
       const r = state.results[t.id];
       const label = {pending:'NOT RUN', pass:'PASS', fail:'FAIL', na:'N/A'}[r.status];
-      out += `- ${t.label}: ${label}${r.note ? '  ['+r.note+']' : ''}\\n`;
+      out += `- ${t.label}: ${label}${r.note ? '  ['+r.note+']' : ''}\n`;
     });
-    out += `\\nRecommended actions:\\n`;
-    out += recs.length ? recs.map(r=>'- '+r).join('\\n') : '- None. Device passed all checks run.';
+    out += `\nRecommended actions:\n`;
+    out += recs.length ? recs.map(r=>'- '+r).join('\n') : '- None. Device passed all checks run.';
     return out;
   }
 
