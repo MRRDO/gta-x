@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ChromeCheck — Chromebook Diagnostics</title>
-<meta name="description" content="An Apple-styled Chromebook hardware diagnostic tool: display, touchscreen, keyboard, trackpad, camera, mic, speaker, battery, storage, Wi-Fi and physical checks, with a pass/fail repair report.">
+<title>Chrome Depot — CMHS Chromebook Diagnostics</title>
+<meta name="description" content="Chrome Depot at Crete-Monee High School: a free Chromebook hardware diagnostic tool covering display, touchscreen, keyboard, trackpad, camera, mic, speaker, battery, storage, Wi-Fi and physical checks, with a pass/fail repair report.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%BB%3C/text%3E%3C/svg%3E">
 <style>
   :root{
@@ -140,6 +140,7 @@
   }
   .navbar .titles{display:flex;flex-direction:column;line-height:1.15;}
   .navbar .titles b{font-size:16px;font-weight:650;letter-spacing:-0.01em;}
+  .navbar .titles .brand-sep{color:var(--accent);font-weight:650;padding:0 1px;}
   .navbar .titles span{font-size:11.5px;color:var(--text-2);}
   .navbar .spacer{flex:1;}
   .navbar .progress-chip{
@@ -353,6 +354,14 @@
   ::-webkit-scrollbar{width:10px;height:10px;}
   ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:99px;}
 
+  .site-footer{
+    display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px;
+    padding:16px 22px 26px;text-align:center;
+    font-size:12px;color:var(--text-3);
+  }
+  .site-footer b{color:var(--text-2);font-weight:650;}
+  .site-footer .dot-sep{opacity:0.5;}
+
   @media (max-width:840px){
     .shell{flex-direction:column;padding:14px;}
     .rail{width:100%;flex-direction:row;overflow-x:auto;padding-right:0;gap:8px;padding-bottom:8px;}
@@ -379,8 +388,8 @@
   <header class="navbar">
     <div class="mark">💻</div>
     <div class="titles">
-      <b>ChromeCheck</b>
-      <span>Chromebook hardware diagnostics</span>
+      <b>Chrome Depot <span class="brand-sep">·</span> CMHS</b>
+      <span>ChromeCheck — Chromebook hardware diagnostics</span>
     </div>
     <div class="spacer"></div>
     <div class="progress-chip" id="progressChip">
@@ -445,6 +454,11 @@
       </div>
     </main>
   </div>
+  <footer class="site-footer">
+    <span><b>Chrome Depot</b> · Crete-Monee High School</span>
+    <span class="dot-sep">·</span>
+    <span>Free to use — no account or sign-in required</span>
+  </footer>
 </div>
 
 <script>
@@ -1259,7 +1273,7 @@
       <div class="report-header">
         <div>
           <h2 style="font-size:23px;font-weight:650;letter-spacing:-0.015em;">Diagnostic report</h2>
-          <p style="margin:6px 0 0;color:var(--text-2);font-size:13.5px;">${stamp}</p>
+          <p style="margin:6px 0 0;color:var(--text-2);font-size:13.5px;">Chrome Depot · Crete-Monee High School — ${stamp}</p>
         </div>
         <div class="overall-badge ${overall}">${overall === 'pass' ? '✓ All checks passed' : '⚠ Needs attention — ' + fails.length + ' issue' + (fails.length===1?'':'s')}</div>
       </div>
@@ -1307,7 +1321,7 @@
   }
 
   function buildPlainReport(overall, fails, stamp, recs){
-    let out = `ChromeCheck — Diagnostic Report\\n${stamp}\\n`;
+    let out = `Chrome Depot — CMHS Chromebook Diagnostic Report\\n${stamp}\\n`;
     out += `Technician: ${state.meta.tech||'—'}   Asset: ${state.meta.asset||'—'}   Model: ${state.meta.model||'—'}   Ticket: ${state.meta.ticket||'—'}\\n`;
     out += `Overall: ${overall === 'pass' ? 'PASS' : 'NEEDS ATTENTION ('+fails.length+' issue'+(fails.length===1?'':'s')+')'}\\n\\n`;
     TESTS.forEach(t => {
