@@ -290,6 +290,7 @@
   let smoothedOffset = 0; // -1..1, negative = part sits left of center on screen
   let faceConf = 88, combConf = 0; // display-only detection confidences, flock-cam style
   let jitterT = 0;
+  let smoothedHeadCenter = -1; // x in sample-canvas space; -1 = not initialized yet
 
   const selfUrl = location.href;
   document.getElementById('openTabIdle').href = selfUrl;
@@ -389,6 +390,45 @@
     sctx.drawImage(video,0,0,sample.width,sample.height);
     sctx.restore();
 
+    // --- find the real center of the head via mirror symmetry ---
+    // A face is left-right symmetric-ish; the x that makes a horizontal
+    // brightness profile match its own mirror image best is a solid,
+    // ML-free stand-in for "the middle of the head" (no TrueDepth/ARKit
+    // access exists from a web page — Safari only exposes the plain RGB
+    // camera to getUserMedia, so this is the best a browser can do).
+    const bandY = Math.floor(sample.height*0.40), bandH = Math.max(1, Math.floor(sample.height*0.08));
+    let headCenterX = smoothedHeadCenter >= 0 ? smoothedHeadCenter : sample.width/2;
+    try{
+      const bandImg = sctx.getImageData(0, bandY, sample.width, bandH);
+      const nBins = 100;
+      const bins = new Float32Array(nBins);
+      const binW = sample.width/nBins;
+      for(let b=0;b<nBins;b++){
+        let s=0,n=0;
+        const x0=Math.floor(b*binW), x1=Math.floor((b+1)*binW);
+        for(let x=x0;x<x1;x++){
+          for(let y=0;y<bandImg.height;y+=2){
+            const i=(y*bandImg.width+x)*4;
+            s += 0.299*bandImg.data[i]+0.587*bandImg.data[i+1]+0.114*bandImg.data[i+2];
+            n++;
+          }
+        }
+        bins[b] = n? s/n : 0;
+      }
+      let bestC = Math.floor(nBins/2), bestScore = Infinity;
+      for(let c=Math.floor(nBins*0.32); c<=Math.floor(nBins*0.68); c++){
+        const maxD = Math.min(c, nBins-1-c, Math.floor(nBins*0.4));
+        if(maxD<10) continue;
+        let score=0;
+        for(let d=1;d<=maxD;d++) score += Math.abs(bins[c-d]-bins[c+d]);
+        score /= maxD;
+        if(score<bestScore){ bestScore=score; bestC=c; }
+      }
+      const rawHeadCenter = (bestC+0.5)*binW;
+      headCenterX = smoothedHeadCenter<0 ? rawHeadCenter : smoothedHeadCenter*0.9 + rawHeadCenter*0.1;
+      smoothedHeadCenter = headCenterX;
+    }catch(e){ /* keep last known headCenterX */ }
+
     // scan zone: upper-center strip where a hairline/part would sit
     const zoneW = sample.width*0.34;
     const zoneX = (sample.width - zoneW)/2;
@@ -436,7 +476,10 @@
     const confidence = isNarrow ? Math.max(0, Math.min(1, (maxPeak-3)/18)) : 0;
     const handBlocking = !isNarrow && maxPeak > 6;
 
-    const rawOffset = (maxIdx - cols/2) / (cols/2); // -1..1
+    // offset from the REAL head-center line (not just the fixed scan box's
+    // own middle) — this is what actually answers "is my part centered"
+    const partXSample = zoneX + maxIdx;
+    const rawOffset = Math.max(-1, Math.min(1, (partXSample - headCenterX) / (zoneW/2)));
     smoothedOffset = smoothedOffset*0.85 + rawOffset*0.15;
 
     // --- draw overlay in screen coordinates, Flock-cam detection HUD style ---
@@ -458,8 +501,8 @@
     octx.lineWidth = 1;
     for(let ly=0; ly<overlay.height; ly+=3){ octx.beginPath(); octx.moveTo(0,ly); octx.lineTo(overlay.width,ly); octx.stroke(); }
 
-    // FACE bounding box (corner brackets) around the face guide ellipse's bbox
-    const fcx = overlay.width/2 + jx*0.4, fcy = overlay.height*0.48 + jy*0.4;
+    // FACE bounding box (corner brackets), centered on the real detected head center
+    const fcx = headCenterX*sx + jx*0.4, fcy = overlay.height*0.48 + jy*0.4;
     const frx = overlay.width*0.25, fry = overlay.height*0.33;
     drawBracketBox(fcx-frx, fcy-fry, frx*2, fry*2, 'rgba(120,255,180,.8)', 14);
     drawTag(fcx-frx, fcy-fry-8, 'FACE', faceConf, 'rgba(120,255,180,.9)');
@@ -469,14 +512,19 @@
     drawBracketBox(bx, by, bw, bh, col, 10);
     drawTag(bx, by-8, 'PART TARGET', combConf, col);
 
-    // dead-center reference line (dashed, dim)
-    octx.strokeStyle = 'rgba(255,255,255,.3)';
-    octx.lineWidth = 1;
-    octx.setLineDash([4,5]);
+    // the actual middle-of-your-head line, from mirror-symmetry detection —
+    // runs the full height of frame, independent of where the scan box sits
+    const headLineX = fcx;
+    octx.strokeStyle = 'rgba(255,255,255,.55)';
+    octx.lineWidth = 1.5;
+    octx.setLineDash([3,4]);
     octx.beginPath();
-    octx.moveTo(bx+bw/2, by-14); octx.lineTo(bx+bw/2, by+bh+14);
+    octx.moveTo(headLineX, 4); octx.lineTo(headLineX, overlay.height-4);
     octx.stroke();
     octx.setLineDash([]);
+    octx.font = "600 9px 'JetBrains Mono', monospace";
+    octx.fillStyle = 'rgba(255,255,255,.7)';
+    octx.fillText('HEAD CENTER', headLineX+6, 14);
 
     // detected part marker line ("COMB HERE")
     const markerX = bx + ((maxIdx/cols) * bw);
