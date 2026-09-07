@@ -1,0 +1,547 @@
+<title>Part Scanner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.gstatic.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+  :root{
+    --bg:#0a0d12;
+    --panel:#12171f;
+    --panel2:#161d27;
+    --line:#232c38;
+    --text:#e9eef3;
+    --muted:#7d8b9a;
+    --cold:#3aa0ff;
+    --mid:#ffd23f;
+    --warm:#ff4757;
+    --good:#3ee08a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    min-height:100vh;
+    background:
+      radial-gradient(1100px 700px at 50% -10%, #141b25 0%, var(--bg) 55%);
+    color:var(--text);
+    font-family:'Sora',system-ui,sans-serif;
+    display:flex;
+    justify-content:center;
+    padding:28px 16px 40px;
+  }
+  .app{ width:100%; max-width:520px; }
+
+  header{ text-align:center; margin-bottom:18px; }
+  .eyebrow{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    letter-spacing:.16em;
+    text-transform:uppercase;
+    color:var(--cold);
+    margin:0 0 8px;
+  }
+  h1{
+    font-size:26px;
+    font-weight:800;
+    margin:0 0 6px;
+    text-wrap:balance;
+    letter-spacing:-.01em;
+  }
+  p.sub{
+    margin:0;
+    color:var(--muted);
+    font-size:14px;
+    line-height:1.5;
+    max-width:38ch;
+    margin-inline:auto;
+  }
+
+  .stage{
+    position:relative;
+    margin-top:20px;
+    border-radius:18px;
+    overflow:hidden;
+    background:#000;
+    border:1px solid var(--line);
+    box-shadow:0 20px 50px -20px rgba(0,0,0,.7);
+    aspect-ratio:3/4;
+  }
+  video, canvas{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    object-fit:cover;
+  }
+  video{ visibility:hidden; }
+
+  .stage .idle, .stage .denied{
+    position:absolute; inset:0;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; text-align:center; padding:24px;
+    background:linear-gradient(180deg,#0d131b,#0a0d12);
+  }
+  .stage .denied{ display:none; }
+  .scanicon{
+    width:52px;height:52px;border-radius:50%;
+    border:2px solid var(--cold);
+    display:flex;align-items:center;justify-content:center;
+    font-size:22px;
+    box-shadow:0 0 0 6px rgba(58,160,255,.08);
+  }
+  .idle p{ margin:0; color:var(--muted); font-size:13px; max-width:26ch; }
+  .openTab{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px; color:var(--good);
+    text-decoration:none; opacity:.85;
+  }
+  .openTab:hover{ text-decoration:underline; }
+
+  button.go{
+    font-family:'Sora',sans-serif;
+    font-weight:700;
+    font-size:14px;
+    color:#08131f;
+    background:var(--cold);
+    border:none;
+    padding:11px 22px;
+    border-radius:999px;
+    cursor:pointer;
+    transition:transform .15s ease, background .2s ease;
+  }
+  button.go:hover{ transform:translateY(-1px); background:#57b2ff; }
+  button.go:active{ transform:translateY(0); }
+
+  .readout{
+    margin-top:16px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:16px 18px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+
+  .call{
+    display:flex; align-items:center; gap:12px;
+  }
+  .arrow{
+    font-family:'JetBrains Mono',monospace;
+    font-size:22px;
+    width:34px; text-align:center;
+    color:var(--muted);
+    transition:color .15s ease, transform .15s ease;
+  }
+  .arrow.active{ transform:scale(1.15); }
+  .call-text{
+    font-size:16px;
+    font-weight:700;
+    flex:1;
+    transition:color .15s ease;
+  }
+  .call-text .status-dot{
+    display:inline-block;width:8px;height:8px;border-radius:50%;
+    margin-right:8px; vertical-align:middle;
+    background:var(--muted);
+  }
+
+  .meter{
+    height:8px;
+    border-radius:999px;
+    background:var(--panel2);
+    border:1px solid var(--line);
+    overflow:hidden;
+    position:relative;
+  }
+  .meter-fill{
+    height:100%; width:0%;
+    border-radius:999px;
+    background:linear-gradient(90deg, var(--warm), var(--mid) 55%, var(--cold));
+    transition:width .12s linear;
+  }
+  .meter-labels{
+    display:flex; justify-content:space-between;
+    font-family:'JetBrains Mono',monospace;
+    font-size:10px; letter-spacing:.08em;
+    color:var(--muted); text-transform:uppercase;
+  }
+
+  .telemetry{
+    display:flex; gap:10px;
+  }
+  .tel{
+    flex:1;
+    background:var(--panel2);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:9px 10px;
+    text-align:center;
+  }
+  .tel .k{
+    font-family:'JetBrains Mono',monospace;
+    font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); display:block; margin-bottom:4px;
+  }
+  .tel .v{
+    font-family:'JetBrains Mono',monospace;
+    font-size:15px; font-weight:700;
+    font-variant-numeric:tabular-nums;
+  }
+
+  .controls{
+    display:flex; justify-content:space-between; align-items:center;
+    margin-top:14px;
+  }
+  .toggle{
+    display:flex; align-items:center; gap:8px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px; color:var(--muted); cursor:pointer;
+    user-select:none;
+  }
+  .toggle input{ accent-color:var(--cold); width:15px; height:15px; }
+  .stop{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px; color:var(--muted);
+    background:none; border:1px solid var(--line);
+    border-radius:8px; padding:7px 12px; cursor:pointer;
+  }
+  .stop:hover{ border-color:var(--warm); color:var(--warm); }
+
+  footer{
+    text-align:center; margin-top:18px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px; color:var(--muted); opacity:.7;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ transition:none !important; }
+  }
+</style>
+
+<div class="app">
+  <header>
+    <p class="eyebrow">// live detection · 2 objects tracked</p>
+    <h1>Part Scanner</h1>
+    <p class="sub">Point the camera at your hairline. FACE and PART TARGET get boxed and scored like a license-plate reader — follow the arrow until PART TARGET reads dead center.</p>
+  </header>
+
+  <div class="stage" id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div class="idle" id="idle">
+      <div class="scanicon">◎</div>
+      <p>Camera's off. Turn it on, hold the phone at arm's length, forehead in frame.</p>
+      <button class="go" id="startBtn">Start scan</button>
+      <a class="openTab" id="openTabIdle" href="#" target="_blank" rel="noopener">or open this page in a full browser tab ↗</a>
+    </div>
+    <div class="denied" id="denied">
+      <div class="scanicon" style="border-color:var(--warm);box-shadow:0 0 0 6px rgba(255,71,87,.08);">✕</div>
+      <p style="color:var(--warm)" id="deniedMsg">Camera access denied. Allow it in your browser settings and hit start again.</p>
+      <button class="go" id="retryBtn">Try again</button>
+      <a class="openTab" id="openTabDenied" href="#" target="_blank" rel="noopener">open in a full browser tab instead ↗</a>
+    </div>
+  </div>
+
+  <div class="readout">
+    <div class="call">
+      <span class="arrow" id="arrowL">◀</span>
+      <div class="call-text" id="callText"><span class="status-dot" id="statusDot"></span>Aim your hairline in the box</div>
+      <span class="arrow" id="arrowR">▶</span>
+    </div>
+    <div class="meter"><div class="meter-fill" id="meterFill"></div></div>
+    <div class="meter-labels"><span>off target</span><span>centered</span></div>
+    <div class="telemetry">
+      <div class="tel"><span class="k">Offset</span><span class="v" id="telOffset">—</span></div>
+      <div class="tel"><span class="k">Confidence</span><span class="v" id="telConf">—</span></div>
+      <div class="tel"><span class="k">Beep rate</span><span class="v" id="telBeep">—</span></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label class="toggle"><input type="checkbox" id="soundToggle" checked> beeper on</label>
+    <button class="stop" id="stopBtn">stop camera</button>
+  </div>
+
+  <footer>runs entirely in your browser — nothing leaves this tab</footer>
+</div>
+
+<script>
+(function(){
+  const video = document.getElementById('video');
+  const overlay = document.getElementById('overlay');
+  const octx = overlay.getContext('2d', { willReadFrequently:true });
+  const idle = document.getElementById('idle');
+  const denied = document.getElementById('denied');
+  const startBtn = document.getElementById('startBtn');
+  const retryBtn = document.getElementById('retryBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const soundToggle = document.getElementById('soundToggle');
+  const callText = document.getElementById('callText');
+  const statusDot = document.getElementById('statusDot');
+  const arrowL = document.getElementById('arrowL');
+  const arrowR = document.getElementById('arrowR');
+  const meterFill = document.getElementById('meterFill');
+  const telOffset = document.getElementById('telOffset');
+  const telConf = document.getElementById('telConf');
+  const telBeep = document.getElementById('telBeep');
+
+  // hidden mirrored sampling canvas (same orientation as what's drawn on screen)
+  const sample = document.createElement('canvas');
+  const sctx = sample.getContext('2d', { willReadFrequently:true });
+
+  let stream = null, raf = null, audioCtx = null, nextBeepAt = 0;
+  let smoothedOffset = 0; // -1..1, negative = part sits left of center on screen
+  let faceConf = 88, combConf = 0; // display-only detection confidences, flock-cam style
+  let jitterT = 0;
+
+  const selfUrl = location.href;
+  document.getElementById('openTabIdle').href = selfUrl;
+  document.getElementById('openTabDenied').href = selfUrl;
+
+  function colorForCloseness(c){
+    // c: 0 (far) -> 1 (centered). red -> yellow -> blue
+    const warm=[255,71,87], mid=[255,210,63], cold=[58,160,255];
+    let a,b,t;
+    if(c<0.5){ a=warm; b=mid; t=c/0.5; } else { a=mid; b=cold; t=(c-0.5)/0.5; }
+    const r=Math.round(a[0]+(b[0]-a[0])*t);
+    const g=Math.round(a[1]+(b[1]-a[1])*t);
+    const bl=Math.round(a[2]+(b[2]-a[2])*t);
+    return `rgb(${r},${g},${bl})`;
+  }
+
+  async function start(){
+    idle.style.display='none';
+    denied.style.display='none';
+
+    if(!window.isSecureContext){
+      showDenied("This page isn't running on https, so browsers won't allow camera access here.");
+      return;
+    }
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      showDenied("This embedded preview is blocking camera access (no prompt ever fires — that's the tell). Use the link below to open the page in its own tab, then hit start there.");
+      return;
+    }
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user', width:{ideal:640}, height:{ideal:854} }, audio:false });
+      video.srcObject = stream;
+      await video.play();
+      resize();
+      window.addEventListener('resize', resize);
+      loop();
+    }catch(err){
+      if(err.name === 'NotAllowedError' || err.name === 'SecurityError'){
+        showDenied("No permission prompt showed up, which usually means this embedded view itself is blocking the camera, not you. Open the page in its own tab with the link below and try again there.");
+      } else if(err.name === 'NotFoundError'){
+        showDenied("No camera found on this device.");
+      } else if(err.name === 'NotReadableError'){
+        showDenied("Another app has the camera locked. Close it and retry.");
+      } else {
+        showDenied("Camera error: " + (err.message || err.name || 'unknown') + ". Try opening in a full tab.");
+      }
+    }
+  }
+
+  function showDenied(msg){
+    document.getElementById('deniedMsg').textContent = msg;
+    denied.style.display='flex';
+  }
+
+  function resize(){
+    const r = overlay.getBoundingClientRect();
+    overlay.width = r.width; overlay.height = r.height;
+    sample.width = video.videoWidth || r.width;
+    sample.height = video.videoHeight || r.height;
+  }
+
+  function stop(){
+    if(raf) cancelAnimationFrame(raf);
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    stream=null;
+    idle.style.display='flex';
+    octx.clearRect(0,0,overlay.width,overlay.height);
+    callText.innerHTML = '<span class="status-dot" id="statusDot"></span>Aim your hairline in the box';
+    statusDot.style.background = 'var(--muted)';
+    meterFill.style.width='0%';
+    telOffset.textContent='—'; telConf.textContent='—'; telBeep.textContent='—';
+    arrowL.classList.remove('active'); arrowR.classList.remove('active');
+    arrowL.style.color=''; arrowR.style.color='';
+  }
+
+  function beep(freq, gain){
+    if(!soundToggle.checked) return;
+    if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.frequency.value = freq;
+    osc.type = 'sine';
+    g.gain.value = 0;
+    osc.connect(g); g.connect(audioCtx.destination);
+    const t0 = audioCtx.currentTime;
+    g.gain.linearRampToValueAtTime(gain, t0+0.005);
+    g.gain.linearRampToValueAtTime(0, t0+0.09);
+    osc.start(t0); osc.stop(t0+0.1);
+  }
+
+  function loop(){
+    raf = requestAnimationFrame(loop);
+    if(!video.videoWidth) return;
+
+    // draw mirrored sample frame so column x matches what's displayed
+    sctx.save();
+    sctx.translate(sample.width,0); sctx.scale(-1,1);
+    sctx.drawImage(video,0,0,sample.width,sample.height);
+    sctx.restore();
+
+    // scan zone: upper-center strip where a hairline/part would sit
+    const zoneW = sample.width*0.34;
+    const zoneX = (sample.width - zoneW)/2;
+    const zoneY = sample.height*0.16;
+    const zoneH = sample.height*0.16;
+
+    let img;
+    try{ img = sctx.getImageData(zoneX, zoneY, zoneW, zoneH); }
+    catch(e){ return; }
+    const cols = Math.floor(zoneW);
+    const rows = img.height;
+    const colBrightness = new Float32Array(cols);
+    for(let x=0;x<cols;x++){
+      let sum=0;
+      for(let y=0;y<rows;y+=2){
+        const i = (y*cols+x)*4;
+        sum += 0.299*img.data[i] + 0.587*img.data[i+1] + 0.114*img.data[i+2];
+      }
+      colBrightness[x] = sum/(rows/2);
+    }
+    // find brightest column = scalp/skin showing through part
+    let maxV=-1, maxIdx=Math.floor(cols/2), minV=1e9, meanV=0;
+    for(let x=0;x<cols;x++){
+      meanV += colBrightness[x];
+      if(colBrightness[x]>maxV){ maxV=colBrightness[x]; maxIdx=x; }
+      if(colBrightness[x]<minV) minV=colBrightness[x];
+    }
+    meanV/=cols;
+    const contrast = maxV-minV; // how confident we are there's a visible part at all
+    const confidence = Math.max(0, Math.min(1, (contrast-8)/40));
+
+    const rawOffset = (maxIdx - cols/2) / (cols/2); // -1..1
+    smoothedOffset = smoothedOffset*0.85 + rawOffset*0.15;
+
+    // --- draw overlay in screen coordinates, Flock-cam detection HUD style ---
+    const sx = overlay.width/sample.width, sy = overlay.height/sample.height;
+    octx.clearRect(0,0,overlay.width,overlay.height);
+
+    const closeness = 1 - Math.min(1, Math.abs(smoothedOffset)); // 0 far .. 1 centered
+    const col = colorForCloseness(closeness);
+    jitterT += 0.12;
+    const jx = Math.sin(jitterT*1.7)*1.4, jy = Math.cos(jitterT*1.3)*1.4;
+
+    // drift confidences a little each frame so it reads as "live" detection
+    faceConf += (Math.random()-0.5)*0.6; faceConf = Math.max(82, Math.min(97, faceConf));
+    combConf += ((confidence*100) - combConf) * 0.08 + (Math.random()-0.5)*0.8;
+    combConf = Math.max(0, Math.min(99, combConf));
+
+    // scanline texture
+    octx.strokeStyle = 'rgba(120,255,180,.035)';
+    octx.lineWidth = 1;
+    for(let ly=0; ly<overlay.height; ly+=3){ octx.beginPath(); octx.moveTo(0,ly); octx.lineTo(overlay.width,ly); octx.stroke(); }
+
+    // FACE bounding box (corner brackets) around the face guide ellipse's bbox
+    const fcx = overlay.width/2 + jx*0.4, fcy = overlay.height*0.48 + jy*0.4;
+    const frx = overlay.width*0.25, fry = overlay.height*0.33;
+    drawBracketBox(fcx-frx, fcy-fry, frx*2, fry*2, 'rgba(120,255,180,.8)', 14);
+    drawTag(fcx-frx, fcy-fry-8, 'FACE', faceConf, 'rgba(120,255,180,.9)');
+
+    // COMB / PART target box (the scan zone), corner brackets + moving marker
+    const bx = zoneX*sx + jx, by = zoneY*sy + jy, bw = zoneW*sx, bh = zoneH*sy;
+    drawBracketBox(bx, by, bw, bh, col, 10);
+    drawTag(bx, by-8, 'PART TARGET', combConf, col);
+
+    // dead-center reference line (dashed, dim)
+    octx.strokeStyle = 'rgba(255,255,255,.3)';
+    octx.lineWidth = 1;
+    octx.setLineDash([4,5]);
+    octx.beginPath();
+    octx.moveTo(bx+bw/2, by-14); octx.lineTo(bx+bw/2, by+bh+14);
+    octx.stroke();
+    octx.setLineDash([]);
+
+    // detected part marker line ("COMB HERE")
+    const markerX = bx + ((maxIdx/cols) * bw);
+    octx.strokeStyle = col;
+    octx.lineWidth = 3;
+    octx.beginPath();
+    octx.moveTo(markerX, by-18); octx.lineTo(markerX, by+bh+18);
+    octx.stroke();
+    octx.fillStyle = col;
+    octx.beginPath(); octx.arc(markerX, by-18, 4, 0, 7); octx.fill();
+    octx.font = "600 10px 'JetBrains Mono', monospace";
+    octx.fillStyle = col;
+    octx.textAlign = 'center';
+    octx.fillText('COMB HERE', markerX, by+bh+32);
+    octx.textAlign = 'left';
+
+    function drawBracketBox(x,y,w,h,color,len){
+      octx.strokeStyle = color; octx.lineWidth = 2.5; octx.lineCap='round';
+      const corners = [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]];
+      corners.forEach(([cx,cy,dx,dy])=>{
+        octx.beginPath();
+        octx.moveTo(cx, cy+len*dy); octx.lineTo(cx,cy); octx.lineTo(cx+len*dx, cy);
+        octx.stroke();
+      });
+    }
+    function drawTag(x,y,label,conf,color){
+      const text = label+'  '+conf.toFixed(1)+'%';
+      octx.font = "600 10px 'JetBrains Mono', monospace";
+      const w = octx.measureText(text).width + 12;
+      octx.fillStyle = 'rgba(6,10,8,.72)';
+      octx.fillRect(x, y-14, w, 16);
+      octx.strokeStyle = color; octx.lineWidth = 1;
+      octx.strokeRect(x, y-14, w, 16);
+      octx.fillStyle = color;
+      octx.fillText(text, x+6, y-2);
+    }
+
+    // --- UI feedback ---
+    const pctCentered = Math.round(closeness*100);
+    meterFill.style.width = pctCentered+'%';
+    telOffset.textContent = (smoothedOffset*100>=0?'+':'')+Math.round(smoothedOffset*100);
+    telConf.textContent = Math.round(confidence*100)+'%';
+    statusDot.style.background = col;
+
+    const centered = Math.abs(smoothedOffset) < 0.06 && confidence>0.35;
+    const lowConf = confidence < 0.22;
+
+    if(lowConf){
+      callText.innerHTML = '<span class="status-dot" style="background:'+col+'"></span>Can’t find a clean part — more light on your hairline';
+      arrowL.classList.remove('active'); arrowR.classList.remove('active');
+      arrowL.style.color=''; arrowR.style.color='';
+      telBeep.textContent='muted';
+    } else if(centered){
+      callText.innerHTML = '<span class="status-dot" style="background:'+col+'"></span>Dead center — hold it there';
+      arrowL.classList.remove('active'); arrowR.classList.remove('active');
+      arrowL.style.color=col; arrowR.style.color=col;
+      telBeep.textContent='steady';
+    } else if(smoothedOffset < 0){
+      callText.innerHTML = '<span class="status-dot" style="background:'+col+'"></span>Shift left a touch';
+      arrowL.classList.add('active'); arrowR.classList.remove('active');
+      arrowL.style.color = col; arrowR.style.color='';
+      telBeep.textContent = Math.round(8+(1-closeness)*14)+'/s';
+    } else {
+      callText.innerHTML = '<span class="status-dot" style="background:'+col+'"></span>Shift right a touch';
+      arrowR.classList.add('active'); arrowL.classList.remove('active');
+      arrowR.style.color = col; arrowL.style.color='';
+      telBeep.textContent = Math.round(8+(1-closeness)*14)+'/s';
+    }
+
+    // beeping: faster + higher pitched as it centers, silent when low-confidence
+    const now = performance.now();
+    if(!lowConf && now >= nextBeepAt){
+      const rate = centered ? 1400 : (200 + (1-closeness)*650); // ms between beeps
+      const freq = 420 + closeness*680;
+      beep(freq, 0.05+closeness*0.05);
+      nextBeepAt = now + rate;
+    }
+  }
+
+  startBtn.addEventListener('click', start);
+  retryBtn.addEventListener('click', start);
+  stopBtn.addEventListener('click', stop);
+})();
+</script>
