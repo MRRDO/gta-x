@@ -69,7 +69,7 @@
     width:100%; height:100%;
     object-fit:cover;
   }
-  video{ visibility:hidden; }
+  video{ transform:scaleX(-1); } /* mirrored to match overlay + sample canvas coordinate space */
 
   .stage .idle, .stage .denied{
     position:absolute; inset:0;
@@ -409,16 +409,32 @@
       }
       colBrightness[x] = sum/(rows/2);
     }
-    // find brightest column = scalp/skin showing through part
-    let maxV=-1, maxIdx=Math.floor(cols/2), minV=1e9, meanV=0;
+    // Find a THIN bright line (the part/comb line), not a broad bright blob
+    // (a hand or wrist filling the zone). High-pass: subtract a wide local
+    // average from each column so a narrow highlight stands out but a big
+    // skin-toned mass — which raises its own local average right along with
+    // it — mostly cancels out.
+    const blurR = Math.max(3, Math.floor(cols*0.12));
+    const blur = new Float32Array(cols);
     for(let x=0;x<cols;x++){
-      meanV += colBrightness[x];
-      if(colBrightness[x]>maxV){ maxV=colBrightness[x]; maxIdx=x; }
-      if(colBrightness[x]<minV) minV=colBrightness[x];
+      let s=0,n=0;
+      for(let k=-blurR;k<=blurR;k++){ const xx=x+k; if(xx>=0&&xx<cols){ s+=colBrightness[xx]; n++; } }
+      blur[x]=s/n;
     }
-    meanV/=cols;
-    const contrast = maxV-minV; // how confident we are there's a visible part at all
-    const confidence = Math.max(0, Math.min(1, (contrast-8)/40));
+    const peak = new Float32Array(cols);
+    let maxIdx=Math.floor(cols/2), maxPeak=-1e9;
+    for(let x=0;x<cols;x++){
+      peak[x] = colBrightness[x]-blur[x];
+      if(peak[x]>maxPeak){ maxPeak=peak[x]; maxIdx=x; }
+    }
+    // measure how wide that peak is — a thin part/comb line is narrow,
+    // a hand/wrist blocking the zone is wide
+    let peakWidth=0;
+    for(let x=0;x<cols;x++){ if(peak[x] > maxPeak*0.5) peakWidth++; }
+    const isNarrow = peakWidth < cols*0.22;
+
+    const confidence = isNarrow ? Math.max(0, Math.min(1, (maxPeak-3)/18)) : 0;
+    const handBlocking = !isNarrow && maxPeak > 6;
 
     const rawOffset = (maxIdx - cols/2) / (cols/2); // -1..1
     smoothedOffset = smoothedOffset*0.85 + rawOffset*0.15;
@@ -508,7 +524,12 @@
     const centered = Math.abs(smoothedOffset) < 0.06 && confidence>0.35;
     const lowConf = confidence < 0.22;
 
-    if(lowConf){
+    if(handBlocking){
+      callText.innerHTML = '<span class="status-dot" style="background:'+col+'"></span>Your hand/comb is covering the target — pull back so the part shows';
+      arrowL.classList.remove('active'); arrowR.classList.remove('active');
+      arrowL.style.color=''; arrowR.style.color='';
+      telBeep.textContent='muted';
+    } else if(lowConf){
       callText.innerHTML = '<span class="status-dot" style="background:'+col+'"></span>Can’t find a clean part — more light on your hairline';
       arrowL.classList.remove('active'); arrowR.classList.remove('active');
       arrowL.style.color=''; arrowR.style.color='';
@@ -532,7 +553,7 @@
 
     // beeping: faster + higher pitched as it centers, silent when low-confidence
     const now = performance.now();
-    if(!lowConf && now >= nextBeepAt){
+    if(!lowConf && !handBlocking && now >= nextBeepAt){
       const rate = centered ? 1400 : (200 + (1-closeness)*650); // ms between beeps
       const freq = 420 + closeness*680;
       beep(freq, 0.05+closeness*0.05);
