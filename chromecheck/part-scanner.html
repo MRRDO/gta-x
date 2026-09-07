@@ -69,7 +69,7 @@
     width:100%; height:100%;
     object-fit:cover;
   }
-  video{ visibility:hidden; }
+  video{ transform:scaleX(-1); } /* mirrored to match overlay + sample canvas coordinate space */
 
   .stage .idle, .stage .denied{
     position:absolute; inset:0;
