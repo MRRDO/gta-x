@@ -64,6 +64,11 @@
     box-shadow:0 20px 50px -20px rgba(0,0,0,.7);
     aspect-ratio:3/4;
   }
+  .stageInner{
+    position:absolute; inset:0;
+    transform-origin:50% 50%;
+    will-change:transform;
+  }
   video, canvas{
     position:absolute; inset:0;
     width:100%; height:100%;
@@ -223,8 +228,10 @@
   </header>
 
   <div class="stage" id="stage">
-    <video id="video" playsinline muted></video>
-    <canvas id="overlay"></canvas>
+    <div class="stageInner" id="stageInner">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
     <div class="idle" id="idle">
       <div class="scanicon">◎</div>
       <p>Camera's off. Turn it on, hold the phone at arm's length, forehead in frame.</p>
@@ -255,7 +262,10 @@
   </div>
 
   <div class="controls">
-    <label class="toggle"><input type="checkbox" id="soundToggle" checked> beeper on</label>
+    <div style="display:flex; gap:14px;">
+      <label class="toggle"><input type="checkbox" id="soundToggle" checked> beeper on</label>
+      <label class="toggle"><input type="checkbox" id="motionToggle"> level horizon</label>
+    </div>
     <button class="stop" id="stopBtn">stop camera</button>
   </div>
 
@@ -273,6 +283,8 @@
   const retryBtn = document.getElementById('retryBtn');
   const stopBtn = document.getElementById('stopBtn');
   const soundToggle = document.getElementById('soundToggle');
+  const motionToggle = document.getElementById('motionToggle');
+  const stageInner = document.getElementById('stageInner');
   const callText = document.getElementById('callText');
   const statusDot = document.getElementById('statusDot');
   const arrowL = document.getElementById('arrowL');
@@ -291,6 +303,34 @@
   let faceConf = 88, combConf = 0; // display-only detection confidences, flock-cam style
   let jitterT = 0;
   let smoothedHeadCenter = -1; // x in sample-canvas space; -1 = not initialized yet
+  let deviceRoll = 0, smoothedRoll = 0, motionActive = false;
+
+  // "level horizon" — counter-rotate the whole video+overlay picture using the
+  // phone's tilt sensor, like a gimbal, so the frame stays level relative to
+  // gravity instead of tipping every time your hand/phone tilts.
+  function onOrientation(e){
+    if(e.gamma == null) return;
+    deviceRoll = Math.max(-35, Math.min(35, e.gamma));
+  }
+  function enableMotion(){
+    const DOE = window.DeviceOrientationEvent;
+    if(!DOE){ motionToggle.checked=false; return; }
+    if(typeof DOE.requestPermission === 'function'){
+      DOE.requestPermission().then(state=>{
+        if(state==='granted'){ window.addEventListener('deviceorientation', onOrientation); motionActive=true; }
+        else { motionToggle.checked=false; }
+      }).catch(()=>{ motionToggle.checked=false; });
+    } else {
+      window.addEventListener('deviceorientation', onOrientation);
+      motionActive = true;
+    }
+  }
+  function disableMotion(){
+    window.removeEventListener('deviceorientation', onOrientation);
+    motionActive = false; deviceRoll = 0; smoothedRoll = 0;
+    stageInner.style.transform = '';
+  }
+  motionToggle.addEventListener('change', ()=>{ motionToggle.checked ? enableMotion() : disableMotion(); });
 
   const selfUrl = location.href;
   document.getElementById('openTabIdle').href = selfUrl;
@@ -383,6 +423,13 @@
   function loop(){
     raf = requestAnimationFrame(loop);
     if(!video.videoWidth) return;
+
+    if(motionActive){
+      smoothedRoll += (deviceRoll - smoothedRoll) * 0.12;
+      // slight zoom so rotating the frame never reveals black corners
+      const zoom = 1 + (Math.abs(smoothedRoll)/35) * 0.32;
+      stageInner.style.transform = `rotate(${(-smoothedRoll).toFixed(2)}deg) scale(${zoom.toFixed(3)})`;
+    }
 
     // draw mirrored sample frame so column x matches what's displayed
     sctx.save();
