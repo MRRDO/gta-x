@@ -194,6 +194,24 @@
     display:flex; justify-content:space-between; align-items:center;
     margin-top:14px;
   }
+  .modeSwitch{
+    display:flex; gap:2px;
+    background:var(--panel2);
+    border:1px solid var(--line);
+    border-radius:999px;
+    padding:3px;
+    margin-top:16px;
+  }
+  .modeBtn{
+    flex:1;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px; letter-spacing:.06em;
+    color:var(--muted);
+    background:none; border:none; border-radius:999px;
+    padding:8px 10px; cursor:pointer;
+    transition:background .15s ease, color .15s ease;
+  }
+  .modeBtn.active{ background:var(--cold); color:#08131f; font-weight:700; }
   .toggle{
     display:flex; align-items:center; gap:8px;
     font-family:'JetBrains Mono',monospace;
@@ -224,8 +242,13 @@
   <header>
     <p class="eyebrow">// live detection · 2 objects tracked</p>
     <h1>Part Scanner</h1>
-    <p class="sub">Point the camera at your hairline. FACE and PART TARGET get boxed and scored like a license-plate reader — follow the arrow until PART TARGET reads dead center.</p>
+    <p class="sub" id="subCopy">Point the camera at your hairline. FACE and PART TARGET get boxed and scored like a license-plate reader — follow the arrow until PART TARGET reads dead center.</p>
   </header>
+
+  <div class="modeSwitch" id="modeSwitch">
+    <button class="modeBtn active" id="modePartBtn" data-mode="part">PART MODE</button>
+    <button class="modeBtn" id="modeObjectBtn" data-mode="object">OBJECT MODE</button>
+  </div>
 
   <div class="stage" id="stage">
     <div class="stageInner" id="stageInner">
@@ -303,18 +326,31 @@
   let faceConf = 88, combConf = 0; // display-only detection confidences, flock-cam style
   let jitterT = 0;
   let smoothedHeadCenter = -1; // x in sample-canvas space; -1 = not initialized yet
-  let deviceRoll = 0, smoothedRoll = 0, motionActive = false;
 
-  // "level horizon" — counter-rotate the whole video+overlay picture using the
-  // phone's tilt sensor, like a gimbal, so the frame stays level relative to
-  // gravity instead of tipping every time your hand/phone tilts.
+  // ===== GIMBAL: shared spring-damper physics used by both level-horizon
+  // (real gimbal, driven by the phone's tilt sensor) and object mode
+  // (a digital gimbal, driven by where the tracked object drifts) =====
+  function makeAxis(){ return { pos:0, vel:0, target:0 }; }
+  function stepAxis(ax, k, d, dt){
+    const accel = (ax.target - ax.pos)*k - ax.vel*d;
+    ax.vel += accel*dt;
+    ax.pos += ax.vel*dt;
+  }
+  const SPRING_K = 120, SPRING_D = 15; // stiffness/damping — heavier & settles like a real gimbal, not a snap-to-target
+
+  // ---- real gimbal: level horizon from the phone's tilt sensor ----
+  let motionActive = false, baseGamma = null, baseBeta = null;
+  const rollAxis = makeAxis(), pitchAxis = makeAxis();
   function onOrientation(e){
-    if(e.gamma == null) return;
-    deviceRoll = Math.max(-35, Math.min(35, e.gamma));
+    if(e.gamma == null || e.beta == null) return;
+    if(baseGamma === null){ baseGamma = e.gamma; baseBeta = e.beta; } // calibrate "level" to however you're holding it right now
+    rollAxis.target = Math.max(-35, Math.min(35, e.gamma - baseGamma));
+    pitchAxis.target = Math.max(-35, Math.min(35, e.beta - baseBeta));
   }
   function enableMotion(){
     const DOE = window.DeviceOrientationEvent;
     if(!DOE){ motionToggle.checked=false; return; }
+    baseGamma = null; baseBeta = null;
     if(typeof DOE.requestPermission === 'function'){
       DOE.requestPermission().then(state=>{
         if(state==='granted'){ window.addEventListener('deviceorientation', onOrientation); motionActive=true; }
@@ -327,10 +363,104 @@
   }
   function disableMotion(){
     window.removeEventListener('deviceorientation', onOrientation);
-    motionActive = false; deviceRoll = 0; smoothedRoll = 0;
-    stageInner.style.transform = '';
+    motionActive = false;
+    rollAxis.target = rollAxis.pos = rollAxis.vel = 0;
+    pitchAxis.target = pitchAxis.pos = pitchAxis.vel = 0;
   }
   motionToggle.addEventListener('change', ()=>{ motionToggle.checked ? enableMotion() : disableMotion(); });
+
+  // ---- digital gimbal: object mode locks onto a tapped object and pans/
+  // zooms the frame to keep it anchored, the same spring physics as above
+  // but driven by visual tracking instead of the tilt sensor ----
+  let appMode = 'part'; // 'part' | 'object'
+  const panXAxis = makeAxis(), panYAxis = makeAxis();
+  let objLocked = false, objTemplate = null, objPos = null; // objPos: {x,y} in sample-canvas space
+  let objLockScreenPos = null; // {x,y} in overlay-canvas space, captured at lock time
+  let objConfidence = 0;
+
+  const modeSwitch = document.getElementById('modeSwitch');
+  const modePartBtn = document.getElementById('modePartBtn');
+  const modeObjectBtn = document.getElementById('modeObjectBtn');
+  const subCopy = document.getElementById('subCopy');
+  function setMode(m){
+    appMode = m;
+    modePartBtn.classList.toggle('active', m==='part');
+    modeObjectBtn.classList.toggle('active', m==='object');
+    unlockObject();
+    panXAxis.target=panXAxis.pos=panXAxis.vel=0; panYAxis.target=panYAxis.pos=panYAxis.vel=0;
+    subCopy.textContent = m==='part'
+      ? 'Point the camera at your hairline. FACE and PART TARGET get boxed and scored like a license-plate reader — follow the arrow until PART TARGET reads dead center.'
+      : 'Tap anything in frame to lock on. This digital gimbal pans and zooms to keep that object anchored in place as the camera moves, the same way the level-horizon gimbal keeps the whole frame level.';
+    callText.innerHTML = '<span class="status-dot" id="statusDot"></span>' + (m==='part' ? 'Aim your hairline in the box' : 'Tap an object in the video to lock on');
+  }
+  modePartBtn.addEventListener('click', ()=>setMode('part'));
+  modeObjectBtn.addEventListener('click', ()=>setMode('object'));
+
+  function unlockObject(){ objLocked=false; objTemplate=null; objPos=null; objLockScreenPos=null; objConfidence=0; }
+
+  function samplePatch(cx, cy, size){
+    const half = size/2;
+    const x = Math.max(0, Math.min(sample.width-size, Math.round(cx-half)));
+    const y = Math.max(0, Math.min(sample.height-size, Math.round(cy-half)));
+    let img; try{ img = sctx.getImageData(x,y,size,size); } catch(e){ return null; }
+    const g = new Float32Array(size*size);
+    for(let i=0;i<size*size;i++){
+      const p=i*4;
+      g[i] = 0.299*img.data[p]+0.587*img.data[p+1]+0.114*img.data[p+2];
+    }
+    return { x, y, size, data:g };
+  }
+  function patchDiff(a, bx, by, size){
+    let img; try{ img = sctx.getImageData(bx,by,size,size); } catch(e){ return Infinity; }
+    let sum=0;
+    for(let i=0;i<size*size;i++){
+      const p=i*4;
+      const g = 0.299*img.data[p]+0.587*img.data[p+1]+0.114*img.data[p+2];
+      const diff = g - a.data[i];
+      sum += diff*diff;
+    }
+    return sum/(size*size);
+  }
+  function lockObjectAt(sampleX, sampleY, screenX, screenY){
+    const size = Math.max(20, Math.round(sample.width*0.09));
+    const t = samplePatch(sampleX, sampleY, size);
+    if(!t) return;
+    objTemplate = t;
+    objPos = { x: t.x + size/2, y: t.y + size/2 };
+    objLockScreenPos = { x: screenX, y: screenY };
+    objLocked = true;
+    objConfidence = 1;
+  }
+  function trackObject(){
+    if(!objLocked || !objTemplate) return;
+    const size = objTemplate.size;
+    const searchR = Math.max(10, Math.round(sample.width*0.05));
+    const step = 3;
+    let bestScore = Infinity, bestX = objPos.x - size/2, bestY = objPos.y - size/2;
+    for(let dy=-searchR; dy<=searchR; dy+=step){
+      for(let dx=-searchR; dx<=searchR; dx+=step){
+        const cx = Math.max(0, Math.min(sample.width-size, Math.round(objPos.x - size/2 + dx)));
+        const cy = Math.max(0, Math.min(sample.height-size, Math.round(objPos.y - size/2 + dy)));
+        const score = patchDiff(objTemplate, cx, cy, size);
+        if(score < bestScore){ bestScore = score; bestX = cx; bestY = cy; }
+      }
+    }
+    objPos = { x: bestX + size/2, y: bestY + size/2 };
+    // normalize: ~0 diff = perfect match, big diff (busy scene) = lost it
+    objConfidence = Math.max(0, Math.min(1, 1 - bestScore/2200));
+  }
+
+  overlay.addEventListener('click', (e)=>{
+    if(appMode !== 'object' || !video.videoWidth) return;
+    const r = overlay.getBoundingClientRect();
+    // Note: this maps against the canvas's own (possibly rotated by level
+    // horizon) bounding box, so it's most accurate with level horizon off.
+    const screenX = (e.clientX - r.left) / r.width * overlay.width;
+    const screenY = (e.clientY - r.top) / r.height * overlay.height;
+    const sampleX = screenX / (overlay.width/sample.width);
+    const sampleY = screenY / (overlay.height/sample.height);
+    lockObjectAt(sampleX, sampleY, screenX, screenY);
+  });
 
   const selfUrl = location.href;
   document.getElementById('openTabIdle').href = selfUrl;
@@ -424,18 +554,89 @@
     raf = requestAnimationFrame(loop);
     if(!video.videoWidth) return;
 
-    if(motionActive){
-      smoothedRoll += (deviceRoll - smoothedRoll) * 0.12;
-      // slight zoom so rotating the frame never reveals black corners
-      const zoom = 1 + (Math.abs(smoothedRoll)/35) * 0.32;
-      stageInner.style.transform = `rotate(${(-smoothedRoll).toFixed(2)}deg) scale(${zoom.toFixed(3)})`;
-    }
-
     // draw mirrored sample frame so column x matches what's displayed
     sctx.save();
     sctx.translate(sample.width,0); sctx.scale(-1,1);
     sctx.drawImage(video,0,0,sample.width,sample.height);
     sctx.restore();
+
+    const sx = overlay.width/sample.width, sy = overlay.height/sample.height;
+    const dt = 1/60;
+
+    // digital gimbal: object mode tracks a tapped object and aims to pan it
+    // back to where it was locked, same idea as the real gimbal below but
+    // driven by visual tracking instead of the tilt sensor
+    if(appMode==='object' && objLocked){
+      trackObject();
+      panXAxis.target = objLockScreenPos.x - objPos.x*sx;
+      panYAxis.target = objLockScreenPos.y - objPos.y*sy;
+    }
+
+    // spring-damper physics for both gimbals — heavier and settles like a
+    // real one instead of snapping straight to the target
+    if(motionActive){ stepAxis(rollAxis, SPRING_K, SPRING_D, dt); stepAxis(pitchAxis, SPRING_K, SPRING_D, dt); }
+    if(appMode==='object' && objLocked){ stepAxis(panXAxis, SPRING_K, SPRING_D, dt); stepAxis(panYAxis, SPRING_K, SPRING_D, dt); }
+
+    const tiltMag = Math.min(1, Math.sqrt(rollAxis.pos**2 + pitchAxis.pos**2)/35);
+    const panMag = Math.min(1, Math.sqrt(panXAxis.pos**2 + panYAxis.pos**2) / (overlay.width*0.22));
+    const zoom = 1 + tiltMag*0.32 + panMag*0.28;
+    stageInner.style.transform = `translate(${panXAxis.pos.toFixed(1)}px, ${(panYAxis.pos + pitchAxis.pos*1.4).toFixed(1)}px) rotate(${(-rollAxis.pos).toFixed(2)}deg) scale(${zoom.toFixed(3)})`;
+
+    octx.clearRect(0,0,overlay.width,overlay.height);
+    // scanline texture (shared HUD chrome, both modes)
+    octx.strokeStyle = 'rgba(120,255,180,.035)';
+    octx.lineWidth = 1;
+    for(let ly=0; ly<overlay.height; ly+=3){ octx.beginPath(); octx.moveTo(0,ly); octx.lineTo(overlay.width,ly); octx.stroke(); }
+
+    function drawBracketBox(x,y,w,h,color,len){
+      octx.strokeStyle = color; octx.lineWidth = 2.5; octx.lineCap='round';
+      const corners = [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]];
+      corners.forEach(([cx,cy,dx,dy])=>{
+        octx.beginPath();
+        octx.moveTo(cx, cy+len*dy); octx.lineTo(cx,cy); octx.lineTo(cx+len*dx, cy);
+        octx.stroke();
+      });
+    }
+    function drawTag(x,y,label,conf,color){
+      const text = label+'  '+conf.toFixed(1)+'%';
+      octx.font = "600 10px 'JetBrains Mono', monospace";
+      const w = octx.measureText(text).width + 12;
+      octx.fillStyle = 'rgba(6,10,8,.72)';
+      octx.fillRect(x, y-14, w, 16);
+      octx.strokeStyle = color; octx.lineWidth = 1;
+      octx.strokeRect(x, y-14, w, 16);
+      octx.fillStyle = color;
+      octx.fillText(text, x+6, y-2);
+    }
+
+    if(appMode === 'object'){
+      if(!objLocked){
+        octx.strokeStyle = 'rgba(255,210,63,.8)'; octx.lineWidth = 1.5;
+        const ccx=overlay.width/2, ccy=overlay.height/2;
+        octx.beginPath(); octx.moveTo(ccx-16,ccy); octx.lineTo(ccx+16,ccy); octx.moveTo(ccx,ccy-16); octx.lineTo(ccx,ccy+16); octx.stroke();
+        callText.innerHTML = '<span class="status-dot" style="background:var(--mid)"></span>Tap an object in the video to lock on';
+        statusDot.style.background = 'var(--mid)';
+        meterFill.style.width='0%'; telOffset.textContent='—'; telConf.textContent='—'; telBeep.textContent='—';
+      } else {
+        const boxSize = objTemplate.size*sx*1.6;
+        const ox = objPos.x*sx - boxSize/2, oy = objPos.y*sy - boxSize/2;
+        const lost = objConfidence < 0.15;
+        const objCol = lost ? 'rgba(255,71,87,.9)' : 'rgba(255,210,63,.9)';
+        drawBracketBox(ox, oy, boxSize, boxSize, objCol, 12);
+        drawTag(ox, oy-8, 'OBJECT', objConfidence*100, objCol);
+        const pctLock = Math.round((1-panMag)*100);
+        meterFill.style.width = Math.max(0,pctLock)+'%';
+        telOffset.textContent = Math.round(panXAxis.pos)+','+Math.round(panYAxis.pos);
+        telConf.textContent = Math.round(objConfidence*100)+'%';
+        telBeep.textContent = lost ? 'lost' : 'locked';
+        statusDot.style.background = objCol;
+        callText.innerHTML = lost
+          ? '<span class="status-dot" style="background:'+objCol+'"></span>Lost it — tap the object again'
+          : '<span class="status-dot" style="background:'+objCol+'"></span>Locked — digital gimbal is holding it steady';
+        if(lost) unlockObject();
+      }
+      return;
+    }
 
     // --- find the real center of the head via mirror symmetry ---
     // A face is left-right symmetric-ish; the x that makes a horizontal
@@ -529,10 +730,6 @@
     const rawOffset = Math.max(-1, Math.min(1, (partXSample - headCenterX) / (zoneW/2)));
     smoothedOffset = smoothedOffset*0.85 + rawOffset*0.15;
 
-    // --- draw overlay in screen coordinates, Flock-cam detection HUD style ---
-    const sx = overlay.width/sample.width, sy = overlay.height/sample.height;
-    octx.clearRect(0,0,overlay.width,overlay.height);
-
     const closeness = 1 - Math.min(1, Math.abs(smoothedOffset)); // 0 far .. 1 centered
     const col = colorForCloseness(closeness);
     jitterT += 0.12;
@@ -542,11 +739,6 @@
     faceConf += (Math.random()-0.5)*0.6; faceConf = Math.max(82, Math.min(97, faceConf));
     combConf += ((confidence*100) - combConf) * 0.08 + (Math.random()-0.5)*0.8;
     combConf = Math.max(0, Math.min(99, combConf));
-
-    // scanline texture
-    octx.strokeStyle = 'rgba(120,255,180,.035)';
-    octx.lineWidth = 1;
-    for(let ly=0; ly<overlay.height; ly+=3){ octx.beginPath(); octx.moveTo(0,ly); octx.lineTo(overlay.width,ly); octx.stroke(); }
 
     // FACE bounding box (corner brackets), centered on the real detected head center
     const fcx = headCenterX*sx + jx*0.4, fcy = overlay.height*0.48 + jy*0.4;
@@ -587,27 +779,6 @@
     octx.textAlign = 'center';
     octx.fillText('COMB HERE', markerX, by+bh+32);
     octx.textAlign = 'left';
-
-    function drawBracketBox(x,y,w,h,color,len){
-      octx.strokeStyle = color; octx.lineWidth = 2.5; octx.lineCap='round';
-      const corners = [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]];
-      corners.forEach(([cx,cy,dx,dy])=>{
-        octx.beginPath();
-        octx.moveTo(cx, cy+len*dy); octx.lineTo(cx,cy); octx.lineTo(cx+len*dx, cy);
-        octx.stroke();
-      });
-    }
-    function drawTag(x,y,label,conf,color){
-      const text = label+'  '+conf.toFixed(1)+'%';
-      octx.font = "600 10px 'JetBrains Mono', monospace";
-      const w = octx.measureText(text).width + 12;
-      octx.fillStyle = 'rgba(6,10,8,.72)';
-      octx.fillRect(x, y-14, w, 16);
-      octx.strokeStyle = color; octx.lineWidth = 1;
-      octx.strokeRect(x, y-14, w, 16);
-      octx.fillStyle = color;
-      octx.fillText(text, x+6, y-2);
-    }
 
     // --- UI feedback ---
     const pctCentered = Math.round(closeness*100);
