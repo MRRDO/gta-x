@@ -1,0 +1,312 @@
+<title>Bench Test</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Bench Test">
+<meta name="theme-color" content="#000000">
+<style>
+/* ==========================================================
+   Bench Test — iOS/macOS design language
+   Type: San Francisco via -apple-system (real SF on Apple devices)
+   Color: Apple system color palette, dark first
+   ========================================================== */
+:root{
+  color-scheme:dark;
+  /* backgrounds: iOS dark grouped */
+  --bg:#000000;
+  --s1:#1c1c1e;          /* secondarySystemGroupedBackground */
+  --s2:#2c2c2e;          /* tertiary */
+  --s3:#3a3a3c;
+  --fill:#78788029;      /* systemFill */
+  --sep:#38383a;         /* separator */
+  --sep-hair:#54545899;
+  /* labels */
+  --ink:#ffffff;
+  --ink2:#ebebf599;      /* secondaryLabel 60% */
+  --ink3:#ebebf54d;      /* tertiaryLabel 30% */
+  --ink4:#ebebf52e;
+  /* system colors (dark variants) */
+  --blue:#0a84ff; --green:#30d158; --red:#ff453a; --orange:#ff9f0a;
+  --yellow:#ffd60a; --purple:#bf5af2; --teal:#40c8e0; --indigo:#5e5ce6;
+  --pink:#ff375f; --mint:#66d4cf;
+  --accent:var(--blue);
+  --on-accent:#ffffff;
+  --blur:saturate(180%) blur(20px);
+  --r-card:12px; --r-ctl:10px; --r-lg:16px;
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f2f2f7; --s1:#ffffff; --s2:#f2f2f7; --s3:#e5e5ea;
+  --fill:#78788033; --sep:#c6c6c8; --sep-hair:#3c3c435c;
+  --ink:#000000; --ink2:#3c3c4399; --ink3:#3c3c434d; --ink4:#3c3c432e;
+  --blue:#007aff; --green:#34c759; --red:#ff3b30; --orange:#ff9500;
+  --yellow:#ffcc00; --purple:#af52de; --teal:#30b0c7; --indigo:#5856d6;
+  --pink:#ff2d55; --mint:#00c7be;
+  --accent:var(--blue); --on-accent:#ffffff;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    color-scheme:light;
+    --bg:#f2f2f7; --s1:#ffffff; --s2:#f2f2f7; --s3:#e5e5ea;
+    --fill:#78788033; --sep:#c6c6c8; --sep-hair:#3c3c435c;
+    --ink:#000000; --ink2:#3c3c4399; --ink3:#3c3c434d; --ink4:#3c3c432e;
+    --blue:#007aff; --green:#34c759; --red:#ff3b30; --orange:#ff9500;
+    --yellow:#ffcc00; --purple:#af52de; --teal:#30b0c7; --indigo:#5856d6;
+    --pink:#ff2d55; --mint:#00c7be;
+    --accent:var(--blue); --on-accent:#ffffff;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",Inter,system-ui,sans-serif;
+  font-size:17px; line-height:1.29; letter-spacing:-.01em;
+  -webkit-font-smoothing:antialiased; overflow-x:hidden;
+}
+h1,h2,h3{margin:0;font-weight:700;letter-spacing:-.022em;text-wrap:balance}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;letter-spacing:inherit}
+a{color:var(--accent)}
+:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:2px;border-radius:6px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* Apple's numeric + rounded treatments */
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1;letter-spacing:-.02em}
+.rounded{font-family:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif}
+.lg-title{font-size:34px;font-weight:700;letter-spacing:-.026em;line-height:1.12}
+.title2{font-size:22px;font-weight:700;letter-spacing:-.022em}
+.headline{font-size:17px;font-weight:600;letter-spacing:-.024em}
+.body{font-size:17px;letter-spacing:-.024em}
+.subhead{font-size:15px;letter-spacing:-.01em}
+.foot{font-size:13px;letter-spacing:-.006em}
+.cap{font-size:12px;letter-spacing:0}
+.sec-label{font-size:13px;font-weight:400;letter-spacing:.02em;text-transform:uppercase;color:var(--ink2);padding:0 16px 7px}
+
+/* ---------- shell ---------- */
+#app{max-width:640px;margin:0 auto;padding:0 16px;padding-block:8px 108px}
+.navbar{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;padding:12px 0 16px}
+.navbar .lg-title{line-height:1}
+.navbar-sub{font-size:13px;color:var(--ink2);margin-top:5px;letter-spacing:-.006em}
+.circbtn{width:32px;height:32px;border-radius:50%;background:var(--fill);display:grid;place-items:center;color:var(--accent);flex:none;font-size:15px;transition:opacity .15s}
+.circbtn:active{opacity:.5}
+
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:60;
+  background:color-mix(in srgb,var(--bg) 72%,transparent);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  border-top:.5px solid var(--sep);padding-bottom:env(safe-area-inset-bottom)}
+.tabbar-in{max-width:640px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
+.tab{display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 2px 6px;color:var(--ink3);font-size:10px;font-weight:500;letter-spacing:.005em;transition:color .15s}
+.tab svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tab[aria-selected="true"]{color:var(--accent)}
+
+/* ---------- grouped inset lists (the core iOS surface) ---------- */
+.group{background:var(--s1);border-radius:var(--r-card);overflow:hidden}
+.stack{display:flex;flex-direction:column;gap:22px}
+.tight{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:center;gap:10px}
+.grow{flex:1;min-width:0}
+.cell{display:flex;align-items:center;gap:12px;padding:12px 16px;position:relative}
+.cell + .cell::before{content:"";position:absolute;top:0;left:16px;right:0;height:.5px;background:var(--sep)}
+.cell-body{flex:1;min-width:0}
+.cell-title{font-size:17px;letter-spacing:-.024em}
+.cell-sub{font-size:13px;color:var(--ink2);margin-top:2px;letter-spacing:-.006em;line-height:1.35}
+.cell-val{font-size:17px;color:var(--ink2);letter-spacing:-.024em;flex:none}
+.chev{color:var(--ink3);font-size:15px;flex:none;margin-left:-2px}
+button.cell{width:100%;text-align:left;transition:background .1s}
+button.cell:active{background:var(--fill)}
+.pad{padding:16px}
+
+/* ---------- hero readout ---------- */
+.hero{background:var(--s1);border-radius:var(--r-lg);padding:22px 20px 18px;text-align:center}
+.dial{position:relative;width:168px;height:168px;margin:0 auto 14px}
+.dial svg{transform:rotate(-90deg);display:block}
+.dial-val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.dial-val b{font-size:56px;font-weight:600;letter-spacing:-.04em;line-height:1;font-variant-numeric:tabular-nums}
+.dial-val small{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);margin-top:5px}
+.rank-name{font-size:24px;font-weight:700;letter-spacing:-.024em}
+.rank-sub{font-size:14px;color:var(--ink2);line-height:1.42;margin-top:5px;letter-spacing:-.01em;max-width:34ch;margin-inline:auto}
+.statrow{display:grid;grid-template-columns:repeat(3,1fr);margin-top:20px;border-top:.5px solid var(--sep);padding-top:16px}
+.statcell{text-align:center;position:relative}
+.statcell + .statcell::before{content:"";position:absolute;left:0;top:2px;bottom:2px;width:.5px;background:var(--sep)}
+.statcell b{display:block;font-size:21px;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.statcell span{display:block;font-size:11px;color:var(--ink2);margin-top:3px;letter-spacing:-.004em}
+
+/* ---------- bars / meters ---------- */
+.bar{height:6px;border-radius:99px;background:var(--fill);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;transition:width .55s cubic-bezier(.3,.8,.3,1)}
+.split{display:flex;height:8px;border-radius:99px;overflow:hidden;background:var(--fill)}
+.split i{display:block;height:100%}
+.dot{width:9px;height:9px;border-radius:50%;flex:none}
+.meterrow{padding:11px 16px;position:relative}
+.meterrow + .meterrow::before{content:"";position:absolute;top:0;left:16px;right:0;height:.5px;background:var(--sep)}
+.meterrow .top{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.meterrow .nm{font-size:15px;letter-spacing:-.01em;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meterrow .pc{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;flex:none}
+.meterrow .note{font-size:12px;color:var(--ink2);margin-top:7px;letter-spacing:-.004em}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:13px 20px;
+  border-radius:var(--r-ctl);background:var(--fill);font-size:17px;font-weight:600;letter-spacing:-.024em;
+  transition:opacity .12s,transform .12s}
+.btn:active{opacity:.6;transform:scale(.975)}
+.btn.filled{background:var(--accent);color:var(--on-accent)}
+.btn.tinted{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.btn.danger{background:color-mix(in srgb,var(--red) 16%,transparent);color:var(--red)}
+.btn.plain{background:none;color:var(--accent);padding:10px 6px}
+.btn.wide{width:100%}
+.btn.sm{padding:7px 14px;font-size:15px;border-radius:8px;font-weight:500}
+.btn:disabled{opacity:.35;pointer-events:none}
+.btnrow{display:flex;gap:10px}
+.btnrow > .btn{flex:1}
+
+/* ---------- segmented control ---------- */
+.seg{display:flex;background:var(--fill);border-radius:9px;padding:2px;gap:2px}
+.seg button{flex:1;padding:7px 8px;border-radius:7px;font-size:13px;font-weight:500;color:var(--ink);letter-spacing:-.008em;transition:background .18s}
+.seg button[aria-pressed="true"]{background:var(--s3);font-weight:600;box-shadow:0 3px 8px rgba(0,0,0,.24),0 1px 1px rgba(0,0,0,.14)}
+:root[data-theme="light"] .seg button[aria-pressed="true"]{background:#fff;box-shadow:0 3px 8px rgba(0,0,0,.12),0 1px 1px rgba(0,0,0,.04)}
+
+/* ---------- badges ---------- */
+.badge{display:inline-flex;align-items:center;font-size:12px;font-weight:600;padding:3px 8px;border-radius:99px;
+  background:var(--fill);color:var(--ink2);letter-spacing:-.004em}
+.badge.blue{background:color-mix(in srgb,var(--blue) 18%,transparent);color:var(--blue)}
+.badge.green{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
+.badge.red{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
+.badge.orange{background:color-mix(in srgb,var(--orange) 18%,transparent);color:var(--orange)}
+.badges{display:flex;gap:6px;flex-wrap:wrap}
+
+/* ---------- quiz ---------- */
+.qhead{display:flex;align-items:center;gap:12px;padding:6px 0 14px}
+.track{flex:1;height:4px;border-radius:99px;background:var(--fill);overflow:hidden}
+.track i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .35s cubic-bezier(.3,.8,.3,1)}
+.qtext{font-size:24px;font-weight:600;line-height:1.25;letter-spacing:-.024em;margin:14px 0 20px;text-wrap:pretty}
+.opts{display:flex;flex-direction:column;gap:9px}
+.opt{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;padding:15px 16px;
+  border-radius:var(--r-card);background:var(--s1);font-size:16px;line-height:1.34;letter-spacing:-.016em;
+  border:1.5px solid transparent;transition:background .12s,border-color .12s,transform .12s}
+.opt:active:not(:disabled){transform:scale(.985);background:var(--s2)}
+.opt .key{width:22px;height:22px;border-radius:50%;background:var(--fill);color:var(--ink2);
+  font-size:12px;font-weight:600;display:grid;place-items:center;flex:none;margin-top:1px}
+.opt.correct{border-color:var(--green);background:color-mix(in srgb,var(--green) 13%,var(--s1))}
+.opt.correct .key{background:var(--green);color:#fff}
+.opt.wrong{border-color:var(--red);background:color-mix(in srgb,var(--red) 13%,var(--s1))}
+.opt.wrong .key{background:var(--red);color:#fff}
+.opt.picked{border-color:var(--accent)}
+.opt.picked .key{background:var(--accent);color:var(--on-accent)}
+.opt.dim{opacity:.42}
+.opt:disabled{cursor:default}
+
+.explain{margin-top:18px;background:var(--s1);border-radius:var(--r-card);overflow:hidden}
+.explain-head{display:flex;align-items:center;gap:9px;padding:14px 16px 0;font-size:17px;font-weight:600;letter-spacing:-.024em}
+.explain-head .mark{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:13px;color:#fff;flex:none}
+.explain p{margin:9px 16px 0;font-size:15px;line-height:1.47;color:var(--ink2);letter-spacing:-.01em}
+.explain .inpractice{margin:14px 16px 0;background:var(--s2);border-radius:9px;padding:12px 13px;font-size:14px;line-height:1.45;color:var(--ink2);letter-spacing:-.008em}
+.explain .inpractice b{color:var(--ink);font-weight:600}
+.explain .watch{display:flex;align-items:center;gap:8px;margin-top:14px;padding:13px 16px;
+  border-top:.5px solid var(--sep);color:var(--accent);font-size:15px;font-weight:500;text-decoration:none;letter-spacing:-.01em}
+
+/* ---------- flashcards ---------- */
+.fc{perspective:1400px;margin:6px 0 16px}
+.fc-in{position:relative;min-height:250px;transition:transform .55s cubic-bezier(.32,.72,0,1);transform-style:preserve-3d}
+.fc.flipped .fc-in{transform:rotateY(180deg)}
+.fc-face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;
+  border-radius:var(--r-lg);background:var(--s1);padding:26px 22px;display:flex;flex-direction:column;
+  justify-content:center;align-items:center;gap:10px;text-align:center}
+.fc-back{transform:rotateY(180deg);align-items:stretch;justify-content:flex-start;text-align:left;overflow-y:auto;padding:22px}
+.fc-term{font-size:32px;font-weight:700;letter-spacing:-.03em;line-height:1.14}
+.fc-hint{font-size:13px;color:var(--ink3)}
+.fc-def{font-size:17px;line-height:1.42;letter-spacing:-.018em;margin-top:8px}
+.fc-ex{font-size:14px;line-height:1.45;color:var(--ink2);background:var(--s2);border-radius:9px;padding:12px 13px;margin-top:14px;letter-spacing:-.008em}
+
+/* ---------- speed round ---------- */
+.speed-term{font-size:38px;font-weight:700;letter-spacing:-.032em;text-align:center;line-height:1.12;margin:26px 0 6px}
+
+/* ---------- exam ---------- */
+.exam-hud{position:sticky;top:0;z-index:40;margin:0 -16px 8px;padding:10px 16px;
+  background:color-mix(in srgb,var(--bg) 74%,transparent);
+  -webkit-backdrop-filter:var(--blur);backdrop-filter:var(--blur);
+  border-bottom:.5px solid var(--sep);display:flex;align-items:center;gap:12px}
+.clock{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.clock.low{color:var(--red)}
+.qgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(38px,1fr));gap:7px}
+.qcell{aspect-ratio:1;border-radius:9px;background:var(--fill);font-size:13px;font-weight:500;
+  display:grid;place-items:center;color:var(--ink2);font-variant-numeric:tabular-nums;border:1.5px solid transparent}
+.qcell.done{background:var(--s3);color:var(--ink)}
+.qcell.flag{border-color:var(--orange);color:var(--orange)}
+.qcell.cur{border-color:var(--accent);color:var(--accent)}
+.bigscore{font-size:68px;font-weight:700;letter-spacing:-.045em;line-height:1;font-variant-numeric:tabular-nums}
+
+/* ---------- PBQ ---------- */
+.pool{display:flex;flex-wrap:wrap;gap:8px;padding:13px;border-radius:var(--r-card);background:var(--s1);min-height:56px;align-content:flex-start}
+.chip{padding:9px 13px;border-radius:9px;background:var(--s2);font-size:15px;letter-spacing:-.014em;
+  user-select:none;line-height:1.28;transition:transform .12s,background .12s}
+.chip:active{transform:scale(.95)}
+.chip.armed{background:var(--accent);color:var(--on-accent);font-weight:500}
+.slot{display:flex;align-items:center;gap:11px;padding:12px 14px;border-radius:var(--r-card);
+  background:var(--s1);min-height:52px;border:1.5px solid transparent;transition:border-color .15s}
+.slot.armed{border-color:color-mix(in srgb,var(--accent) 50%,transparent);border-style:dashed}
+.slot-n{width:22px;height:22px;border-radius:50%;background:var(--fill);color:var(--ink2);font-size:12px;
+  font-weight:600;display:grid;place-items:center;flex:none}
+.slot-label{font-size:14px;color:var(--ink2);flex:1;min-width:0;letter-spacing:-.008em;line-height:1.3}
+.slot-val{font-size:15px;letter-spacing:-.014em}
+.slot.right{border-color:var(--green);background:color-mix(in srgb,var(--green) 11%,var(--s1))}
+.slot.miss{border-color:var(--red);background:color-mix(in srgb,var(--red) 11%,var(--s1))}
+
+/* ---------- heatmap ---------- */
+.heat{display:grid;grid-template-columns:repeat(auto-fill,minmax(14px,1fr));gap:5px}
+.heat i{aspect-ratio:1;border-radius:3.5px;background:var(--fill);display:block}
+.heat i[data-l="1"]{background:color-mix(in srgb,var(--accent) 30%,transparent)}
+.heat i[data-l="2"]{background:color-mix(in srgb,var(--accent) 62%,transparent)}
+.heat i[data-l="3"]{background:var(--accent)}
+.heat i[data-today]{box-shadow:0 0 0 1.5px var(--ink3)}
+
+/* ---------- sheet ---------- */
+.sheet{position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);animation:fade .22s ease}
+.sheet-in{background:var(--bg);border-radius:14px 14px 0 0;width:100%;max-width:640px;
+  padding:10px 16px calc(24px + env(safe-area-inset-bottom));max-height:88vh;overflow-y:auto;animation:up .32s cubic-bezier(.32,.72,0,1)}
+@keyframes fade{from{opacity:0}} @keyframes up{from{transform:translateY(100%)}}
+.grabber{width:36px;height:5px;border-radius:99px;background:var(--ink4);margin:0 auto 12px}
+.sheet-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+.field{padding:11px 16px;position:relative}
+.field + .field::before{content:"";position:absolute;top:0;left:16px;right:0;height:.5px;background:var(--sep)}
+.field label{display:block;font-size:13px;color:var(--ink2);margin-bottom:7px;letter-spacing:-.006em}
+.field input{width:100%;background:var(--fill);border:none;border-radius:8px;padding:11px 12px;
+  color:var(--ink);font:inherit;font-size:16px;letter-spacing:-.018em}
+.field input::placeholder{color:var(--ink3)}
+
+.toast{position:fixed;left:50%;bottom:104px;transform:translateX(-50%);max-width:88vw;
+  background:var(--s3);color:var(--ink);padding:11px 18px;border-radius:99px;font-size:15px;font-weight:500;
+  z-index:100;box-shadow:0 8px 30px rgba(0,0,0,.4);animation:up2 .3s cubic-bezier(.32,.72,0,1);letter-spacing:-.014em}
+@keyframes up2{from{transform:translate(-50%,14px);opacity:0}}
+.syncpill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500;color:var(--ink2)}
+.syncpill i{width:7px;height:7px;border-radius:50%;background:var(--ink3);display:block}
+.syncpill.on i{background:var(--green)}
+.syncpill.err i{background:var(--orange)}
+
+.empty{text-align:center;padding:40px 20px;color:var(--ink2);font-size:15px;line-height:1.5}
+.hint{font-size:13px;color:var(--ink2);line-height:1.45;padding:9px 16px 0;letter-spacing:-.006em}
+.code{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:14px;letter-spacing:0}
+
+@media (max-width:400px){
+  #app{padding:0 14px;padding-block:8px 104px}
+  .exam-hud{margin-left:-14px;margin-right:-14px;padding-left:14px;padding-right:14px}
+  .dial{width:150px;height:150px}
+  .dial-val b{font-size:50px}
+  .lg-title{font-size:30px}
+  .qtext{font-size:22px}
+}
+</style>
+
+<div id="app">
+  <div class="navbar">
+    <div class="grow">
+      <h1 class="lg-title" id="navTitle">Status</h1>
+      <div class="navbar-sub" id="navSub">CompTIA A+ · 220-1201 &amp; 220-1202</div>
+    </div>
+    <div class="row" style="gap:9px;padding-bottom:3px">
+      <span class="syncpill" id="syncPill"><i></i><span id="syncTxt">Local</span></span>
+      <button class="circbtn" id="btnSettings" aria-label="Settings"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.1"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.7 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></button>
+    </div>
+  </div>
+  <div id="screen"></div>
+</div>
+
+<nav class="tabbar"><div class="tabbar-in" id="tabs"></div></nav>

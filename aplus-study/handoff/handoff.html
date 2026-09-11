@@ -1,0 +1,623 @@
+<title>Bench Test Handoff</title>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#fbfaf8; --panel:#ffffff; --panel2:#f4f2ef; --line:#e0dcd6; --line2:#cac4bb;
+  --ink:#1a1815; --ink2:#5d574e; --ink3:#8d867b;
+  --accent:#8a5a1f; --accent-bg:#f7efe2;
+  --ok:#1f6b45; --ok-bg:#e6f3ec;
+  --warn:#96610b; --warn-bg:#fdf2dd;
+  --bad:#9e2f2a; --bad-bg:#fbeae8;
+  --codebg:#f4f2ef;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#161513; --panel:#1e1d1a; --panel2:#262421; --line:#33302b; --line2:#46423b;
+    --ink:#ece8e1; --ink2:#aaa298; --ink3:#7d766c;
+    --accent:#e0a458; --accent-bg:#2c2519;
+    --ok:#5cc48d; --ok-bg:#152a20;
+    --warn:#e0a458; --warn-bg:#2c2519;
+    --bad:#f08079; --bad-bg:#2d1a19;
+    --codebg:#141311;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#161513; --panel:#1e1d1a; --panel2:#262421; --line:#33302b; --line2:#46423b;
+  --ink:#ece8e1; --ink2:#aaa298; --ink3:#7d766c;
+  --accent:#e0a458; --accent-bg:#2c2519;
+  --ok:#5cc48d; --ok-bg:#152a20;
+  --warn:#e0a458; --warn-bg:#2c2519;
+  --bad:#f08079; --bad-bg:#2d1a19;
+  --codebg:#141311;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);margin:0;
+  font:16px/1.6 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  -webkit-text-size-adjust:100%}
+.wrap{max-width:820px;margin:0 auto;padding:0 20px;padding-block:32px 80px}
+h1{font-size:30px;line-height:1.18;margin:0 0 6px;letter-spacing:-.02em;text-wrap:balance}
+h2{font-size:21px;margin:44px 0 12px;padding-top:22px;border-top:1px solid var(--line);letter-spacing:-.015em;text-wrap:balance}
+h2:first-of-type{border-top:none;padding-top:0}
+h3{font-size:16px;margin:26px 0 8px;letter-spacing:-.01em}
+h4{font-size:14px;margin:18px 0 6px;color:var(--ink2);font-weight:600}
+p{margin:0 0 12px}
+ul,ol{margin:0 0 12px;padding-left:22px}
+li{margin-bottom:5px}
+a{color:var(--accent)}
+small{font-size:13px;color:var(--ink3)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.88em;
+  background:var(--panel2);padding:1.5px 5px;border-radius:4px;word-break:break-word}
+pre{background:var(--codebg);border:1px solid var(--line);border-radius:8px;padding:14px;
+  overflow-x:auto;margin:0 0 14px;font-size:13px;line-height:1.55}
+pre code{background:none;padding:0;font-size:inherit;word-break:normal}
+.sub{color:var(--ink2);font-size:15px;margin:0 0 4px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;color:var(--ink3);margin-top:14px}
+.note{border-left:3px solid var(--line2);padding:12px 14px;background:var(--panel);border-radius:0 8px 8px 0;margin:0 0 16px;font-size:15px}
+.note.warn{border-left-color:var(--warn);background:var(--warn-bg)}
+.note.bad{border-left-color:var(--bad);background:var(--bad-bg)}
+.note.ok{border-left-color:var(--ok);background:var(--ok-bg)}
+.note p:last-child{margin-bottom:0}
+.tablewrap{overflow-x:auto;margin:0 0 16px;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:420px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--panel2);font-weight:600;font-size:12.5px;letter-spacing:.03em;text-transform:uppercase;color:var(--ink2)}
+tr:last-child td{border-bottom:none}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+.tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:99px;white-space:nowrap}
+.tag.done{background:var(--ok-bg);color:var(--ok)}
+.tag.part{background:var(--warn-bg);color:var(--warn)}
+.tag.no{background:var(--bad-bg);color:var(--bad)}
+.prompt{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:0 8px 8px 0;padding:13px 15px;margin:0 0 14px}
+.prompt .who{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink3);margin-bottom:7px}
+.prompt .said{white-space:pre-wrap;font-size:15px;line-height:1.55}
+.prompt .said em{color:var(--ink3);font-style:normal;font-size:13px}
+.files{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.75;
+  background:var(--codebg);border:1px solid var(--line);border-radius:8px;padding:14px;overflow-x:auto;white-space:pre}
+.toc{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 18px;margin:22px 0 0}
+.toc ol{margin:0;padding-left:20px;font-size:14.5px}
+.toc li{margin-bottom:3px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:14px;margin:0 0 14px}
+.kv dt{color:var(--ink3)}
+.kv dd{margin:0;word-break:break-word}
+hr{border:none;border-top:1px solid var(--line);margin:30px 0}
+@media (max-width:520px){
+  .wrap{padding:0 16px;padding-block:26px 70px}
+  h1{font-size:25px} h2{font-size:19px}
+  .kv{grid-template-columns:1fr;gap:0 0}
+  .kv dt{margin-top:8px}
+}
+</style>
+
+<div class="wrap">
+
+<h1>Bench Test — handoff</h1>
+<p class="sub">A CompTIA A+ study tracker built in one session. Everything that happened, what got built, what didn't, and how to finish it.</p>
+
+<div class="meta">
+  <span>Session 2026-09-10</span>
+  <span>Repo <code>MRRDO/gta-x</code></span>
+  <span>Branch <code>claude/aplus-study-tracker-k8m7yp</code></span>
+</div>
+
+<div class="note warn" style="margin-top:22px">
+<p><b>Heads up:</b> this page lives on claude.ai, which is blocked on your Chromebook. The same content is in the handoff zip and committed to the repo at <code>aplus-study/handoff/</code> — read it there if you're on the Chromebook.</p>
+</div>
+
+<div class="toc">
+<ol>
+  <li><a href="#state">Current state — read first</a></li>
+  <li><a href="#prompts">Every prompt you sent, verbatim</a></li>
+  <li><a href="#what">What the app is</a></li>
+  <li><a href="#content">The question bank</a></li>
+  <li><a href="#how">How it's built &amp; how data is stored</a></li>
+  <li><a href="#files">Every file, where it is</a></li>
+  <li><a href="#verified">What was verified (and what wasn't)</a></li>
+  <li><a href="#todo1">TODO 1 — ngrok + code sync</a></li>
+  <li><a href="#todo2">TODO 2 — stop repeating questions</a></li>
+  <li><a href="#todo3">TODO 3 — finish the Apple redesign</a></li>
+  <li><a href="#compromises">Known compromises</a></li>
+  <li><a href="#links">Links</a></li>
+</ol>
+</div>
+
+<h2 id="state">1. Current state — read first</h2>
+
+<p><b>The app is finished and working. The rework you asked for at the end is not.</b></p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Thing</th><th>State</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>The A+ study app, all features</td><td><span class="tag done">Done</span></td><td>Built, validated, rendered, shipped</td></tr>
+<tr><td>Published as a Claude Artifact</td><td><span class="tag done">Live</span></td><td>Works on phone &amp; Mac. <b>Blocked on your Chromebook.</b></td></tr>
+<tr><td>Committed + draft PR opened</td><td><span class="tag done">Done</span></td><td>PR #17, clean and mergeable</td></tr>
+<tr><td>Handoff docs + sync server in repo</td><td><span class="tag done">Done</span></td><td>Second commit, pushed</td></tr>
+<tr><td>1. ngrok + code sync</td><td><span class="tag part">Half</span></td><td>Server written &amp; tested. Client code specced, not wired in.</td></tr>
+<tr><td>2. Stop repeating questions</td><td><span class="tag no">Not started</span></td><td>Algorithm written out, ~20 line change</td></tr>
+<tr><td>3. Apple redesign</td><td><span class="tag part">Half</span></td><td>New CSS written. Engine not rewired to match.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note bad">
+<p><b>The broken bit, precisely.</b> <code>src/p1-APPLE-REDESIGN-unfinished.html</code> is a complete new stylesheet in Apple's design language. <code>src/p5.js</code> is still the <b>old</b> engine and emits the <b>old</b> class names. <b>They do not match.</b> Concatenate them and you get a mostly unstyled page.</p>
+<p>Everything in <code>app/</code> is the last known-good build using the original stylesheet. That one runs today.</p>
+</div>
+
+<h3>Why the plan changed mid-session</h3>
+<p>The app was originally built as a Claude Artifact because that gets cross-device sync with no login screen — it binds to the Claude account already signed in on each device. That was the right call <em>until</em> you said claude.ai is blocked on your Chromebook. That's a hard constraint the Artifact can't work around, so the direction switched to a self-hosted app behind an ngrok tunnel with a secret code. The switch is specced but not implemented.</p>
+
+<h2 id="prompts">2. Every prompt you sent, verbatim</h2>
+
+<div class="prompt"><div class="who">You — turn 1</div><div class="said">don't make this rn but starting at 3:30 i want you to make a site for me to study for the A+ exam and it must keep track of my progress across sessions. the site is only for me so no login and it should track across devices. lmk what questions you have but don't make it until it's time. you can ask questions rn if u wanna</div></div>
+
+<p><small>I held off building and asked 4 questions: which A+ version, how sync should work, which study modes, and where the question content comes from.</small></p>
+
+<div class="prompt"><div class="who">You — turn 2, answering "which A+ are we studying for?"</div><div class="said">i'm not sure. i think both? i mainly wanna do hardware and a bit of software but not coding software. also the new ones. but also add a feature for like semesters i guess idk where basically for each semester it tracks my scores and gives me a breakdown but then if i do bad on sum it'll tell me and maybe recommend those more. it should also have videos linked that will help me learn it and explanations with examples. but i can start a new chapter semester thing when i want. it should also have a right wrong ratio please.</div></div>
+
+<div class="prompt"><div class="who">You — turn 2, answering "how should sync work?"</div><div class="said">maybe ngrok?</div></div>
+
+<div class="prompt"><div class="who">You — turn 2, answering "which modes do you want?"</div><div class="said">Practice quizzes + weak-area tracking, Flashcards w/ spaced repetition, Timed full exam simulation, Streaks + daily goal + study calendar, make the times full exam a seperate thing cause i'm not gonna do it daily. also add a shortened version of it where i can split it. so i can do 10 min now, 20 later and so on. lmk what other features you think will be good</div></div>
+
+<div class="prompt"><div class="who">You — turn 2, answering "where's the content coming from?"</div><div class="said">You write it all from the objectives</div></div>
+
+<p><small>I pushed back on ngrok (tunnel dies when the laptop sleeps; free-tier URLs rotate), recommended the Artifact, and pitched extras: acronym/port speed rounds, a "why I was wrong" bin, a confidence tap, PBQ drag-and-drop sims, an exam countdown, and homescreen/dark-mode polish. Then asked 4 more questions.</small></p>
+
+<div class="prompt"><div class="who">You — turn 3, on sync</div><div class="said">i don't wanna have to sign into a site tho that's my point. why can't we just go what i said in ngrok?</div></div>
+
+<div class="prompt"><div class="who">You — turn 3, on the 3:30 start time</div><div class="said">nvm start now</div></div>
+
+<div class="prompt"><div class="who">You — turn 3, on which extras</div><div class="said">acronym + port speed rounds, PBQ drag &amp; drop sims, exam countdown + homescreen app feel, for the home screen thing just make it show like my status on how good i am</div></div>
+
+<div class="prompt"><div class="who">You — turn 3, on exam date</div><div class="said">not scheduled yet</div></div>
+
+<p><small>I explained the Artifact has no login screen — it's the Claude account you're already signed into — and built the whole app. Published it, committed, opened draft PR #17.</small></p>
+
+<div class="prompt"><div class="who">You — turn 4</div><div class="said">continue working</div></div>
+
+<p><small>Checked PR #17 (clean). Tried to upgrade the video links to real Professor Messer URLs — <b>professormesser.com is blocked by this environment's network egress policy</b>, both curl and WebFetch refused, so I didn't ship guessed links. Pivoted to writing an end-to-end test for the exam pause/resume path. You interrupted before it ran.</small></p>
+
+<div class="prompt"><div class="who">You — turn 5</div><div class="said">but i can't access claude on my chromebook. it's blocked. just do ngrok with a code
+make sure i don't get too many of the same questions too often
+make the site more apple themed. make it look like its designed by apple and a clean dark theme and stuff too.</div></div>
+
+<p><small>Accepted the ngrok direction — the blocked-Chromebook constraint was new information that invalidates the Artifact for your actual use case. Started the rework and got the Apple stylesheet written before the next interrupt.</small></p>
+
+<div class="prompt"><div class="who">You — turn 6</div><div class="said">i can't get to claude on my chromebook. use ngrok instead with a code.
+let's stop and make a handoff doc explaining everything i got an idea. include files from this in that doc as well</div></div>
+
+<p><small>Stopped feature work, built the handoff zip, committed it to the repo.</small></p>
+
+<div class="prompt"><div class="who">You — turn 7</div><div class="said">just put all the info you have so far including my prompts into a handoff artifact. make sure the artifact explains it all. it doesn't have to look pretty at all.</div></div>
+
+<p><small>This page.</small></p>
+
+<h2 id="what">3. What the app is</h2>
+
+<p>A single-file study app for the current <b>CompTIA A+ V15</b> exams — <b>220-1201</b> (Core 1) and <b>220-1202</b> (Core 2), the objectives that replaced 1101/1102 in September 2025. Domain names, weights, the 90-question/90-minute format and the 675/700 cut scores were confirmed by web search, not written from memory.</p>
+
+<p>It's one HTML file. No build system, no dependencies, no framework. Opens from disk and works.</p>
+
+<h3>Five tabs</h3>
+
+<h4>Status</h4>
+<p>A readiness dial scored as <b>accuracy × coverage</b>, weighted by the real exam domain percentages — so grinding one easy domain can't fake a good score, and zero coverage in a domain caps you no matter how good your accuracy is. Plus a rank label that escalates from "Cold Boot" to "Overqualified", lifetime right/wrong ratio, day streak, daily goal ring, exam countdown, a per-domain readout, and weak-spot callouts that jump straight into a drill on that domain.</p>
+
+<h4>Drill</h4>
+<p>Smart mix (weights unseen questions, previous misses, and weak domains), redo-my-misses, per-domain sets, and 8 drag-and-drop performance-based sims.</p>
+<p>The 8 PBQs: troubleshooting methodology order, T568B pin order, laser printing steps, port matching, RAID selection, Windows tool matching, malware removal order, tool selection.</p>
+
+<h4>Cards</h4>
+<p>60 flashcards on a Leitner spaced-repetition schedule — miss it and it's back tomorrow; know it and it returns in 1, 3, 7, then 21 days. Plus a 60-second ports-and-acronyms speed round with a saved personal best.</p>
+
+<h4>Exam</h4>
+<p>Deliberately separate from daily practice, because you said you wouldn't do it daily. 30 / 45 / 90 questions. <b>Pausable mid-attempt with the clock frozen</b>, so one exam splits across sittings — 10 minutes now, 20 tonight, resumes on the exact question with the exact time remaining. Question navigator grid, flagging, a pre-submit review screen, an estimated 100–900 scaled score against the real 675/700 cut lines, and a per-domain post-mortem that offers to drill whichever domain cost the most points.</p>
+
+<h4>Progress</h4>
+<p>A 12-week study heatmap, and <b>semesters</b> you open and close whenever you want. Each keeps its own accuracy, W/L ratio, per-domain breakdown, and targeted recommendations — e.g. "Networking is at 41% — this is bleeding points, run a full domain drill before anything else."</p>
+
+<h3>Things you asked for that are in there</h3>
+<ul>
+<li>Both cores, current objectives, hardware-heavy ✅</li>
+<li>Semesters you start on demand, each with its own breakdown + recommendations ✅</li>
+<li>Right/wrong ratio ✅ (on Status and per-semester)</li>
+<li>Explanations with worked examples on every question ✅</li>
+<li>Video links ✅ (with a caveat — see <a href="#compromises">Compromises</a>)</li>
+<li>Timed exam as its own thing, splittable across sittings ✅</li>
+<li>Acronym + port speed round ✅</li>
+<li>PBQ drag &amp; drop ✅</li>
+<li>Exam countdown + homescreen app feel + status on the home screen ✅</li>
+</ul>
+
+<h3>Things you asked for that are NOT in there</h3>
+<ul>
+<li><b>Confidence tap</b> (knew it vs guessed) — offered it, you didn't select it, so I left it out. "Redo my misses" covers the adjacent need.</li>
+<li>The three items from turn 5 — see TODOs below.</li>
+</ul>
+
+<h2 id="content">4. The question bank</h2>
+
+<p><b>210 questions</b> across all nine domains, distributed roughly by official exam weighting and skewed toward hardware. Every single one carries an explanation, a concrete worked example, and a topic-scoped video link. Plus 60 flashcards, 50 speed-round terms, 8 PBQs.</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Core</th><th>Domain</th><th class="n">Questions</th><th class="n">Exam weight</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1.0 Mobile Devices</td><td class="n">16</td><td class="n">13%</td></tr>
+<tr><td>1</td><td>2.0 Networking</td><td class="n">26</td><td class="n">23%</td></tr>
+<tr><td>1</td><td>3.0 Hardware</td><td class="n">32</td><td class="n">25%</td></tr>
+<tr><td>1</td><td>4.0 Virtualization &amp; Cloud</td><td class="n">12</td><td class="n">11%</td></tr>
+<tr><td>1</td><td>5.0 Hardware &amp; Network Troubleshooting</td><td class="n">30</td><td class="n">28%</td></tr>
+<tr><td>2</td><td>1.0 Operating Systems</td><td class="n">28</td><td class="n">28%</td></tr>
+<tr><td>2</td><td>2.0 Security</td><td class="n">26</td><td class="n">28%</td></tr>
+<tr><td>2</td><td>3.0 Software Troubleshooting</td><td class="n">20</td><td class="n">23%</td></tr>
+<tr><td>2</td><td>4.0 Operational Procedures</td><td class="n">20</td><td class="n">21%</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Question data shape</h3>
+<pre><code>{
+  i: "h02",          // unique id
+  d: "c1d3",         // domain key (core 1, domain 3)
+  o: "3.2",          // objective number
+  t: "RAID levels",  // topic, used to build the video search link
+  q: "Which RAID level stripes data with distributed parity...",
+  c: ["RAID 5", "RAID 0", "RAID 1", "RAID 10"],   // always exactly 4
+  a: 0,              // index of the correct answer
+  w: "RAID 5 stripes across three or more disks...",  // the "why"
+  x: "Cheat sheet: RAID 0 = speed, no redundancy..."  // worked example
+}</code></pre>
+<p>Choices are shuffled at display time, so the answer being at index 0 in the data doesn't matter.</p>
+
+<h2 id="how">5. How it's built &amp; how data is stored</h2>
+
+<h3>The build</h3>
+<p>There is no build system. Five source files get concatenated in order:</p>
+<pre><code>cat p1-ORIGINAL-working.html p2.js p3.js p4.js p5.js &gt; artifact-source.html</code></pre>
+<ul>
+<li><code>p1-*.html</code> — the stylesheet and the page shell (nav bar, screen container, tab bar)</li>
+<li><code>p2.js</code> — domain definitions + Core 1 questions (116)</li>
+<li><code>p3.js</code> — Core 2 questions (94)</li>
+<li><code>p4.js</code> — flashcards, speed round terms, PBQ definitions</li>
+<li><code>p5.js</code> — the entire app engine: state, scoring, routing, every view</li>
+</ul>
+<p>For a standalone file, wrap that output in a doctype/head/body. <code>app/index.html</code> is already wrapped and opens from disk. <code>app/artifact-source.html</code> is unwrapped because the Artifact host supplies the wrapper itself.</p>
+
+<p>Sanity check after editing:</p>
+<pre><code>node --check &lt;(python3 -c "import re; print(re.findall(r'&lt;script&gt;(.*?)&lt;/script&gt;', open('artifact-source.html').read(), re.S)[1])")</code></pre>
+
+<h3>The state object</h3>
+<pre><code>{
+  v: 1, updatedAt: &lt;ms&gt;,
+  profile:  { examDate, dailyGoal, focus:"both"|"c1"|"c2", theme:"auto"|"dark"|"light" },
+  mastery:  { "&lt;questionId&gt;": { c, w, seen, lastWrong } },   // c = correct, w = wrong
+  cards:    { "&lt;cardId&gt;":     { box:0-4, due:&lt;dayNumber&gt;, reps } },
+  days:     { "2026-09-10":   { a:&lt;answered&gt;, c:&lt;correct&gt; } },
+  streak:   { n, last },
+  semesters:[ { id, name, start, end, dom:{ "&lt;domainKey&gt;":{c,w} }, tot:{c,w} } ],
+  cur:      "&lt;active semester id&gt;",
+  exam:     { core, qids[], answers[], flags[], orders{}, i, remain,
+              started, submitted, result } | null,
+  examHistory: [ { core, scaled, right, n, pass, date } ],
+  bestSpeed: &lt;number&gt;
+}</code></pre>
+
+<h3>Where it's persisted</h3>
+<ul>
+<li><b><code>localStorage["benchtest.state.v1"]</code></b> — written synchronously on every change. Source of truth on-device; makes the app work fully offline and render instantly.</li>
+<li><b>Artifact DB doc <code>state/main</code></b> — debounced 700 ms. <em>This is the layer that gets swapped for the ngrok server.</em></li>
+</ul>
+
+<h3>The merge (this is the important part)</h3>
+<p>On boot the two copies are merged <b>field-wise</b>, not last-writer-wins, so studying on a phone and then a laptop never throws away either side:</p>
+<ul>
+<li>per-question mastery keeps whichever record has more attempts</li>
+<li>per-day counts keep the higher value</li>
+<li>semesters union by id</li>
+<li>the longer streak and higher speed-round best win</li>
+</ul>
+<p><code>mergeState(a, b)</code> in <code>p5.js</code> is about 25 lines and is <b>reused as-is for the ngrok sync</b>. That's the main reason swapping the backend is a small job rather than a rewrite.</p>
+
+<h2 id="files">6. Every file, where it is</h2>
+
+<p>Everything below is in the handoff zip <b>and</b> committed to the repo under <code>aplus-study/</code> on branch <code>claude/aplus-study-tracker-k8m7yp</code>.</p>
+
+<div class="files">bench-test-handoff/
+├── HANDOFF.md                              the doc this page is based on
+├── TRANSCRIPT.md                           full chat transcript, every turn
+├── app/
+│   ├── index.html                          WORKING BUILD — open this
+│   ├── artifact-source.html                same, no doctype wrapper
+│   └── README.md                           the app's repo README
+├── source-parts/                           the build = these concatenated
+│   ├── p1-ORIGINAL-working.html            styles + shell (matches p5.js)
+│   ├── p1-APPLE-REDESIGN-unfinished.html   new Apple CSS (does NOT match p5.js)
+│   ├── p2.js                               Core 1 questions (116)
+│   ├── p3.js                               Core 2 questions (94)
+│   ├── p4.js                               flashcards, speed round, PBQs
+│   └── p5.js                               the whole engine
+├── next-steps/
+│   ├── NEXT-STEPS.md                       how to finish all three
+│   ├── sync-server.js                      ngrok sync server, zero deps, TESTED
+│   └── start.sh                            runs server + tunnel
+├── screenshots/                            7 screens at phone width
+└── tools/
+    ├── flow.mjs                            e2e exam test — WRITTEN, NEVER RUN
+    ├── shot.mjs                            headless screenshot walkthrough
+    ├── validate-data.cjs                   question bank validator
+    └── README.md</div>
+
+<p>In the repo the same files live at <code>aplus-study/handoff/</code>, <code>aplus-study/src/</code>, <code>aplus-study/sync/</code>, <code>aplus-study/tools/</code>, and <code>aplus-study/index.html</code>.</p>
+
+<h2 id="verified">7. What was verified (and what wasn't)</h2>
+
+<div class="note ok">
+<p><b>Verified:</b></p>
+<ul style="margin-bottom:0">
+<li>Both <code>&lt;script&gt;</code> blocks pass <code>node --check</code>.</li>
+<li>Data validator: 210 questions, no duplicate ids, exactly 4 distinct choices each, all answer indices in range, every question/card/PBQ maps to a real domain, every question carries an explanation, example and video topic. Clean.</li>
+<li>Rendered headlessly in Chromium at 420px and walked Status → Drill → a graded question → a PBQ placement → a flipped flashcard → Exam → Progress. <b>No page or console errors.</b> Screenshots in the zip.</li>
+<li>PR #17 confirmed <code>mergeable_state: clean</code>.</li>
+<li>The sync server: round-trip save/read, path traversal blocked, invalid JSON rejected, static path escape blocked, app served. All pass.</li>
+</ul>
+</div>
+
+<div class="note bad">
+<p><b>NOT verified — do this first:</b></p>
+<p>The <b>exam pause → reload → resume → submit</b> cycle was never run end-to-end. It's the most complex stateful feature in the app and the likeliest place for a bug. <code>tools/flow.mjs</code> was written specifically to test it and was interrupted before it executed.</p>
+<p>It drives a real Chromium through: start a 30q exam → answer 3 → verify the clock ticks → pause → verify the clock <em>stops</em> → reload the page → verify the exam survived → resume → verify clock and answers intact → answer the rest → submit → verify the score screen and domain breakdown → verify Status picked up the numbers → close a semester and start a new one → verify the old one kept its data and the new one is zeroed. Exits non-zero and prints every failure.</p>
+</div>
+
+<h2 id="todo1">8. TODO 1 — ngrok + code sync</h2>
+
+<div class="note warn">
+<p><b>Before you build on this:</b> an ngrok tunnel only exists while your Mac is awake and running the command. Chromebook at school + Mac asleep at home = no sync that session (the app still works fully offline and syncs next time both are up). Also, plenty of school networks block <code>*.ngrok-free.app</code> too — <b>test the tunnel on the Chromebook before you rely on it.</b></p>
+<p>If it's blocked: host <code>app/index.html</code> on <b>GitHub Pages</b> (free, always on, the repo already exists) and point the sync at any always-on box. The client code below works unchanged — only the URL differs.</p>
+</div>
+
+<h3>The server — already written and tested</h3>
+<p><code>next-steps/sync-server.js</code>. Zero dependencies, Node 18+. It serves the app <em>and</em> the sync API from the same origin, so one ngrok URL does everything and there's no CORS surface at all.</p>
+<pre><code>GET  /s/:code   → stored state JSON, or {} for a new code
+PUT  /s/:code   → replace stored state
+GET  /*         → the app itself</code></pre>
+<p>Codes are validated <code>^[A-Za-z0-9_-]{3,64}$</code> so they can't escape the data directory. Writes are atomic (temp file + rename). Bodies are capped at 4 MB and must parse as JSON.</p>
+
+<h4>Running it</h4>
+<pre><code>node next-steps/sync-server.js      # http://localhost:8787
+ngrok http 8787                     # second terminal</code></pre>
+<p>Then on any device: <code>https://&lt;id&gt;.ngrok-free.app/#code=your-secret-code</code></p>
+<p>The code goes in the URL <b>fragment</b>, which never leaves the browser — it isn't sent to the server in the request line and ngrok never logs it. <code>start.sh</code> wraps both commands.</p>
+
+<div class="note">
+<p><b>Security reality check:</b> the code is the only secret. Anyone with the URL + code can read and write your progress. Pick something unguessable and don't post the link anywhere.</p>
+</div>
+
+<h3>The client change — not done yet</h3>
+<p>Replace the Artifact DB block in <code>p5.js</code> (the <code>window.claude?.use?.("db")</code> section at the bottom of <code>start()</code>) with this. <b><code>mergeState</code> is reused unchanged.</b></p>
+
+<pre><code>const SYNC_KEY = "benchtest.sync.v1";
+let SYNC = { code:null, base:"", status:"local", timer:null, pushing:false };
+
+function loadSync(){
+  // code arrives as #code=xyz once, then lives in localStorage
+  const m = (location.hash || "").match(/code=([A-Za-z0-9_-]{3,64})/);
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(SYNC_KEY) || "null"); } catch(e){}
+  SYNC.code = (m &amp;&amp; m[1]) || (saved &amp;&amp; saved.code) || null;
+  SYNC.base = location.protocol.startsWith("http")
+    ? location.origin : (saved &amp;&amp; saved.base) || "";
+  if(SYNC.code) try {
+    localStorage.setItem(SYNC_KEY, JSON.stringify({code:SYNC.code, base:SYNC.base}));
+  } catch(e){}
+  // scrub the code out of the address bar
+  if(m) history.replaceState(null, "", location.pathname + location.search);
+}
+const syncURL = () =&gt; SYNC.base + "/s/" + SYNC.code;
+
+function setSyncStatus(s, label){
+  SYNC.status = s;
+  const pill = document.getElementById("syncPill"),
+        txt  = document.getElementById("syncTxt");
+  if(!pill) return;
+  pill.className = "syncpill" + (s === "on" ? " on" : s === "err" ? " err" : "");
+  if(txt) txt.textContent = label;
+}
+
+async function syncPull(){
+  if(!SYNC.code || !SYNC.base) return;
+  try {
+    const r = await fetch(syncURL(), { cache:"no-store" });
+    if(!r.ok) throw new Error(r.status);
+    const remote = await r.json();
+    if(remote &amp;&amp; remote.updatedAt){
+      const merged = mergeState(S, remote);
+      const changed = merged.updatedAt !== S.updatedAt ||
+        JSON.stringify(merged).length !== JSON.stringify(S).length;
+      S = merged; saveLocal();
+      if(changed &amp;&amp; !sub) render();
+    }
+    setSyncStatus("on", "Synced");
+  } catch(e){ setSyncStatus("err", "Offline"); }
+}
+
+async function syncPush(){
+  if(!SYNC.code || !SYNC.base || SYNC.pushing) return;
+  SYNC.pushing = true;
+  try {
+    const r = await fetch(syncURL(), {
+      method:"PUT",
+      headers:{ "content-type":"application/json" },
+      body: JSON.stringify(S)
+    });
+    setSyncStatus(r.ok ? "on" : "err", r.ok ? "Synced" : "Offline");
+  } catch(e){ setSyncStatus("err", "Offline"); }
+  finally { SYNC.pushing = false; }
+}
+
+function startSync(){
+  loadSync();
+  if(!SYNC.code){ setSyncStatus("local", "This device only"); return; }
+  setSyncStatus("local", "Connecting");
+  syncPull();
+  clearInterval(SYNC.timer);
+  SYNC.timer = setInterval(() =&gt; { if(!document.hidden) syncPull(); }, 25000);
+  document.addEventListener("visibilitychange",
+    () =&gt; { if(!document.hidden) syncPull(); });
+}</code></pre>
+
+<p>Then in <code>save()</code>, swap the Artifact DB write for the push:</p>
+<pre><code>function save(){
+  S.updatedAt = Date.now(); saveLocal();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(syncPush, 900);
+}</code></pre>
+
+<p>And call <code>startSync()</code> at the end of <code>start()</code> instead of the <code>claude.use("db")</code> block.</p>
+
+<p>Finally, add a <b>Sync</b> section to the settings sheet so a code can be entered without editing a URL — one text field for the code, one for the base URL, both writing to <code>localStorage[SYNC_KEY]</code>, then call <code>startSync()</code> again.</p>
+
+<h2 id="todo2">9. TODO 2 — stop repeating questions</h2>
+
+<h3>The actual bug</h3>
+<p><code>smartPick()</code> in <code>p5.js</code> scores every question and takes the top <code>n × 2</code>, then shuffles. A wrong answer adds <b>+1.9</b> to the score and <code>lastWrong</code> never clears until you get it right — so a question you just missed is <b>almost guaranteed to reappear in the very next set</b>. Recency isn't considered at all. That's exactly what you noticed.</p>
+
+<h3>The fix</h3>
+<p>Bucket by recency <em>before</em> scoring, and drain fresher buckets first. Add <code>S.recent</code> (rolling list of the last ~45 answered ids) to state.</p>
+
+<pre><code>const RECENT_KEEP = 45;
+const COOL_MS = 8 * 3600 * 1000;   // 8 hours
+
+function pickQuestions(n, src){
+  const list = (src &amp;&amp; src.length ? src : pool()).slice();
+  const now = Date.now(), recent = new Set(S.recent || []);
+
+  // 0 = fair game, 1 = seen but cooled off, 2 = just saw it
+  const tier = q =&gt; {
+    if(recent.has(q.i)) return 2;
+    const m = S.mastery[q.i];
+    if(m &amp;&amp; now - (m.seen || 0) &lt; COOL_MS) return 1;
+    return 0;
+  };
+  const score = q =&gt; {
+    const m = S.mastery[q.i];
+    let s = Math.random() * 0.5;
+    if(!m) s += 1.4;
+    else {
+      if(m.lastWrong) s += 1.9;
+      s += (1 - m.c / (m.c + m.w)) * 1.1;
+      s -= Math.min(0.7, m.c * 0.18);
+    }
+    s += (1 - domainStat(q.d).ready) * 0.9;
+    return s;
+  };
+
+  const buckets = [[], [], []];
+  list.forEach(q =&gt; buckets[tier(q)].push(q));
+
+  const out = [];
+  for(const b of buckets){                    // drain tier 0, then 1, then 2
+    if(out.length &gt;= n) break;
+    const want = n - out.length;
+    const ranked = b.map(q =&gt; ({ q, s: score(q) })).sort((x, y) =&gt; y.s - x.s);
+    const widen = ranked.slice(0, Math.max(want * 2, want + 6));
+    shuffle(widen).slice(0, want).forEach(x =&gt; out.push(x.q));
+  }
+  return shuffle(out);
+}</code></pre>
+
+<p>Then in <code>recordAnswer()</code>:</p>
+<pre><code>S.recent = [q.i, ...(S.recent || []).filter(x =&gt; x !== q.i)].slice(0, RECENT_KEEP);</code></pre>
+
+<p>Replace both <code>smartPick(...)</code> call sites with <code>pickQuestions(...)</code>.</p>
+
+<div class="note ok">
+<p><b>What this guarantees:</b> a question you just answered can't come back until every unseen and cooled-off question in the pool has been used. With 210 questions and 10-question sets, that's roughly <b>20 sets before anything repeats</b>.</p>
+</div>
+
+<p>Also worth doing in <code>examPick()</code>: within each domain, sort by <code>m.seen</code> ascending before slicing, so back-to-back exams don't pull the same questions.</p>
+
+<h2 id="todo3">10. TODO 3 — finish the Apple redesign</h2>
+
+<h3>What's done</h3>
+<p><code>src/p1-APPLE-REDESIGN-unfinished.html</code> is a complete stylesheet:</p>
+<ul>
+<li><b>Color</b> — iOS system palette. True black <code>#000</code> ground (real OLED black on the iPhone), <code>#1c1c1e</code> / <code>#2c2c2e</code> / <code>#3a3a3c</code> elevated surfaces, <code>#38383a</code> hairline separators, label opacities at 100/60/30/18%. Accent is systemBlue <code>#0a84ff</code> dark, <code>#007aff</code> light, with the real system green, red, orange, yellow, purple, teal, indigo. Full light-mode palette; all three theme states handled.</li>
+<li><b>Type</b> — San Francisco via <code>-apple-system, BlinkMacSystemFont, "SF Pro Text"</code>. On your iPhone and Mac that's the <em>real</em> SF Pro with no webfont download. iOS type scale (34 large title / 22 title2 / 17 headline / 17 body / 15 subhead / 13 footnote / 12 caption) with Apple's actual negative tracking values.</li>
+<li><b>Components</b> — grouped inset lists with hairline separators, translucent blurred tab bar (<code>backdrop-filter: saturate(180%) blur(20px)</code>), segmented controls with the sliding elevated thumb, bottom sheets with a grabber and <code>cubic-bezier(.32,.72,0,1)</code> spring easing, circular icon buttons, pill badges, tabular-numeral stat rows.</li>
+</ul>
+<p>One thing already caught and fixed: the settings gear was originally an SF Symbols private-use glyph, which would have rendered as tofu on your Chromebook. It's an inline SVG now.</p>
+
+<h3>What's left</h3>
+<p><b><code>p5.js</code> still emits the old class names.</b> Every <code>el('&lt;div class="..."&gt;')</code> call needs updating. Mapping:</p>
+
+<div class="tablewrap">
+<table>
+<thead><tr><th>Old</th><th>New</th></tr></thead>
+<tbody>
+<tr><td><code>.card</code></td><td><code>.group</code> + <code>.pad</code>, or <code>.group</code> with <code>.cell</code> children</td></tr>
+<tr><td><code>.readout</code> / <code>.readout-top</code></td><td><code>.hero</code></td></tr>
+<tr><td><code>.readout-strip</code> / <code>.strip-cell</code></td><td><code>.statrow</code> / <code>.statcell</code></td></tr>
+<tr><td><code>.meter</code></td><td><code>.meterrow</code> (with <code>.top</code>, <code>.nm</code>, <code>.pc</code>, <code>.note</code> inside)</td></tr>
+<tr><td><code>.meter-track</code> / <code>.meter-fill</code></td><td><code>.bar</code> / <code>.bar i</code></td></tr>
+<tr><td><code>.wl</code> / <code>.wl .w</code> / <code>.wl .l</code></td><td><code>.split</code> / <code>.split i</code></td></tr>
+<tr><td><code>.btn.primary</code></td><td><code>.btn.filled</code></td></tr>
+<tr><td><code>.btn</code> (secondary)</td><td><code>.btn.tinted</code> or plain <code>.btn</code></td></tr>
+<tr><td><code>.pill</code></td><td><code>.badge</code> (+ <code>.blue</code> / <code>.green</code> / <code>.red</code> / <code>.orange</code>)</td></tr>
+<tr><td><code>.tile</code> / <code>.tiles</code></td><td><code>button.cell</code> inside a <code>.group</code></td></tr>
+<tr><td><code>.verdict</code></td><td><code>.explain</code> + <code>.explain-head</code> + <code>.mark</code></td></tr>
+<tr><td><code>.qbar</code> / <code>.qprog</code></td><td><code>.qhead</code> / <code>.track</code></td></tr>
+<tr><td><code>.chipdrag</code></td><td><code>.chip</code> (<code>.armed</code> instead of <code>.picked</code>)</td></tr>
+<tr><td><code>.slot.wrongslot</code></td><td><code>.slot.miss</code></td></tr>
+<tr><td><code>.rec</code> / <code>.rec-i</code></td><td><code>.cell</code> with a colored <code>.dot</code> or a badge</td></tr>
+<tr><td><code>.sheet-in</code></td><td>same, but prepend <code>&lt;div class="grabber"&gt;&lt;/div&gt;</code></td></tr>
+<tr><td><code>.eyebrow</code></td><td><code>.sec-label</code> (section headers) or <code>.foot</code> (inline)</td></tr>
+<tr><td><code>.score-big</code></td><td><code>.bigscore</code></td></tr>
+<tr><td><code>.icobtn</code></td><td><code>.circbtn</code></td></tr>
+<tr><td><code>.syncdot</code></td><td><code>.syncpill</code> (<code>&lt;i&gt;</code> inside + a text label)</td></tr>
+<tr><td><code>.exam-clock</code></td><td><code>.clock</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Two structural changes the new shell needs:</p>
+<ol>
+<li>The navbar now has <code>#navTitle</code> and <code>#navSub</code> — <code>render()</code> should set them per route, iOS large-title style. Titles: Status / Drill / Cards / Exam / Progress.</li>
+<li><code>#syncPill</code> / <code>#syncTxt</code> replaced the old <code>#syncDot</code>.</li>
+</ol>
+
+<p>The tab bar SVG icons in <code>TABS</code> can stay — they already read as SF Symbols.</p>
+
+<div class="note">
+<p><b>Do this last</b>, after TODOs 1 and 2. It's pure presentation with no behavior risk, and it's far easier to verify once the app logic has settled.</p>
+</div>
+
+<h2 id="compromises">11. Known compromises</h2>
+
+<ol>
+<li><b>Video links are topic-scoped YouTube searches, not specific videos.</b> I tried to swap in real Professor Messer per-video URLs. Found the course index URL via search, but <code>professormesser.com</code> is <b>blocked by this environment's network egress policy</b> — both <code>curl</code> and <code>WebFetch</code> were refused. Guessing 63 URL slugs would ship links that 404, so searches stayed. A session on an unrestricted network can fetch the two course index pages and map objective numbers to real URLs; the hook is <code>videoURL(q)</code> in <code>p5.js</code>.</li>
+<li><b>The scaled score is an estimate.</b> CompTIA doesn't publish its scaling formula, so it's a linear map of percent-correct onto 100–900. Labeled as estimated in the UI.</li>
+<li><b>Confidence tap was not built</b> — it wasn't selected from the options offered.</li>
+<li><b>Core 2 has only 94 questions</b>, so a full 90-question Core 2 exam uses nearly the whole bank. Fine once, repetitive across attempts. More Core 2 questions would help — and this interacts with TODO 2: the anti-repeat logic can't help if the pool is barely bigger than the exam.</li>
+<li><b>The Artifact and the ngrok build won't share state</b> unless you point the Artifact build at the sync server too. They're separate stores.</li>
+</ol>
+
+<h2 id="links">12. Links</h2>
+
+<dl class="kv">
+<dt>Published app (v1)</dt><dd><a href="https://claude.ai/code/artifact/b7bab869-1fca-4d10-95c4-666eef2bf7e7">claude.ai/code/artifact/b7bab869…</a> — works on phone/Mac, blocked on the Chromebook</dd>
+<dt>Draft PR</dt><dd><a href="https://github.com/MRRDO/gta-x/pull/17">github.com/MRRDO/gta-x/pull/17</a> — open, clean, mergeable, no CI configured on this path</dd>
+<dt>Branch</dt><dd><code>claude/aplus-study-tracker-k8m7yp</code></dd>
+<dt>Commit 1</dt><dd><code>92ad798</code> — the app</dd>
+<dt>Commit 2</dt><dd><code>73e5dfd</code> — handoff docs, build sources, sync server, test tooling</dd>
+<dt>Session</dt><dd><code>session_01Q7Lk41wEhAvP9CQRNVheBs</code></dd>
+</dl>
+
+<hr>
+
+<p><small>Fastest path back in: read section 1, run <code>tools/flow.mjs</code> to confirm the exam flow is sound, then do TODO 2 (20 lines, immediate payoff), then TODO 1, then TODO 3.</small></p>
+
+</div>
