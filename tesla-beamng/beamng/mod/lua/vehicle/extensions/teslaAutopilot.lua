@@ -66,7 +66,7 @@ local injecting = false
 
 local function wrappedEvent(itype, ivalue, filter, a4, a5, a6, source, ...)
   if not injecting and (source == nil or source == 'local') then
-    raw[itype] = { v = ivalue or 0, f = filter, t = now }
+    raw[itype] = { v = ivalue or 0, f = filter, t = now, args = (a4 or a5) and { a4, a5 } or nil }
     localSeen[itype] = (localSeen[itype] or 0) + 1
   end
   return origEvent(itype, ivalue, filter, a4, a5, a6, source, ...)
@@ -105,6 +105,140 @@ local function rawValue(itype, maxAge)
   local r = raw[itype]
   if not r or now - r.t > (maxAge or 1e9) then return nil end
   return r.v
+end
+
+---------------------------------------------------------------------------
+-- force-feedback wheel (G29 etc.): while engaged we drive the wheel motor
+-- ourselves with a position spring, so the physical wheel turns with the car.
+--
+-- The game's hydros module owns the FFB device and keeps its id in a local
+-- (FFBID). We find it through debug.getupvalue, set it to -1 while engaged
+-- (hydros then stops sending forces) and send our own with
+-- obj:sendForceFeedback(id, force). On disengage we give the id back.
+---------------------------------------------------------------------------
+
+local Wh = require('teslaBridge/wheel')
+
+local ffb = {
+  enabled = true, strength = 0.6,
+  spring = Wh.new(), held = false, fn = nil, idx = nil, id = nil, fcap = 10,
+  status = 'unknown', reason = nil,
+  ratio = 1, -- steering_input per raw wheel unit (learned while you drive)
+  lastForce = nil, force = 0, target = 0, pos = 0, grip = false,
+  minInterval = 0.01, lastSendT = -1, -- wheel drivers misbehave when flooded (hydros throttles too)
+}
+
+local FFB_ID_NAMES = { FFBID = true, ffbID = true, FFBId = true, ffbId = true, ffbid = true }
+
+local function ffbModules()
+  local mods = {}
+  if type(hydros) == 'table' then mods[#mods + 1] = hydros end
+  for name, m in pairs(_G) do
+    if type(m) == 'table' and type(name) == 'string' and name:lower():find('ffb') then mods[#mods + 1] = m end
+  end
+  return mods
+end
+
+local function scanUpvalues(names)
+  if type(debug) ~= 'table' or not debug.getupvalue then return nil, 'no debug library in vehicle Lua' end
+  for _, m in ipairs(ffbModules()) do
+    for _, f in pairs(m) do
+      if type(f) == 'function' then
+        for i = 1, 120 do
+          local n, val = debug.getupvalue(f, i)
+          if not n then break end
+          if names[n] and type(val) == 'number' then return f, i, val, n end
+        end
+      end
+    end
+  end
+  return nil, 'no FFB device id in hydros'
+end
+
+local function hasSendFFB()
+  local ok, has = pcall(function() return obj.sendForceFeedback ~= nil end)
+  return ok and has
+end
+
+local function ffbSend(force)
+  local ok = pcall(obj.sendForceFeedback, obj, ffb.id, force)
+  ffb.lastForce = force
+  ffb.lastSendT = now
+  return ok
+end
+
+local function ffbProbe()
+  if not ffb.enabled then ffb.status, ffb.reason = 'off', 'turned off'; return false end
+  if ffb.held then return true end
+  if not hasSendFFB() then ffb.status, ffb.reason = 'unavailable', 'obj:sendForceFeedback missing'; return false end
+  local f, i, id = scanUpvalues(FFB_ID_NAMES)
+  if not f then ffb.status, ffb.reason = 'unavailable', i; return false end
+  if id < 0 then ffb.status, ffb.reason = 'no wheel', 'no force-feedback wheel bound to steering'; return false end
+  ffb.status, ffb.reason = 'available', nil
+  return true, f, i, id
+end
+
+local function ffbTake()
+  local ok, f, i, id = ffbProbe()
+  if not ok or ffb.held then return ffb.held end
+  ffb.fn, ffb.idx, ffb.id = f, i, id
+  local _, _, fmax = scanUpvalues({ FFmax = true, ffMax = true })
+  ffb.fcap = (fmax and fmax > 0) and fmax or 10
+  local _, _, periodms = scanUpvalues({ FFBperiodms = true })
+  ffb.minInterval = (periodms and periodms > 0) and math.max(0.002, periodms / 1000) or 0.01
+  debug.setupvalue(f, i, -1) -- hydros stops driving the motor
+  ffb.held = true
+  ffb.spring:reset()
+  ffb.lastForce = nil
+  ffb.status = 'active'
+  return true
+end
+
+local function ffbRelease()
+  if not ffb.held then return end
+  ffbSend(0)
+  local _, cur = debug.getupvalue(ffb.fn, ffb.idx)
+  if cur == -1 then debug.setupvalue(ffb.fn, ffb.idx, ffb.id) end
+  ffb.held = false
+  ffb.force, ffb.grip = 0, false
+  ffb.status = 'available'
+end
+
+-- Returns true when the driver is holding the wheel against the spring.
+local function ffbUpdate(dt, targetInput)
+  if not ffb.held then return false end
+  local _, cur = debug.getupvalue(ffb.fn, ffb.idx)
+  if cur ~= -1 then
+    -- the game re-bound the wheel (settings changed): take the new id
+    if type(cur) == 'number' and cur >= 0 then ffb.id = cur end
+    debug.setupvalue(ffb.fn, ffb.idx, -1)
+  end
+  local r = raw.steering
+  local pos = r and r.v or 0
+  local target = targetInput / ffb.ratio
+  local f, grip = ffb.spring:update(dt, target, pos, ffb.fcap, ffb.strength)
+  if dt <= 1e-4 then f = 0 end -- paused: never leave a force on the motor
+  local due = now - ffb.lastSendT >= ffb.minInterval
+  if (due and (ffb.lastForce == nil or abs(f - ffb.lastForce) > ffb.fcap / 400)) or (f == 0 and ffb.lastForce ~= 0) then ffbSend(f) end
+  ffb.force, ffb.target, ffb.pos, ffb.grip = f, target, pos, grip
+  if ffb.spring.disabled then
+    errorEvent('wheel spring turned off: the wheel kept moving the wrong way')
+    ffbRelease()
+    ffb.status, ffb.enabled = 'disabled', false
+    return false
+  end
+  return grip
+end
+
+-- Learn how the wheel's raw axis maps to steering input (1:1 unless the car's
+-- steering lock differs from the wheel's rotation), from your own driving.
+local function learnWheelRatio()
+  local r = raw.steering
+  if not r or now - r.t > 0.05 or abs(r.v) < 0.08 then return end
+  local si = electrics.values.steering_input
+  if not si then return end
+  local k = si / r.v
+  if k > 0.2 and k < 5 then ffb.ratio = ffb.ratio + (k - ffb.ratio) * 0.05 end
 end
 
 ---------------------------------------------------------------------------
@@ -275,6 +409,11 @@ local function buildState(s)
       lastDisengage = lastDisengage,
       steerSign = driver and driver.steerSign, steerGain = driver and driver.kmax[2],
     },
+    wheel = {
+      status = ffb.status, reason = ffb.reason, strength = ffb.strength,
+      pos = ffb.pos, target = ffb.target, force = ffb.force / max(ffb.fcap, 1e-6), ratio = ffb.ratio,
+      calibrated = ffb.spring.confirmed,
+    },
   }
 end
 
@@ -288,6 +427,7 @@ local function disengage(reason, detail)
   if not ap.engaged then return end
   ap.engaged = false
   ap.mode = 'off'
+  ffbRelease()
   allowLocal(CONTROLLED, true)
   inject('throttle', 0)
   inject('brake', 0)
@@ -334,6 +474,7 @@ local function engage(mode, opts)
   inject('parkingbrake', 0)
   wantPark = false
   gearWant, gearTimer = 'D', 0
+  ffbTake()
 end
 
 ---------------------------------------------------------------------------
@@ -398,6 +539,18 @@ handlers.throttleOverride = function(cmd)
   override.t = now
 end
 
+handlers.wheel = function(cmd)
+  if cmd.strength ~= nil then ffb.strength = math.max(0, math.min(1, tonumber(cmd.strength) or ffb.strength)) end
+  if cmd.spring ~= nil then
+    ffb.enabled = cmd.spring and true or false
+    if not ffb.enabled then ffbRelease(); ffb.status = 'off'
+    else
+      ffb.spring = Wh.new()
+      if ap.engaged then ffbTake() else ffbProbe() end
+    end
+  end
+end
+
 handlers.autopilot = function(cmd)
   if cmd.mode == 'off' then
     disengage(cmd.reason == 'switch' and 'switch' or (cmd.reason == 'arrived' and 'arrived' or 'app'))
@@ -444,6 +597,7 @@ local function checkTakeover(dt)
   local br = rawSinceEngage('brake') or 0
   local th = rawSinceEngage('throttle') or 0
   local steerDev = st and abs(st - baseline.steering) or 0
+  if ffb.held then steerDev = 0 end -- the spring moves the wheel; a grip is detected by the spring instead
   if ap.mode == 'fsd' or ap.mode == 'autosteer' then
     takeover.steering = (steerDev > 0.15) and takeover.steering + dt or 0
     takeover.brake = (br > 0.1) and takeover.brake + dt or 0
@@ -467,6 +621,10 @@ local function updateGFX(dt)
       local out = driver:update(dt, s, { steerOnly = ap.mode == 'autosteer' })
       lastOut = out
       inject('steering', out.steer)
+      if ffbUpdate(dt, out.steer) then disengage('steer', 'wheel grabbed') end
+    end
+    if ap.engaged and lastOut then
+      local out = lastOut
       if ap.mode == 'fsd' then
         local th, br = out.throttle, out.brake
         local pb = out.parkingbrake or 0
@@ -499,6 +657,7 @@ local function updateGFX(dt)
       end
     end
   else
+    learnWheelRatio()
     -- accelerator strip in the app, autopilot off
     if override.active then
       inject('throttle', max(0, override.value))
@@ -561,6 +720,13 @@ function M.diag()
     hydros = hydros and keysOf(hydros, 80) or 'none',
     ffbEnabled = hydros and hydros.enableFFB,
     ev = isEV(),
+    ffb = {
+      status = ffb.status, reason = ffb.reason, held = ffb.held, id = ffb.id, fcap = ffb.fcap, ratio = ffb.ratio,
+      sign = ffb.spring.sign, flips = ffb.spring.flips, confirmed = ffb.spring.confirmed,
+      debugLib = type(debug) == 'table' and debug.getupvalue ~= nil, sendForceFeedback = hasSendFFB(),
+      rawSteer = raw.steering and raw.steering.v, rawSteerFilter = raw.steering and raw.steering.f,
+      rawSteerArgs = raw.steering and raw.steering.args,
+    },
     dirSign = dirSign,
     steerSign = driver and driver.steerSign,
     steerGainByBin = driver and driver.kmax,
@@ -578,11 +744,13 @@ end
 local function onExtensionLoaded()
   driver = C.new()
   installInputHook()
+  ffbProbe()
   log('I', logTag, 'loaded')
 end
 
 local function onExtensionUnloaded()
   if ap.engaged then disengage('error', 'extension unloaded') end
+  ffbRelease()
   removeInputHook()
 end
 

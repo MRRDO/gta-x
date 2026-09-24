@@ -6,7 +6,7 @@
   "scripts": {
     "bridge": "tsx bridge/relay.ts",
     "mod": "tsx bridge/buildMod.ts",
-    "test": "luajit beamng/test/test_driving.lua",
+    "test": "luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua",
     "e2e": "tsx bridge/e2e.ts",
     "harness": "luajit beamng/test/harness.lua",
     "typecheck": "tsc --noEmit"

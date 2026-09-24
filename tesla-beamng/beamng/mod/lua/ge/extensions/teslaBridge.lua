@@ -799,7 +799,7 @@ end
 handleCommand = function(msg)
   local t = msg.t
   local veh = playerVehicle()
-  if t == 'gear' or t == 'lights' or t == 'signal' or t == 'horn' or t == 'door' or t == 'throttleOverride' then
+  if t == 'gear' or t == 'lights' or t == 'signal' or t == 'horn' or t == 'door' or t == 'throttleOverride' or t == 'wheel' then
     if not veh then event('error', 'no player vehicle'); return end
     ensureVehicleExtension(veh)
     toVehicle(veh, 'command', msg)
@@ -848,6 +848,17 @@ handleCommand = function(msg)
     send({ t = 'pong', time = num(gameTime) })
   else
     event('error', 'unknown command ' .. tostring(t))
+  end
+end
+
+-- Bound to the "Tesla: toggle FSD / Autosteer" controls (a wheel button, e.g. on a G29).
+function M.toggleAutopilot(mode)
+  if ap.mode ~= 'off' then
+    disengage('app')
+    ap.lastDisengage = { reason = 'app', time = num(gameTime) }
+  else
+    ap.engagedAt = realTime
+    engage(mode or 'fsd', ap.profile)
   end
 end
 

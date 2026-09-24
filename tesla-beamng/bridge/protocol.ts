@@ -37,6 +37,20 @@ export type State = {
   battery: number | null // 0..1 for EVs
   fuel: number | null // 0..1 otherwise
   autopilot: AutopilotState
+  /** Force-feedback wheel (G29 etc.) spring that turns the physical wheel while the autopilot drives. */
+  wheel?: WheelState
+}
+
+export type WheelState = {
+  /** active = driving the wheel now; available = FFB wheel found; no wheel / unavailable / off / disabled otherwise */
+  status: 'active' | 'available' | 'no wheel' | 'unavailable' | 'off' | 'disabled' | 'unknown'
+  reason?: string
+  strength: number // 0..1 of the wheel's max force
+  pos: number // physical wheel, raw axis -1..1
+  target: number // where the spring pulls it
+  force: number // -1..1 of max
+  ratio: number // steering input per raw wheel unit (learned)
+  calibrated: boolean // motor direction confirmed (first turn of a session proves it)
 }
 
 export type AutopilotState = {
@@ -112,6 +126,7 @@ export type Command =
   | { t: 'navigate'; to: Vec3 | { node: string }; stops?: Vec3[]; arrival?: Arrival }
   | { t: 'cancelRoute' }
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
+  | { t: 'wheel'; spring?: boolean; strength?: number } // FFB wheel spring on/off and strength 0..1 (default on, 0.6)
   | { t: 'requestMap' }
   | { t: 'requestMinimap' }
   | { t: 'debug' }
@@ -119,7 +134,7 @@ export type Command =
 
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
-  'throttleOverride', 'requestMap', 'requestMinimap', 'debug', 'ping',
+  'throttleOverride', 'wheel', 'requestMap', 'requestMinimap', 'debug', 'ping',
 ])
 
 export const MPH = 0.44704

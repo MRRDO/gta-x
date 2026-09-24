@@ -18,9 +18,13 @@ BeamNG.drive (PC)                         relay (PC, Node)                 iPad
 
 **Built without the game.** Everything here was written and tested in a
 cloud container against a fake BeamNG (`beamng/test/harness.lua`). The
-harness runs the real mod Lua with stubbed game APIs and a simple car model,
-talking to the real relay. Unit tests: 29/29. End-to-end: 32/32, including a
-car wired with backwards steering.
+harness runs the real mod Lua with stubbed game APIs, a simple car model and
+a simulated G29 (motor, gear friction, the game's own centering force),
+talking to the real relay.
+
+- Unit tests: 29 driving + 14 wheel, all passing.
+- End-to-end: 38/38, also with a backwards motor, backwards car steering,
+  and no wheel.
 
 The API names come from the game's docs and from BeamMP's source (BeamMP is
 a multiplayer mod built for BeamNG 0.39). The parts I'm least sure of are
@@ -53,6 +57,49 @@ You need Node 20+ on the PC. The PC and the iPad must be on the same Wi-Fi.
    gearbox type, door controllers, traffic-signal API, map link fields, and
    the force-feedback code.
 
+### Logitech G29 (or any force-feedback wheel)
+
+While the autopilot drives, the mod takes over the wheel's force-feedback
+motor and pulls the physical wheel to the car's steering angle. When it
+disengages, the game's normal force feedback comes back.
+
+1. **Logitech G HUB** (or Logitech Gaming Software):
+   - Operating range: **900°**.
+   - **Turn off the centering spring** ("Use Special Centering Spring" /
+     centering spring in FFB games). It fights the autopilot.
+   - Force-feedback strength: 100%.
+2. **BeamNG → Options → Controls:**
+   - Use the default G29 profile, with force feedback **on** for steering.
+   - Leave the steering lock at 1:1. If you change it, the mod learns the
+     wheel-to-car ratio from your own driving before you engage.
+   - Keep the pedals on separate axes (the G29 default). A brake-pedal
+     takeover needs a real brake axis.
+3. **Bind a wheel button to FSD** (optional): Options → Controls → Bindings →
+   **Tesla UI Bridge** → *Toggle FSD* (and *Toggle Autosteer*). One press
+   engages, the next disengages, like the stalk.
+4. **Strength:** the test page's *Steering wheel* card has an on/off toggle
+   and a strength slider (default 60% of the wheel's max force). The force
+   ramps up over 0.8 s when you engage.
+5. **Taking over:** turn the wheel against the autopilot (hold it more than
+   about 45° away from where it's pulling for 0.35 s). It disengages with
+   `steer: wheel grabbed` and hands the motor back. Resting your hands on it
+   while it turns is fine.
+6. **First turn of a session:** if the motor pushes the wrong way (some
+   drivers or settings invert it), the mod notices within about 0.1 s,
+   flips, and remembers the direction. The test page shows `calibrated`
+   once it's proven.
+
+How it works: the game's `hydros.lua` owns the wheel motor and keeps the
+device id in a local called `FFBID`. The mod finds it with
+`debug.getupvalue`, sets it to −1 while engaged (so the game stops sending
+forces), and drives the motor itself with `obj:sendForceFeedback(id,
+force)`. That's a position spring with damping, `force = Kp·(target − wheel)
+− Kd·speed`, capped at 60% of the device max. On disengage it sends 0 and
+gives the id back. This matches the game's `hydros.lua` as of the last
+public copy (2020). If a newer version renamed things, the wheel card says
+`unavailable` with the reason, the diagnostics list `hydros`' contents, and
+the autopilot still drives (the wheel just doesn't move).
+
 ### Connecting the real app (for the UI session)
 
 - WebSocket: `ws://<pc-ip>:8765/?token=<token>`. Message types are in
@@ -78,7 +125,8 @@ Try **a stock sedan, a pickup, a mod EV and a manual-transmission car**.
 | Wheel turns in the car | Use the cockpit camera while FSD drives. The test page wheel icon shows the same angle. |
 | Takeover | While engaged, steer, brake or press the throttle. It disengages within about 0.15 s and the page logs `disengage: steer/brake/throttle`. |
 | Switching vehicles, reloading the level | Switch cars (autopilot turns off, the new car reports within about 2 s). Reload the level (the map is re-exported, and the log shows `map …`). |
-| FFB wheel | **Not done yet**, see below. |
+| FFB wheel (G29) | Engage FSD: the physical wheel should turn with the car through every turn (the wheel card shows wheel vs target). Turn it hard against the autopilot: it disengages with `steer: wheel grabbed`. |
+| Wheel button | Bind *Toggle FSD* to a G29 button, then press it once to engage and again to disengage. |
 
 When something's off, send me: the diagnostics output, what the car did,
 and the BeamNG console lines that start with `teslaBridge` or
@@ -145,12 +193,15 @@ and the BeamNG console lines that start with `teslaBridge` or
 
 ## Known gaps / next steps
 
-1. **Force-feedback wheel spring: not built.** The plan (`τ += k·(target −
-   current) − c·ω`, with a strong grip counting as takeover) needs a hook in
-   the game's FFB code, and I couldn't see that code from here. The
-   diagnostics list the `hydros` functions, which is what I need to write
-   the hook. Grabbing a wheel already disengages (it counts as steering
-   takeover).
+1. **Force-feedback wheel:** built against the last public copy of
+   `hydros.lua` (2020), then tested with a simulated G29 in the harness:
+   - normal
+   - a backwards motor
+   - backwards car steering
+   - no wheel at all
+
+   The first real-game run confirms the rest. If the wheel card says
+   `unavailable`, send the diagnostics (the `ffb` block).
 2. **Traffic lights:** the probe tries `core_trafficSignals`
    `getSignalsDict/getSignals/getValues` and reads states by name
    (red/yellow/green). If the page shows `signals: 0` or lights never go
@@ -173,7 +224,8 @@ and the BeamNG console lines that start with `teslaBridge` or
 
 All of these are in `bridge/protocol.ts`:
 
-- `state.parkingbrake`
+- `state.parkingbrake`, `state.wheel` (force-feedback wheel status)
+- command `wheel` (spring on/off, strength)
 - `route` (the planned path, for the nav map)
 - `minimap` (image URL on the relay)
 - `bridge` (relay ⇄ game link status)
@@ -193,7 +245,10 @@ beamng/mod/                         the mod (npm run mod zips it)
   lua/vehicle/extensions/teslaAutopilot.lua  state, commands, input driving, takeover
   lua/common/teslaBridge/pathing.lua     A*, lane path geometry, speed profile (pure Lua)
   lua/common/teslaBridge/control.lua     the driver: pure pursuit + speed PI + self-calibration
+  lua/common/teslaBridge/wheel.lua       force-feedback wheel spring, grip detection, motor-direction learning
+  lua/ge/extensions/core/input/actions/teslaBridge.json   bindable "Toggle FSD / Autosteer" controls
 beamng/test/test_driving.lua        unit + closed-loop tests      (npm test, needs luajit)
+beamng/test/test_wheel.lua          wheel spring vs a G29 model   (npm test)
 beamng/test/harness.lua             fake BeamNG                   (npm run harness)
 bridge/relay.ts                     relay                         (npm run bridge)
 bridge/protocol.ts                  message types for the app

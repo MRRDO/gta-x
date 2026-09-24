@@ -1,0 +1,20 @@
+{
+    "teslaToggleFSD": {
+        "cat": "tesla",
+        "order": 0,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleAutopilot('fsd') end",
+        "isBasic": true,
+        "title": "Toggle FSD",
+        "desc": "Engage or disengage the Tesla UI autopilot (FSD). Bind it to a wheel button."
+    },
+    "teslaToggleAutosteer": {
+        "cat": "tesla",
+        "order": 1,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleAutopilot('autosteer') end",
+        "isBasic": true,
+        "title": "Toggle Autosteer",
+        "desc": "Engage or disengage steering-only autopilot. Bind it to a wheel button."
+    }
+}

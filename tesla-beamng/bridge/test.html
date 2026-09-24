@@ -104,6 +104,16 @@
     </section>
 
     <section>
+      <h2>Steering wheel (force feedback)</h2>
+      <div class="row">
+        <button id="springBtn" class="active">Wheel follows autopilot</button>
+        <label style="color:var(--dim);font-size:12px">strength</label>
+        <input id="springStrength" type="range" min="0" max="1" step="0.05" value="0.6" style="flex:1">
+      </div>
+      <div class="kv" id="wheelKv"></div>
+    </section>
+
+    <section>
       <h2>Lights, signals, horn</h2>
       <div class="row">
         <span class="sig" id="sigL">◀</span>
@@ -229,6 +239,18 @@ function renderState() {
     ['steer calib', a.steerSign != null ? `sign ${a.steerSign}, gain ${(a.steerGain || 0).toFixed(3)}` : '--'],
   ]
   $('apKv').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('')
+  const w = s.wheel
+  if (w) {
+    const deg = (x) => (x * 450).toFixed(0) + '°'
+    $('wheelKv').innerHTML = [
+      ['status', w.status + (w.reason ? ` (${w.reason})` : '')],
+      ['wheel / target', `${deg(w.pos)} / ${deg(w.target)}`],
+      ['force', (w.force * 100).toFixed(0) + '%'],
+      ['ratio', w.ratio.toFixed(2)],
+    ].map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('')
+    $('springBtn').classList.toggle('active', !['off', 'disabled'].includes(w.status))
+    if (document.activeElement !== $('springStrength')) $('springStrength').value = w.strength
+  }
   // doors
   const keys = Object.keys(s.doors || {})
   const wrap = $('doors')
@@ -270,6 +292,8 @@ accel.addEventListener('pointerdown', () => {
 const accelUp = () => { clearInterval(accelTimer); accel.value = 0; send({ t: 'throttleOverride', value: 0 }) }
 accel.addEventListener('pointerup', accelUp); accel.addEventListener('pointercancel', accelUp)
 
+$('springBtn').onclick = () => send({ t: 'wheel', spring: !$('springBtn').classList.contains('active') })
+$('springStrength').onchange = () => send({ t: 'wheel', strength: Number($('springStrength').value) })
 $('cancelRoute').onclick = () => { dest = null; send({ t: 'cancelRoute' }) }
 $('reqMap').onclick = () => send({ t: 'requestMap' })
 $('mini').onclick = () => { showMini = !showMini; $('mini').classList.toggle('active', showMini); if (!minimap) send({ t: 'requestMinimap' }) }

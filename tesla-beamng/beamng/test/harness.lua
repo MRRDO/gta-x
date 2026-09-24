@@ -20,6 +20,8 @@ local SPEED = tonumber(os.getenv('HARNESS_SPEED') or '4')
 local MAX_T = tonumber(os.getenv('HARNESS_SECONDS') or '0')
 local QUIET = os.getenv('HARNESS_QUIET') == '1'
 local TRUE_SIGN = tonumber(os.getenv('HARNESS_STEER_SIGN') or '1') -- +1: positive input steers right
+local FFB_SIGN = tonumber(os.getenv('HARNESS_FFB_SIGN') or '1')     -- -1: wheel motor wired backwards
+local NO_WHEEL = os.getenv('HARNESS_NO_WHEEL') == '1'
 
 local gameT = 0
 local function hlog(...) if not QUIET then print(string.format('[harness %6.1f]', gameT), ...) end end
@@ -95,6 +97,10 @@ local playerObj, leadObj = geVehicle(player, true), geVehicle(lead, false)
 -- vehicle VM
 ---------------------------------------------------------------------------
 
+-- a Logitech G29: 900 deg, ~2.1 Nm at full force, gear friction
+WHEEL = { p = 0, w = 0, J = 0.03, fric = 0.12, tmax = 2.1, force = 0, lastSent = nil, hand = nil }
+local RAD_PER_RAW = math.rad(450)
+
 local V = setmetatable({}, { __index = _G })
 V._G = V
 local vehExtensions = {}
@@ -154,7 +160,15 @@ do
     getDevices = function() return { gearbox = gearbox } end,
   }
   V.v = { data = { input = { steeringWheelLock = 450 } } }
-  V.hydros = { enableFFB = false }
+  -- the game's FFB owner, shaped like hydros.lua: FFBID/FFmax are locals, and
+  -- update() sends a centering force every physics step while FFBID >= 0
+  local FFBID = NO_WHEEL and -1 or 7
+  local FFmax = 10
+  V.hydros = { enableFFB = true, wheelFFBForceLimit = 2 }
+  V.hydros.update = function()
+    if FFBID >= 0 and FFmax > 0 then V.obj:sendForceFeedback(FFBID, -4 * WHEEL.p) end
+  end
+  V.hydros.onFFBConfigChanged = function(cfg) FFBID = cfg and cfg.steering and cfg.steering.FFBID or -1 end
   V.jsonEncode, V.jsonDecode = jsonEncode, jsonDecode
   V.log = function(l, tag, msg) hlog('veh', l, tag, msg) end
   V.obj = {
@@ -163,10 +177,11 @@ do
     getDirectionVectorXYZ = function() return math.cos(player.psi), math.sin(player.psi), 0 end,
     getVelocityXYZ = function() return math.cos(player.psi) * player.v, math.sin(player.psi) * player.v, 0 end,
     queueGameEngineLua = function(_, code) geQueue[#geQueue + 1] = code end,
+    sendForceFeedback = function(_, id, force) if id == 7 then WHEEL.force = force end end,
   }
   -- obj methods are called with ':' so shift the arguments
   for k, f in pairs(V.obj) do
-    if k ~= 'queueGameEngineLua' then V.obj[k] = function(_, ...) return f(...) end end
+    if k ~= 'queueGameEngineLua' and k ~= 'sendForceFeedback' then V.obj[k] = function(_, ...) return f(...) end end
   end
   V.extensions = {
     load = function(name)
@@ -259,6 +274,31 @@ local function stepPlayer(dt)
 end
 
 local started = false
+local function stepWheel(dt)
+  if NO_WHEEL then return end
+  V.hydros.update()
+  local sub = 20
+  for _ = 1, sub do
+    local h = dt / sub
+    local tau = FFB_SIGN * WHEEL.force / 10 * WHEEL.tmax - 0.02 * WHEEL.w * RAD_PER_RAW
+    if WHEEL.hand then tau = tau + WHEEL.hand(WHEEL.p, WHEEL.w) end
+    local wr = WHEEL.w * RAD_PER_RAW
+    if math.abs(wr) < 1e-3 and math.abs(tau) <= WHEEL.fric then
+      wr = 0
+    else
+      local sgn = wr ~= 0 and (wr > 0 and 1 or -1) or (tau > 0 and 1 or -1)
+      wr = wr + (tau - sgn * WHEEL.fric) / WHEEL.J * h
+    end
+    WHEEL.w = wr / RAD_PER_RAW
+    WHEEL.p = math.max(-1, math.min(1, WHEEL.p + WHEEL.w * h))
+  end
+  -- the wheel is the player's steering device: it reports its position when it moves
+  if not WHEEL.lastSent or math.abs(WHEEL.p - WHEEL.lastSent) > 1e-4 then
+    WHEEL.lastSent = WHEEL.p
+    V.input.event('steering', WHEEL.p, 2, 900, 1)
+  end
+end
+
 local function stepLead(dt)
   -- waits 60 m ahead of the player until the first engagement, then drives east
   if not started then lead.x = player.x + 60; return end
@@ -292,6 +332,14 @@ local function scenario(dt)
   if engagements == 2 and not engaged and engagedFor > 4 then
     V.input.event('brake', 0, 0)
   end
+  -- third engagement: after 3 s the driver grabs the wheel and turns it right
+  if engaged and engagements == 3 and engagedFor > 3 and not WHEEL.hand then
+    hlog('driver grabs the wheel')
+    WHEEL.hand = function(p, w) return 25 * (0.4 - p) * RAD_PER_RAW / 7.85 - 0.8 * w end
+  end
+  if not engaged and WHEEL.hand and engagements == 3 then
+    WHEEL.hand = nil
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -314,13 +362,14 @@ while true do
   end
   runQueued(geQueue, G, 'ge')
   scenario(dt)
+  stepWheel(dt)
   stepPlayer(dt)
   stepLead(dt)
   stepLight(dt)
-  if gameT - lastPrint > 5 then
+  if gameT - lastPrint > (tonumber(os.getenv("HARNESS_PRINT") or "5")) then
     lastPrint = gameT
     local e = V.electrics.values
-    hlog(string.format('car x=%.1f y=%.1f v=%.1f gear=%s steer=%.2f thr=%.2f brk=%.2f', player.x, player.y, player.v, e.gear, e.steering_input, e.throttle_input, e.brake_input))
+    hlog(string.format("car x=%.1f y=%.1f v=%.1f gear=%s steer=%.2f thr=%.2f brk=%.2f wheel=%.2f ffb=%.2f", player.x, player.y, player.v, e.gear, e.steering_input, e.throttle_input, e.brake_input, WHEEL.p, WHEEL.force))
   end
   if MAX_T > 0 and gameT > MAX_T then break end
   local ahead = gameT / SPEED - (socket.gettime() - wall0)

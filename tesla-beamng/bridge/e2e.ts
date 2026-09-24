@@ -121,6 +121,9 @@ try {
 
   let stoppedAtSign = false, stoppedAtLight = false, minGap = Infinity, maxOver = 0, sawSignal = false, sawTurn = false
   let wheelMoved = 0
+  let wheelActive = false, wheelMaxErr = 0, wheelMaxPos = 0
+  let lastSign = st().autopilot.steerSign, signChangedAt = -1e9 // a steering-sign flip jumps the target once
+  const engagedAt = st().time
   const t0 = Date.now()
   while (Date.now() - t0 < 120000) {
     const s = st()
@@ -132,6 +135,12 @@ try {
     if (s.signal === 'left' || s.signal === 'right') sawSignal = true
     if (a.nextTurn) sawTurn = true
     wheelMoved = Math.max(wheelMoved, Math.abs(s.steeringWheelDeg))
+    if (s.autopilot.steerSign !== lastSign) { lastSign = s.autopilot.steerSign; signChangedAt = s.time }
+    if (s.wheel?.status === 'active') {
+      wheelActive = true
+      if (s.time - engagedAt > 1.5 && a.engaged && s.wheel.calibrated && s.time - signChangedAt > 2) wheelMaxErr = Math.max(wheelMaxErr, Math.abs(s.wheel.pos - s.wheel.target))
+      wheelMaxPos = Math.max(wheelMaxPos, Math.abs(s.wheel.pos))
+    }
     if (events.some((e) => e.kind === 'arrived')) break
     await sleep(40)
   }
@@ -142,6 +151,13 @@ try {
   check('signals for turns', sawSignal)
   check('reports next turn', sawTurn)
   check('steering wheel turns (input path)', wheelMoved > 90, `${wheelMoved.toFixed(0)} deg`)
+  const noWheel = process.env.HARNESS_NO_WHEEL === '1'
+  if (noWheel) check('no FFB wheel: reports it and drives anyway', st().wheel?.status === 'no wheel', st().wheel?.status)
+  else {
+  check('FFB wheel spring active while driving', wheelActive, st().wheel ? JSON.stringify(st().wheel) : 'no wheel state')
+  check('physical wheel turns with the car', wheelMaxPos > 0.15, `max ${(wheelMaxPos * 450).toFixed(0)} deg`)
+  check('physical wheel tracks the target', wheelMaxErr < 0.12, `max error ${(wheelMaxErr * 450).toFixed(0)} deg`)
+  }
   check('arrives', events.some((e) => e.kind === 'arrived'))
   check('parks in P and disengages', await until('P', () => st().gear === 'P' && !st().autopilot.engaged, 5000), `gear ${st().gear}`)
   {
@@ -158,6 +174,17 @@ try {
   check('player brake disengages', await until('disengage', () => events.some((e) => e.kind === 'disengage' && /brake/.test(e.detail ?? '')), 15000),
     events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
   check('state shows lastDisengage=brake', await until('lastDisengage', () => st().autopilot.lastDisengage?.reason === 'brake' && !st().autopilot.engaged, 3000))
+  if (process.env.HARNESS_NO_WHEEL !== '1') {
+  check('wheel handed back to the game after disengage', await until('available', () => st().wheel?.status === 'available', 3000), st().wheel?.status)
+
+  // --- the driver grabs the wheel (harness does it 3 s into the third engagement)
+  await sleep(500)
+  events.length = 0
+  send({ t: 'autopilot', mode: 'fsd' })
+  check('FSD engages a third time', await until('engaged', () => st().autopilot.engaged, 4000))
+  check('grabbing the wheel disengages', await until('grab', () => events.some((e) => e.kind === 'disengage' && /steer/.test(e.detail ?? '')), 15000),
+    events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+  }
 } catch (e) {
   check('no exceptions', false, String(e))
 }
