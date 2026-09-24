@@ -60,6 +60,34 @@ M.PROFILES = {
 }
 
 ---------------------------------------------------------------------------
+-- Lanes
+---------------------------------------------------------------------------
+
+-- Lanes in our direction and their width, from the road's half-width (BeamNG's
+-- road graph has no lane data we can rely on). Two-way roads: lanes on the right
+-- half, next to the centerline. One-way roads: lanes centered on the centerline.
+function M.laneModel(r, ow)
+  r = r or 3
+  local n, w
+  if ow then
+    n = clamp(floor(2 * r / 3.4), 1, 5)
+    w = min(3.7, 2 * r / n)
+  else
+    n = clamp(floor(r / 3.4), 1, 4)
+    w = min(3.7, r / n)
+  end
+  return n, w
+end
+
+-- Offset (m, + = right of the centerline) of lane k (0 = rightmost).
+function M.laneCenter(r, ow, k)
+  local n, w = M.laneModel(r, ow)
+  k = clamp(k or 0, 0, n - 1)
+  if ow then return ((n - 1) / 2 - k) * w end
+  return (n - 1 - k + 0.5) * w
+end
+
+---------------------------------------------------------------------------
 -- Graph
 ---------------------------------------------------------------------------
 
@@ -100,6 +128,7 @@ function M.buildGraph(mapNodes)
             drv = l.drivability or 1,
             lim = M.normalizeLimit(l.speedLimit),
             name = l.name or l.roadName,
+            lanes = l.lanes,
           }
           e.key = #g.edges + 1
           g.edges[e.key] = e
@@ -129,12 +158,58 @@ local function edgeCost(g, e)
   return c
 end
 
+-- Grid of edges so nearest-edge lookups stay cheap on big maps (called at 20 Hz).
+function M.buildIndex(g, cell)
+  cell = cell or 50
+  local idx = { cell = cell, cells = {} }
+  for _, e in ipairs(g.edges) do
+    local a, b = g.nodes[e.a], g.nodes[e.b]
+    local x0, x1 = floor(min(a.x, b.x) / cell), floor(max(a.x, b.x) / cell)
+    local y0, y1 = floor(min(a.y, b.y) / cell), floor(max(a.y, b.y) / cell)
+    for cx = x0, x1 do
+      for cy = y0, y1 do
+        local key = cx .. ',' .. cy
+        local list = idx.cells[key]
+        if not list then list = {}; idx.cells[key] = list end
+        list[#list + 1] = e
+      end
+    end
+  end
+  g.index = idx
+  return idx
+end
+
+local function candidateEdges(g, x, y, maxDist)
+  local idx = g.index
+  if not idx then return g.edges end
+  local out, seen = {}, {}
+  local cell = idx.cell
+  local reach = ceil(maxDist / cell)
+  local cx, cy = floor(x / cell), floor(y / cell)
+  for ring = 0, reach do
+    for ix = cx - ring, cx + ring do
+      for iy = cy - ring, cy + ring do
+        if ring == 0 or abs(ix - cx) == ring or abs(iy - cy) == ring then
+          local list = idx.cells[ix .. ',' .. iy]
+          if list then
+            for _, e in ipairs(list) do
+              if not seen[e] then seen[e] = true; out[#out + 1] = e end
+            end
+          end
+        end
+      end
+    end
+    if #out > 0 and ring >= 1 then break end -- found some; one extra ring covers edge cases
+  end
+  return out
+end
+
 -- Closest edge to (x,y). Optional heading (hx,hy) prefers edges that run the
 -- same way and can be driven that way. Returns edge, t (0 at a .. 1 at b), dist.
 function M.nearestEdge(g, x, y, hx, hy, maxDist)
   local best, bestT, bestD, bestScore = nil, 0, huge, huge
   maxDist = maxDist or 200
-  for _, e in ipairs(g.edges) do
+  for _, e in ipairs(candidateEdges(g, x, y, maxDist)) do
     local a, b = g.nodes[e.a], g.nodes[e.b]
     local ex, ey = b.x - a.x, b.y - a.y
     local l2 = ex * ex + ey * ey
@@ -156,6 +231,37 @@ function M.nearestEdge(g, x, y, hx, hy, maxDist)
     end
   end
   return best, bestT, bestD
+end
+
+-- Where are we on the road? For lane keeping / departure / evasion room.
+-- Returns { lat (m, + = left of our lane's center), halfW, laneW, lane (0 = rightmost),
+-- lanes, roomLeft, roomRight (m from lane center to the road edge, crossing lanes),
+-- oncomingLeft (lane on our left carries oncoming traffic), sameLeft, sameRight,
+-- dx, dy (road direction we're driving), edge, r } or nil when off the road graph.
+function M.locate(g, x, y, hx, hy, maxDist)
+  local e, t, d = M.nearestEdge(g, x, y, hx, hy, maxDist or 30)
+  if not e then return nil end
+  local a, b = g.nodes[e.a], g.nodes[e.b]
+  local dx, dy = norm2(b.x - a.x, b.y - a.y)
+  if hx and dx * hx + dy * hy < 0 then dx, dy = -dx, -dy end
+  local r = a.r + (b.r - a.r) * t
+  local cx, cy = a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t
+  -- + = right of the centerline (our driving direction)
+  local latRight = (x - cx) * dy - (y - cy) * dx
+  local n, w = M.laneModel(r, e.ow)
+  local best, bestD = 0, huge
+  for k = 0, n - 1 do
+    local dd = abs(latRight - M.laneCenter(r, e.ow, k))
+    if dd < bestD then best, bestD = k, dd end
+  end
+  local center = M.laneCenter(r, e.ow, best)
+  if d > r + 4 then return nil end
+  return {
+    lat = center - latRight, halfW = w / 2, laneW = w, lane = best, lanes = n,
+    roomLeft = center + r, roomRight = r - center,
+    oncomingLeft = (not e.ow) and best == n - 1, sameLeft = best < n - 1, sameRight = best > 0,
+    dx = dx, dy = dy, edge = e, r = r, ow = e.ow,
+  }
 end
 
 -- Binary min-heap keyed by f.
@@ -242,6 +348,8 @@ function M.route(g, start, goal)
   if canTraverse(ge, ge.a) then goalVia[ge.a] = gt * ge.len / gspd end
   if canTraverse(ge, ge.b) then goalVia[ge.b] = (1 - gt) * ge.len / gspd end
 
+  local seededBack = {}
+  if fwdIsB then seededBack[se.a] = true else seededBack[se.b] = true end
   local bestGoal, bestGoalCost = nil, huge
   local iterations = 0
   while true do
@@ -277,7 +385,9 @@ function M.route(g, start, goal)
     table.insert(nodes, 1, cur)
     cur = came[cur]
   end
-  return { nodes = nodes, startEdge = se, startT = st, goalEdge = ge, goalT = gt, startPt = startPt, goalPt = goalPt, cost = bestGoalCost, iterations = iterations }
+  -- did the best route start by going backwards (a U-turn)?
+  local uturn = nodes[1] ~= nil and seededBack[nodes[1]] == true
+  return { nodes = nodes, startEdge = se, startT = st, goalEdge = ge, goalT = gt, startPt = startPt, goalPt = goalPt, cost = bestGoalCost, iterations = iterations, uturn = uturn }
 end
 
 -- Greedy "keep going straight" node list, for autosteer / FSD with no destination.
@@ -468,7 +578,7 @@ function M.laneOffset(pts, side)
   local raw, sm = {}, {}
   for i = 1, n do
     local p = pts[i]
-    raw[i] = p.laneOffset or (p.ow and 0 or min((p.r or 3) * 0.5, 1.8)) * side
+    raw[i] = p.laneOffset or M.laneCenter(p.r, p.ow, 0) * side
   end
   local K = 12
   for i = 1, n do

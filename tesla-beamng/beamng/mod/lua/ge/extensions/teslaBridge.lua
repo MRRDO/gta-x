@@ -1,9 +1,11 @@
 -- teslaBridge (game-engine extension)
 -- TCP server for the Node relay (newline-delimited JSON on 127.0.0.1:8766),
--- player-vehicle state fan-out, commands, road-graph export, traffic, traffic
--- signals, parking spots, and the autopilot's route planner. The per-frame
--- driving (steering/throttle/brake through player inputs) lives in the
--- vehicle extension teslaAutopilot; this file sends it a plan at 10 Hz.
+-- player-vehicle state fan-out, commands, road-graph export, traffic (with
+-- emergency vehicles / school buses), traffic signals, parking spots, weather.
+-- Runs the FSD brain (teslaBridge/planner) at 10 Hz and active safety
+-- (teslaBridge/safety) at 20 Hz. The per-frame driving (steering/throttle/brake
+-- through player inputs) lives in the vehicle extension teslaAutopilot; this
+-- file sends it a plan at 10 Hz and safety assists at 20 Hz.
 --
 -- BeamNG API names used here were checked against BeamNG 0.39-era mod code.
 -- Anything less certain is called through `try()` and reported by the
@@ -12,10 +14,12 @@
 local M = {}
 
 local P = require('teslaBridge/pathing')
+local Pl = require('teslaBridge/planner')
+local Sf = require('teslaBridge/safety')
 
 local logTag = 'teslaBridge'
 local PORT = 8766
-local PROTOCOL = 1
+local PROTOCOL = 2
 local MAX_QUEUE = 512 * 1024 -- bytes of droppable output before we skip frames
 
 local socket = nil
@@ -25,7 +29,7 @@ local outq, outPos, outBytes = {}, 1, 0
 local nextBindTry = 0
 
 local gameTime, realTime = 0, 0
-local tPlan, tTraffic, tHeartbeat, tMapPoll = 0, 0, 0, 0
+local tPlan, tTraffic, tHeartbeat, tMapPoll, tSafety, tWeather = 0, 0, 0, 0, 0, 0
 
 -- world model
 local level = nil
@@ -43,16 +47,22 @@ local lastLoadTry = {}
 local vehSize = {}       -- [vid] = { w, l }
 local vehDiag = nil
 
--- autopilot / route
-local ap = {
-  mode = 'off', profile = 'standard',
-  dest = nil, stops = nil, arrival = nil,
-  path = nil, hint = nil, seq = 0,
-  cleared = {}, clearedS = -1e9, stopHold = 0,
-  lastVehSpeed = 0, arrived = false,
-  control = nil, nextTurn = nil, leadGap = nil, remaining = nil, speedLimit = nil,
-  lastDisengage = nil,
-}
+-- FSD brain, safety, and what we last told the car
+local planner = nil
+local plannerSettings = {}   -- kept across level loads
+local safetySettings = {}
+local safety = Sf.new()
+local sentMode = 'off'
+local plannerStatus = {}
+local safetyStatus = {}
+local lastAssist = nil
+local attention = nil        -- { state, t } from the app's cabin camera
+local lastVehSt = {}         -- gear, speed, throttle, signal, nudges from the car
+local nudgeCount, nudgeT = 0, nil
+local engagedAt = -1e9
+local weather = { rain = 0, fog = 0 }
+local overhead = false
+local beacons, beaconLoaded, vehNames = {}, {}, {}
 
 ---------------------------------------------------------------------------
 -- helpers
@@ -338,6 +348,9 @@ local function buildMap()
   end
   findSignals()
   findParking()
+  planner = Pl.new({ graph = graph, signals = signals, parking = parking })
+  planner:configure(plannerSettings)
+  sentMode = 'off'
   local sig = {}
   for _, s in ipairs(signals) do sig[#sig + 1] = { id = s.id, pos = { num(s.x), num(s.y), num(s.z) }, kind = s.kind } end
   local park = {}
@@ -387,9 +400,32 @@ local function sizeOf(veh)
   return vehSize[id]
 end
 
+local EMERGENCY_WORDS = { 'police', 'sheriff', 'ambulance', 'fire', 'rescue', 'interceptor', 'pursuit', 'ems', 'marshal', 'patrol', 'trooper' }
+
+local function vehName(veh, id)
+  if vehNames[id] then return vehNames[id] end
+  local jb = try(function() return veh:getJBeamFilename() end) or ''
+  local cfg = try(function() return veh.partConfig end) or ''
+  local n = string.lower(tostring(jb) .. ' ' .. tostring(cfg))
+  vehNames[id] = n
+  return n
+end
+
+local function isEmergencyName(n)
+  for _, w in ipairs(EMERGENCY_WORDS) do if n:find(w, 1, true) then return true end end
+  return false
+end
+
+-- lightbar reports from the tiny teslaBeacon extension we load into nearby cars
+function M.onBeacon(vid, lightbar, hazard)
+  beacons[vid] = { lightbar = tonumber(lightbar) or 0, hazard = tonumber(hazard) or 0, t = realTime }
+end
+
 local function sampleTraffic()
   local now = realTime
   local seen = {}
+  local pv = playerVehicle()
+  local pp = pv and pv:getPosition()
   for _, veh in ipairs(allVehicles()) do
     local id = veh:getID()
     if id ~= playerId and (not veh.getActive or try(function() return veh:getActive() end) ~= false) then
@@ -406,11 +442,32 @@ local function sampleTraffic()
         v = 0
       end
       local sz = sizeOf(veh)
-      traffic[id] = { x = p.x, y = p.y, z = p.z, dx = d.x, dy = d.y, dz = d.z, v = v, w = sz.w, l = sz.l, t = now }
+      local stopped = 0
+      if prev and math.abs(v) < 0.3 then stopped = (prev.stoppedFor or 0) + (now - prev.t) end
+      local near = pp and (p.x - pp.x) ^ 2 + (p.y - pp.y) ^ 2 < 250 * 250
+      if near and not beaconLoaded[id] then
+        beaconLoaded[id] = true
+        vehQueue(veh, 'extensions.load("teslaBeacon")')
+      end
+      local name = vehName(veh, id)
+      local b = beacons[id]
+      local lights = b and now - b.t < 2 and b.lightbar > 0
+      traffic[id] = { x = p.x, y = p.y, z = p.z, dx = d.x, dy = d.y, dz = d.z, v = v, w = sz.w, l = sz.l, t = now,
+        stoppedFor = stopped, emergency = lights and isEmergencyName(name) or false,
+        schoolBus = name:find('school', 1, true) ~= nil, name = name }
       seen[id] = true
     end
   end
   for id in pairs(traffic) do if not seen[id] then traffic[id] = nil end end
+end
+
+local function trafficList()
+  local list = {}
+  for id, c in pairs(traffic) do
+    list[#list + 1] = { id = id, x = c.x, y = c.y, z = c.z, dx = c.dx, dy = c.dy, v = c.v, l = c.l, w = c.w,
+      stoppedFor = c.stoppedFor, emergency = c.emergency, schoolBus = c.schoolBus }
+  end
+  return list
 end
 
 local function sendTraffic()
@@ -419,296 +476,182 @@ local function sendTraffic()
   local pp = pv and pv:getPosition()
   for id, c in pairs(traffic) do
     if not pp or (c.x - pp.x) ^ 2 + (c.y - pp.y) ^ 2 < 600 * 600 then
-      cars[#cars + 1] = { id = id, pos = { num(c.x), num(c.y), num(c.z) }, dir = { num(c.dx, 3), num(c.dy, 3), num(c.dz, 3) }, speed = num(c.v), w = num(c.w), l = num(c.l) }
+      cars[#cars + 1] = { id = id, pos = { num(c.x), num(c.y), num(c.z) }, dir = { num(c.dx, 3), num(c.dy, 3), num(c.dz, 3) }, speed = num(c.v), w = num(c.w), l = num(c.l),
+        emergency = c.emergency or nil, schoolBus = c.schoolBus or nil }
     end
   end
   send({ t = 'traffic', cars = cars }, true)
 end
 
 ---------------------------------------------------------------------------
--- route planning
+-- sensing: weather, static raycasts
 ---------------------------------------------------------------------------
 
-local function profileOpts()
-  return P.PROFILES[ap.profile] or P.PROFILES.standard
-end
+local weatherProbe = {}
 
-local function nearestParking(x, y, maxDist)
-  local best, bd = nil, maxDist * maxDist
-  for _, p in ipairs(parking) do
-    local d = (p.x - x) ^ 2 + (p.y - y) ^ 2
-    if d < bd then best, bd = p, d end
+local function sampleWeather()
+  local rain, fog = 0, 0
+  -- rain: Precipitation objects in the level (drops count)
+  if scenetree and scenetree.findClassObjects then
+    local list = try(scenetree.findClassObjects, 'Precipitation') or {}
+    for _, name in ipairs(list) do
+      local o = scenetree.findObject(name)
+      local drops = o and (try(function() return tonumber(o.numDrops) end) or try(function() return tonumber(o:getField('numDrops', '')) end))
+      if drops then rain = math.max(rain, math.min(1, drops / 4000)); weatherProbe.rain = 'numDrops' end
+    end
   end
-  return best
+  -- fog: environment fog density
+  local env = rawget(_G, 'core_environment')
+  if env then
+    local dens = type(env.getFogDensity) == 'function' and try(env.getFogDensity)
+    if type(dens) == 'number' then
+      fog = math.max(0, math.min(1, (dens - 0.002) / 0.02))
+      weatherProbe.fog = 'core_environment.getFogDensity'
+    end
+    if type(env.getPrecipitation) == 'function' then
+      local pr = try(env.getPrecipitation)
+      if type(pr) == 'number' then rain = math.max(rain, math.min(1, pr)); weatherProbe.rain = 'core_environment.getPrecipitation' end
+    end
+  end
+  weather = { rain = rain, fog = fog }
 end
 
--- Build ap.path from the player's pose: to ap.dest (via ap.stops) or, with no
--- destination, "keep following this road".
-local function planPath(veh)
-  if not graph then return false, 'map not loaded yet' end
+local rayFn = nil
+local rayProbed = false
+local function castRay(px, py, pz, dx, dy, dz, dist)
+  if not rayProbed then
+    rayProbed = true
+    if rawget(_G, 'castRayStatic') then
+      rayFn = function(o, d, l) return castRayStatic(o, d, l) end
+    elseif be and be.castRayStatic then
+      rayFn = function(o, d, l) return be:castRayStatic(o, d, l) end
+    end
+  end
+  if not rayFn or not vec3 then return nil end
+  local hit = try(rayFn, vec3(px, py, pz), vec3(dx, dy, dz), dist)
+  if type(hit) == 'number' and hit > 0 and hit < dist then return hit end
+  return nil
+end
+
+-- distances to static things around the car (walls, poles) and a bridge overhead
+local function sampleRays(ego)
+  local z = (ego.z or 0) + 0.6
+  local half = (ego.len or 4.6) * 0.5
+  local rays = {
+    front = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z, ego.hx, ego.hy, 0, 30),
+    rear = castRay(ego.x - ego.hx * half, ego.y - ego.hy * half, z, -ego.hx, -ego.hy, 0, 15),
+    left = castRay(ego.x, ego.y, z, -ego.hy, ego.hx, 0, 8),
+    right = castRay(ego.x, ego.y, z, ego.hy, -ego.hx, 0, 8),
+  }
+  overhead = castRay(ego.x, ego.y, (ego.z or 0) + 2.5, 0, 0, 1, 12) ~= nil
+  return rays
+end
+
+---------------------------------------------------------------------------
+-- the player car, as the planner and safety see it
+---------------------------------------------------------------------------
+
+local yawState = { prev = nil, t = 0, rate = 0 }
+
+local function egoSnapshot(veh)
   local p = veh:getPosition()
   local d = veh:getDirectionVector()
-  local hx, hy = d.x, d.y
-  local hl = math.sqrt(hx * hx + hy * hy)
-  if hl < 1e-6 then hx, hy = 0, 1 else hx, hy = hx / hl, hy / hl end
-  local path
-  if ap.dest then
-    local legs = {}
-    for _, s in ipairs(ap.stops or {}) do legs[#legs + 1] = s end
-    legs[#legs + 1] = ap.dest
-    local sx, sy = p.x, p.y
-    local all = nil
-    for _, goal in ipairs(legs) do
-      local rt, err = P.route(graph, { x = sx, y = sy, hx = hx, hy = hy }, { x = goal[1], y = goal[2] })
-      if not rt then return false, err end
-      local leg = P.buildPath(graph, rt)
-      if not all then all = leg
-      else
-        local off = all.s[#all.s]
-        for i = 2, #leg.pts do all.pts[#all.pts + 1] = leg.pts[i] end
-        for _, t in ipairs(leg.turns) do t.s = t.s + off; all.turns[#all.turns + 1] = t end
-        all.s = P.cumulative(all.pts)
-      end
-      local last = all.pts[#all.pts]
-      local prev = all.pts[math.max(1, #all.pts - 1)]
-      sx, sy = last.x, last.y
-      hx, hy = last.x - prev.x, last.y - prev.y
-      hl = math.sqrt(hx * hx + hy * hy)
-      if hl > 1e-6 then hx, hy = hx / hl, hy / hl end
-    end
-    path = all
-    -- arrival
-    local kind = ap.arrival or 'auto'
-    local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and nearestParking(ap.dest[1], ap.dest[2], 60) or nil
-    if spot then
-      P.appendParking(path, spot.x, spot.y, spot.z, spot.dx, spot.dy)
-      path.arrivalKind = 'parking'
-    elseif kind ~= 'Driveway' then
-      P.pullOver(path, 30)
-      path.arrivalKind = 'curb'
-    else
-      path.arrivalKind = 'point'
-    end
+  local hl = math.sqrt(d.x * d.x + d.y * d.y)
+  local hx, hy = 0, 1
+  if hl > 1e-6 then hx, hy = d.x / hl, d.y / hl end
+  local v
+  local vel = try(function() return veh:getVelocity() end)
+  if vel and vel.x then v = vel.x * hx + vel.y * hy
+  else v = (lastVehSt.speed or 0) * ((lastVehSt.gear == 'R') and -1 or 1) end
+  if yawState.prev and realTime > yawState.t then
+    local ph = yawState.prev
+    local cr = ph[1] * hy - ph[2] * hx
+    local dp = ph[1] * hx + ph[2] * hy
+    local rate = math.atan2(cr, dp) / (realTime - yawState.t)
+    yawState.rate = yawState.rate + (rate - yawState.rate) * 0.5
+  end
+  yawState.prev, yawState.t = { hx, hy }, realTime
+  local sz = sizeOf(veh)
+  return {
+    x = p.x, y = p.y, z = p.z, hx = hx, hy = hy, v = v, yawRate = yawState.rate, len = sz.l, wid = sz.w,
+    gear = lastVehSt.gear, throttle = lastVehSt.throttle, signal = lastVehSt.signal,
+    engaged = planner ~= nil and planner.mode ~= 'off', handsNudgeT = nudgeT, attention = attention,
+  }
+end
+
+---------------------------------------------------------------------------
+-- planner <-> car
+---------------------------------------------------------------------------
+
+local function relayEvent(ev)
+  local detail = ev.detail or ev.reason or ev.dir or ev.side or ev.what or ev.action or ev.state
+  if ev.kind == 'nag' then detail = tostring(ev.level) .. (ev.reason and (' ' .. ev.reason) or '') end
+  if ev.kind == 'strike' then detail = tostring(ev.strikes) .. '/' .. tostring(ev.max) end
+  local msg = { t = 'event', kind = ev.kind, detail = detail and tostring(detail) or nil, data = ev }
+  send(msg)
+end
+
+-- keep the car's autopilot mode in step with the planner's
+local function syncVehicleMode(veh)
+  if not planner or not veh then return end
+  if planner.mode == sentMode then return end
+  if planner.mode == 'off' then
+    local r = planner.lastDisengage and planner.lastDisengage.reason or 'app'
+    toVehicle(veh, 'command', { t = 'autopilot', mode = 'off', reason = r })
   else
-    local rt, err = P.followRoad(graph, p.x, p.y, hx, hy, 1500)
-    if not rt then return false, err end
-    path = P.buildPath(graph, rt)
+    local prof = P.PROFILES[planner.profile] or P.PROFILES.standard
+    toVehicle(veh, 'command', { t = 'autopilot', mode = planner.mode, profile = planner.profile, throttleMax = prof.throttle, gapTime = prof.gap })
+    engagedAt = realTime
   end
-  local prof = profileOpts()
-  P.speedProfile(path, { offset = prof.offset, aLat = prof.aLat, endSpeed = (not path.openEnded) and 0 or nil })
-  -- speed limit (no profile offset) for display
-  path.limit = {}
-  for i, pt in ipairs(path.pts) do path.limit[i] = pt.lim or P.classDefaultSpeed(pt.r, pt.drv) end
-  ap.path, ap.hint = path, nil
-  ap.cleared, ap.clearedS, ap.stopHold, ap.arrived = {}, -1e9, 0, false
-  -- route preview for the app
-  local pts = {}
-  local step = math.max(1, math.floor(#path.pts / 400))
-  for i = 1, #path.pts, step do local q = path.pts[i]; pts[#pts + 1] = { num(q.x, 1), num(q.y, 1), num(q.z or 0, 1) } end
-  local q = path.pts[#path.pts]
-  pts[#pts + 1] = { num(q.x, 1), num(q.y, 1), num(q.z or 0, 1) }
-  send({ t = 'route', points = pts, length = num(path.s[#path.s], 0), openEnded = path.openEnded or false, arrival = path.arrivalKind })
-  return true
+  sentMode = planner.mode
 end
 
-local function disengage(reason, detail)
-  local wasOn = ap.mode ~= 'off'
-  ap.mode = 'off'
-  local veh = playerVehicle()
-  toVehicle(veh, 'command', { t = 'autopilot', mode = 'off', reason = reason })
-  if wasOn then
-    ap.lastDisengage = { reason = reason, time = num(gameTime) }
-    event('disengage', reason .. (detail and (': ' .. detail) or ''))
+local function applyPlannerOut(veh, out)
+  for _, ev in ipairs(out.events or {}) do relayEvent(ev) end
+  for _, cmd in ipairs(out.commands or {}) do cmd.fromPlanner = true; toVehicle(veh, 'command', cmd) end
+  if out.route then send(out.route) end
+  plannerStatus = out.status or plannerStatus
+  syncVehicleMode(veh)
+  if out.plan and planner.mode ~= 'off' then
+    -- round for a smaller message
+    for i = 1, #out.plan.pts do out.plan.pts[i] = num(out.plan.pts[i]) end
+    for i = 1, #out.plan.vcap do out.plan.vcap[i] = num(out.plan.vcap[i]) end
+    toVehicle(veh, 'setPlan', out.plan)
   end
-end
-
-local function engage(mode, profile)
-  local veh = playerVehicle()
-  if not veh then event('error', 'no player vehicle'); return end
-  if profile and P.PROFILES[profile] then ap.profile = profile end
-  if not ap.path or ap.path.openEnded ~= (ap.dest == nil) or ap.modeBuiltFor ~= ap.profile then
-    local ok, err = planPath(veh)
-    if not ok then event('error', 'autopilot: ' .. tostring(err)); return end
-    ap.modeBuiltFor = ap.profile
-  end
-  ap.mode = mode
-  local prof = profileOpts()
-  toVehicle(veh, 'command', { t = 'autopilot', mode = mode, profile = ap.profile, throttleMax = prof.throttle, gapTime = prof.gap })
-  event('engaged', mode .. '/' .. ap.profile)
-end
-
--- Distance along path (from `fromS`) to controls ahead, lead vehicle, turns.
-local function controlsAhead(path, sCar, i0, i1, speed)
-  local pts = path.pts
-  local window = { pts = {}, s = {} }
-  for i = i0, i1 do window.pts[#window.pts + 1] = pts[i]; window.s[#window.s + 1] = path.s[i] end
-  local car = pts[i0]
-  local best = nil
-  for _, sg in ipairs(signals) do
-    local dx, dy = sg.x - car.x, sg.y - car.y
-    if dx * dx + dy * dy < 300 * 300 then
-      local pr = P.project(window, sg.x, sg.y)
-      if pr and pr.s > sCar - 3 then
-        local r = (pr.i and window.pts[pr.i] and window.pts[pr.i].r) or 4
-        local okLat = pr.dist < r + 5
-        if sg.kind == 'stop' and sg.prop then okLat = pr.lat < 1 and pr.dist < r + 6 end -- sign on our right
-        if okLat and sg.dirx then
-          local a = window.pts[pr.i]; local b = window.pts[math.min(#window.pts, pr.i + 1)]
-          local tx, ty = b.x - a.x, b.y - a.y
-          local tl = math.sqrt(tx * tx + ty * ty)
-          if tl > 1e-6 then okLat = math.abs((tx * sg.dirx + ty * sg.diry) / tl) > 0.6 end
-        end
-        if okLat then
-          local dist = pr.s - sCar
-          local red = false
-          local needStop = false
-          if sg.kind == 'stop' then
-            needStop = not ap.cleared[sg.id] and pr.s > ap.clearedS + 25
-            red = needStop
-          else
-            local st = sg.get and sg.get() or nil
-            red = st == 'red'
-            needStop = red or (st == 'yellow' and dist > (speed * speed) / (2 * 3) + 2)
-          end
-          if not best or dist < best.dist then
-            best = { kind = sg.kind, dist = dist, red = red, stop = needStop, id = sg.id, s = pr.s }
-          end
-        end
-      end
-    end
-  end
-  return best
-end
-
-local function leadAhead(path, sCar, i0, i1, ourLen)
-  local pts = path.pts
-  local window = { pts = {}, s = {} }
-  for i = i0, i1 do window.pts[#window.pts + 1] = pts[i]; window.s[#window.s + 1] = path.s[i] end
-  local car = pts[i0]
-  local best = nil
-  for id, c in pairs(traffic) do
-    local dx, dy = c.x - car.x, c.y - car.y
-    if dx * dx + dy * dy < 200 * 200 then
-      local pr = P.project(window, c.x, c.y)
-      if pr and pr.s > sCar and math.abs(pr.lat) < 1.8 + c.w * 0.25 then
-        local a = window.pts[pr.i]; local b = window.pts[math.min(#window.pts, pr.i + 1)]
-        local tx, ty = b.x - a.x, b.y - a.y
-        local tl = math.sqrt(tx * tx + ty * ty)
-        local dot = tl > 1e-6 and (tx * c.dx + ty * c.dy) / tl or 1
-        local v = (dot > 0.3) and c.v * dot or 0 -- crossing or oncoming in our lane: treat as stopped
-        local rear = pr.s - c.l * 0.5 - ourLen * 0.5
-        if not best or rear < best.s then best = { s = rear, v = math.max(0, v), id = id } end
-      end
-    end
-  end
-  return best
 end
 
 local function planTick()
+  if not planner then return end
   local veh = playerVehicle()
-  if not veh or ap.mode == 'off' or not ap.path then
-    ap.control, ap.nextTurn, ap.leadGap = nil, nil, nil
-    if ap.path and ap.dest and veh then
-      -- still report remaining distance while navigating without autopilot
-      local p = veh:getPosition()
-      local pr = P.project(ap.path, p.x, p.y, ap.hint, 10, 120) or P.project(ap.path, p.x, p.y)
-      if pr then ap.hint = pr.i; ap.remaining = ap.path.s[#ap.path.s] - pr.s end
-    end
-    return
-  end
-  local path = ap.path
-  local p = veh:getPosition()
-  local pr = P.project(path, p.x, p.y, ap.hint, 10, 120)
-  if not pr or pr.dist > 8 then pr = P.project(path, p.x, p.y) end
-  if not pr then return end
-  if pr.dist > 15 then
-    -- we're off the path (e.g. after a takeover / re-engage somewhere else): replan
-    local ok = planPath(veh)
-    if not ok then disengage('error', 'lost the road') end
-    return
-  end
-  ap.hint = pr.i
-  local S = path.s
-  local remaining = S[#S] - pr.s
-  ap.remaining = (not path.openEnded) and remaining or nil
-  ap.speedLimit = path.limit[pr.i]
+  if not veh then return end
+  local ego = egoSnapshot(veh)
+  local out = planner:tick({ t = gameTime, dt = 0.1, ego = ego, cars = trafficList(), weather = weather, overhead = overhead })
+  applyPlannerOut(veh, out)
+end
 
-  if path.openEnded and remaining < 400 then
-    planPath(veh)
-    return
+local function safetyTick()
+  if not planner or not graph then return end
+  local veh = playerVehicle()
+  if not veh then return end
+  local ego = egoSnapshot(veh)
+  local cars = trafficList()
+  local lane = P.locate(graph, ego.x, ego.y, ego.hx, ego.hy, 20)
+  local rays = sampleRays(ego)
+  local so = safety:tick(gameTime, 0.05, { ego = ego, cars = cars }, { lane = lane, rays = rays, attention = attention })
+  for _, ev in ipairs(so.events) do relayEvent(ev) end
+  safetyStatus = { fcw = so.fcw or false, aeb = (so.aeb or 0) > 0, blindLeft = so.blindLeft or false, blindRight = so.blindRight or false,
+    laneDeparture = so.lda ~= nil, ttc = so.ttc and num(so.ttc) or nil }
+  local assist = { aeb = so.aeb or 0, ldaSteer = so.lda and num(so.lda.steer, 3) or 0, throttleCap = so.throttleCap }
+  local active = assist.aeb > 0 or assist.ldaSteer ~= 0 or assist.throttleCap ~= nil
+  if active or (lastAssist and (lastAssist.aeb > 0 or lastAssist.ldaSteer ~= 0 or lastAssist.throttleCap ~= nil)) then
+    toVehicle(veh, 'assist', assist)
   end
-
-  local speed = ap.lastVehSpeed or 0
-  local i0 = math.max(1, pr.i - 5)
-  local i1 = math.min(#path.pts, pr.i + 160)
-  local sBase = S[i0]
-  local sCar = pr.s
-
-  -- controls
-  local ctl = controlsAhead(path, sCar, i0, i1, speed)
-  if ctl and ctl.kind == 'stop' and ctl.stop then
-    if speed < 0.3 and ctl.dist < 6 then
-      ap.stopHold = ap.stopHold + 0.1
-      if ap.stopHold >= 2 then
-        ap.cleared[ctl.id] = true
-        ap.clearedS = ctl.s
-        ap.stopHold = 0
-      end
-    else
-      ap.stopHold = 0
+  lastAssist = assist
+  if so.evade then
+    if planner:evade(so.evade.side, so.evade.shift, ego, cars) then
+      planTick() -- plan the swerve right away
     end
   end
-  ap.control = ctl and { kind = ctl.kind, dist = num(ctl.dist, 1), red = ctl.red } or nil
-
-  -- lead
-  local ourLen = sizeOf(veh).l
-  local lead = leadAhead(path, sCar, i0, i1, ourLen)
-  ap.leadGap = lead and num(lead.s - sCar, 1) or nil
-
-  -- turns
-  local nextTurn, signal = nil, nil
-  for _, t in ipairs(path.turns or {}) do
-    if t.s > sCar - 5 then
-      nextTurn = t
-      break
-    end
-  end
-  if nextTurn and nextTurn.s - sCar < 60 then signal = nextTurn.dir end
-  if path.arrivalKind == 'curb' and remaining < 45 then signal = 'right' end
-  ap.nextTurn = nextTurn and { dir = nextTurn.dir, dist = num(math.max(0, nextTurn.s - sCar), 0), road = nextTurn.road or '' } or nil
-
-  -- arrival
-  local hold = false
-  if not path.openEnded and remaining < 2.5 and speed < 0.3 then
-    hold = true
-    if not ap.arrived then
-      ap.arrived = true
-      toVehicle(veh, 'command', { t = 'gear', gear = 'P' })
-      event('arrived', path.arrivalKind)
-      disengage('arrived')
-      ap.dest, ap.path = nil, nil
-      return
-    end
-  end
-
-  -- window for the vehicle
-  local flat, vcap = {}, {}
-  for i = i0, i1 do
-    local q = path.pts[i]
-    flat[#flat + 1] = num(q.x); flat[#flat + 1] = num(q.y); flat[#flat + 1] = num(q.z or 0)
-    vcap[#vcap + 1] = num(path.vcap[i])
-  end
-  ap.seq = ap.seq + 1
-  local prof = profileOpts()
-  local plan = {
-    seq = ap.seq, pts = flat, vcap = vcap,
-    stopS = (ctl and ctl.stop) and (ctl.s - sBase) or nil,
-    lead = lead and { s = lead.s - sBase, v = num(lead.v) } or nil,
-    signal = signal or false,
-    hold = hold, openEnded = path.openEnded or false,
-    gapTime = prof.gap, throttleMax = prof.throttle,
-  }
-  toVehicle(veh, 'setPlan', plan)
 end
 
 ---------------------------------------------------------------------------
@@ -722,6 +665,7 @@ local function ensureVehicleExtension(veh, force)
     if force or not lastLoadTry[id] or realTime - lastLoadTry[id] > 3 then
       lastLoadTry[id] = realTime
       vehQueue(veh, 'extensions.load("teslaAutopilot")')
+      sentMode = 'off' -- a fresh extension starts disengaged
     end
   end
 end
@@ -745,7 +689,9 @@ function M.onVehicleState(vid, json)
   if not pv or pv:getID() ~= vid then return end
   local ok, st = pcall(jsonDecode, json)
   if not ok or type(st) ~= 'table' then return end
-  ap.lastVehSpeed = st.speed or 0
+  lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil }
+  if (st.handsNudges or 0) > nudgeCount then nudgeCount = st.handsNudges; nudgeT = gameTime end
+  st.handsNudges, st.rawThrottle = nil, nil
   st.t = 'state'
   st.time = num(gameTime)
   st.vehicle = vehicleInfo(veh or pv)
@@ -754,40 +700,71 @@ function M.onVehicleState(vid, json)
   st.pos = v3(p)
   st.dir = { num(d.x, 4), num(d.y, 4), num(d.z, 4) }
   local va = st.autopilot or {}
-  -- the vehicle knows engaged/targetSpeed; the planner knows the road
-  if va.engaged == false and ap.mode ~= 'off' and (ap.engagedAt or 0) + 1.5 < realTime then
-    ap.mode = 'off' -- the vehicle lost its state (reset/reload)
+  -- the car lost its autopilot state (reset / reload) while the planner thinks it's driving
+  if planner and va.engaged == false and planner.mode ~= 'off' and sentMode ~= 'off' and engagedAt + 1.5 < realTime then
+    planner:disengage('error', 'car lost autopilot state')
+    sentMode = 'off'
   end
+  local ps = plannerStatus or {}
+  local nag = ps.nag or {}
   st.autopilot = {
     engaged = va.engaged or false,
-    mode = va.engaged and ap.mode or 'off',
-    profile = ap.profile,
+    mode = (va.engaged and planner) and planner.mode or 'off',
+    profile = planner and planner.profile or 'standard',
+    activity = ps.activity,
     targetSpeed = num(va.targetSpeed or 0),
-    speedLimit = ap.speedLimit and num(ap.speedLimit) or nil,
-    leadGap = ap.leadGap,
-    control = ap.control,
-    nextTurn = ap.nextTurn,
-    remaining = ap.remaining and num(ap.remaining, 0) or nil,
-    lastDisengage = ap.lastDisengage,
+    speedLimit = ps.speedLimit and num(ps.speedLimit) or nil,
+    setSpeed = ps.setSpeed and num(ps.setSpeed) or nil,
+    leadGap = ps.leadGap and num(ps.leadGap, 1) or nil,
+    control = ps.control and { kind = ps.control.kind, dist = num(ps.control.dist, 1), red = ps.control.red, state = ps.control.state } or nil,
+    nextTurn = ps.nextTurn and { dir = ps.nextTurn.dir, dist = num(ps.nextTurn.dist, 0), road = ps.nextTurn.road } or nil,
+    remaining = ps.remaining and num(ps.remaining, 0) or nil,
+    lane = ps.lane,
+    creeping = ps.creeping or false,
+    waitingFor = ps.waitingFor,
+    goAround = ps.goAround or false,
+    emergencyVehicle = ps.emergency and ps.emergency.action or nil,
+    schoolBus = ps.schoolBus or false,
+    phantomBrake = ps.phantomBrake or false,
+    weather = ps.weather,
+    maneuver = ps.maneuver,
+    nag = { level = nag.level or 0, reason = nag.reason, strikes = nag.strikes or 0, maxStrikes = nag.maxStrikes or 5, lockedOut = nag.lockedOut or false },
+    lastDisengage = planner and planner.lastDisengage or nil,
     accelOverride = va.accelOverride or false,
     steerGain = va.steerGain, steerSign = va.steerSign,
   }
+  st.safety = safetyStatus
   send(st, true)
 end
 
--- Events from the vehicle (disengage on takeover, errors, diagnostics).
+-- Events from the vehicle (takeover disengage, accidental-disengage re-engage, errors, diagnostics).
 function M.onVehicleEvent(vid, json)
   local ok, ev = pcall(jsonDecode, json)
   if not ok or type(ev) ~= 'table' then return end
+  local veh = playerVehicle()
   if ev.kind == 'disengage' then
-    if ap.mode ~= 'off' then
-      ap.mode = 'off'
-      ap.lastDisengage = { reason = ev.reason or 'error', time = num(gameTime) }
-      event('disengage', (ev.reason or 'error') .. (ev.detail and (': ' .. ev.detail) or ''))
+    if planner and planner.mode ~= 'off' then
+      planner:disengage(ev.reason or 'error', ev.detail)
+      sentMode = 'off' -- the car already let go
+      planTick()
+    end
+  elseif ev.kind == 'reengage' then
+    -- the car decided that takeover was an accidental bump of the wheel
+    if planner and veh and planner.mode == 'off' then
+      local ego = egoSnapshot(veh)
+      local okE, err = planner:engage(ev.mode or 'fsd', ev.profile, ego, trafficList())
+      if okE then
+        relayEvent({ kind = 'reengaged', detail = 'accidental takeover' })
+        syncVehicleMode(veh)
+      else
+        relayEvent({ kind = 'error', detail = 'could not re-engage: ' .. tostring(err) })
+      end
     end
   elseif ev.kind == 'diag' then
     vehDiag = ev.data
     send({ t = 'debug', ge = M.diagnostics(), vehicle = vehDiag })
+  elseif ev.kind == 'nudge' then
+    nudgeT = gameTime
   else
     send({ t = 'event', kind = ev.kind or 'error', detail = ev.detail })
   end
@@ -797,21 +774,41 @@ end
 -- commands
 ---------------------------------------------------------------------------
 
+local function engageFromApp(mode, profile)
+  local veh = playerVehicle()
+  if not veh then event('error', 'no player vehicle'); return end
+  if not planner then event('error', 'map not loaded yet'); return end
+  ensureVehicleExtension(veh)
+  local ego = egoSnapshot(veh)
+  local ok, err = planner:engage(mode, profile, ego, trafficList())
+  if not ok then event('error', 'autopilot: ' .. tostring(err)); return end
+  syncVehicleMode(veh)
+  planTick()
+end
+
 handleCommand = function(msg)
   local t = msg.t
   local veh = playerVehicle()
-  if t == 'gear' or t == 'lights' or t == 'signal' or t == 'horn' or t == 'door' or t == 'throttleOverride' or t == 'wheel' then
+  if t == 'gear' or t == 'lights' or t == 'horn' or t == 'door' or t == 'throttleOverride' or t == 'wheel' then
     if not veh then event('error', 'no player vehicle'); return end
     ensureVehicleExtension(veh)
     toVehicle(veh, 'command', msg)
+  elseif t == 'signal' then
+    if not veh then event('error', 'no player vehicle'); return end
+    -- the stalk while FSD / Autosteer drives: change lanes that way
+    if planner and (planner.mode == 'fsd' or planner.mode == 'autosteer') and (msg.dir == 'left' or msg.dir == 'right') then
+      planner:requestLaneChange(msg.dir)
+    else
+      toVehicle(veh, 'command', msg)
+    end
   elseif t == 'autopilot' then
     if msg.mode == 'off' then
-      disengage('app')
-    elseif msg.mode == 'fsd' or msg.mode == 'autosteer' then
-      ap.engagedAt = realTime
-      engage(msg.mode, msg.profile)
-    elseif msg.profile then
-      ap.profile = msg.profile
+      if planner then planner:disengage('app') end
+      if veh then syncVehicleMode(veh) end
+    elseif msg.mode == 'fsd' or msg.mode == 'autosteer' or msg.mode == 'tacc' then
+      engageFromApp(msg.mode, msg.profile)
+    elseif msg.profile and planner then
+      planner:setProfile(msg.profile)
     end
   elseif t == 'navigate' then
     local to = msg.to
@@ -820,21 +817,41 @@ handleCommand = function(msg)
       to = { n.x, n.y, n.z }
     end
     if type(to) ~= 'table' or not to[1] then event('error', 'navigate: bad destination'); return end
-    ap.dest, ap.stops, ap.arrival = to, msg.stops, msg.arrival
-    if veh then
-      local ok, err = planPath(veh)
-      if not ok then event('error', 'navigate: ' .. tostring(err)) end
-      if ap.mode ~= 'off' and ok then engage(ap.mode, ap.profile) end
-    end
+    if not planner or not veh then event('error', 'map not loaded yet'); return end
+    planner:setRoute(to, msg.stops, msg.arrival)
+    local ok, err = planner:planPath(egoSnapshot(veh), trafficList())
+    if not ok then event('error', 'navigate: ' .. tostring(err)); return end
+    planner.builtFor = planner.profile
+    send(planner:routeMessage())
+    planner.routeDirty = false
   elseif t == 'cancelRoute' then
-    ap.dest, ap.stops, ap.arrival, ap.remaining = nil, nil, nil, nil
+    if not planner then return end
+    planner:cancelRoute()
     send({ t = 'route', points = {}, length = 0 })
-    if ap.mode ~= 'off' and veh then
-      planPath(veh)
-      engage(ap.mode, ap.profile)
-    else
-      ap.path = nil
+    if planner.mode ~= 'off' and veh then planner:planPath(egoSnapshot(veh), trafficList()); planner.routeDirty = false end
+  elseif t == 'settings' then
+    for k, v in pairs(msg) do if k ~= 't' and k ~= 'safety' then plannerSettings[k] = v end end
+    if planner then planner:configure(plannerSettings) end
+    if type(msg.safety) == 'table' then
+      for k, v in pairs(msg.safety) do safetySettings[k] = v end
+      safety:configure(safetySettings)
     end
+    event('settings', 'updated')
+  elseif t == 'attention' then
+    attention = { state = msg.state or 'unknown', t = gameTime }
+  elseif t == 'nudge' then
+    nudgeT = gameTime
+  elseif t == 'summon' then
+    if not planner or not veh then return end
+    planner:summon(msg.dir, egoSnapshot(veh))
+    syncVehicleMode(veh)
+  elseif t == 'autopark' then
+    if not planner or not veh then return end
+    local ok, err = planner:autopark(egoSnapshot(veh), trafficList())
+    if not ok then event('error', 'autopark: ' .. tostring(err)) end
+    syncVehicleMode(veh)
+  elseif t == 'resetStrikes' then
+    if planner then planner.nag:reset() end
   elseif t == 'requestMap' then
     if mapMsg then send(mapMsg) else mapPending = true; event('error', 'map not ready yet') end
   elseif t == 'requestMinimap' then
@@ -854,13 +871,23 @@ end
 
 -- Bound to the "Tesla: toggle FSD / Autosteer" controls (a wheel button, e.g. on a G29).
 function M.toggleAutopilot(mode)
-  if ap.mode ~= 'off' then
-    disengage('app')
-    ap.lastDisengage = { reason = 'app', time = num(gameTime) }
+  if planner and planner.mode ~= 'off' then
+    planner:disengage('app')
+    local veh = playerVehicle()
+    if veh then syncVehicleMode(veh) end
   else
-    ap.engagedAt = realTime
-    engage(mode or 'fsd', ap.profile)
+    engageFromApp(mode or 'fsd', planner and planner.profile)
   end
+end
+
+-- Bound to "Tesla: voice note": the app starts/stops recording a note for later.
+function M.voiceNote()
+  send({ t = 'event', kind = 'voiceNote', detail = 'toggle', data = { lastDisengage = planner and planner.lastDisengage or nil } })
+end
+
+-- Bound to "Tesla: I'm paying attention" (a wheel button for keyboard/gamepad players).
+function M.nudge()
+  nudgeT = gameTime
 end
 
 ---------------------------------------------------------------------------
@@ -879,10 +906,17 @@ local function keysOf(t, limit)
 end
 
 function M.diagnostics()
-  local d = { version = beamng_versionb or beamng_version, level = levelName(), mapNodes = graph and #mapMsg.nodes or 0,
+  local d = { version = beamng_versionb or beamng_version, level = levelName(), mapNodes = mapMsg and #mapMsg.nodes or 0,
     mapLinks = graph and #graph.edges or 0, signals = #signals, parking = #parking, traffic = 0,
-    apMode = ap.mode, profile = ap.profile, hasPath = ap.path ~= nil, relayQueue = outBytes }
-  for _ in pairs(traffic) do d.traffic = d.traffic + 1 end
+    apMode = planner and planner.mode or 'none', profile = planner and planner.profile, activity = planner and planner.activity,
+    hasPath = planner ~= nil and planner.path ~= nil, relayQueue = outBytes,
+    weather = weather, weatherProbe = weatherProbe, raycast = rayFn ~= nil, overhead = overhead,
+    beacons = 0, emergencyNow = 0 }
+  for _, c in pairs(traffic) do
+    d.traffic = d.traffic + 1
+    if c.emergency then d.emergencyNow = d.emergencyNow + 1 end
+  end
+  for _ in pairs(beacons) do d.beacons = d.beacons + 1 end
   local md = map and map.getMap and try(map.getMap)
   if md and md.nodes then
     local _, n = next(md.nodes)
@@ -901,11 +935,15 @@ function M.diagnostics()
   d.trafficSignalsApi = ts and keysOf(ts, 60) or 'missing'
   local gp = rawget(_G, 'gameplay_parking')
   d.parkingApi = gp and keysOf(gp, 60) or 'missing'
+  local env = rawget(_G, 'core_environment')
+  d.environmentApi = env and keysOf(env, 80) or 'missing'
   d.globals = {
     getPlayerVehicle = getPlayerVehicle ~= nil, getAllVehicles = getAllVehicles ~= nil, getObjectByID = getObjectByID ~= nil,
     jsonReadFile = jsonReadFile ~= nil, readFile = readFile ~= nil, mime = mime ~= nil,
+    castRayStatic = rawget(_G, 'castRayStatic') ~= nil, vec3 = vec3 ~= nil,
   }
   if signals[1] then d.sampleSignal = { id = signals[1].id, kind = signals[1].kind, state = signals[1].get and signals[1].get() or nil } end
+  if planner then d.nag = planner.nag:status() end
   return d
 end
 
@@ -926,9 +964,9 @@ local function onUpdate(dtReal, dtSim)
     playerId = vid
     if old then
       local ov = vehicleById(old)
-      if ov and ap.mode ~= 'off' then toVehicle(ov, 'command', { t = 'autopilot', mode = 'off', reason = 'switch' }) end
-      ap.mode = 'off'
-      ap.path = nil
+      if ov and sentMode ~= 'off' then toVehicle(ov, 'command', { t = 'autopilot', mode = 'off', reason = 'switch' }) end
+      if planner then planner:disengage('switch'); planner:cancelRoute() end
+      sentMode = 'off'
     end
     if veh then
       ensureVehicleExtension(veh, true)
@@ -951,31 +989,48 @@ local function onUpdate(dtReal, dtSim)
     end
   end
 
+  if realTime >= tWeather then
+    tWeather = realTime + 2
+    pcall(sampleWeather)
+  end
+
   if realTime >= tTraffic then
     tTraffic = realTime + 0.2
     sampleTraffic()
     sendTraffic()
   end
 
+  if realTime >= tSafety then
+    tSafety = realTime + 0.05
+    local ok, err = pcall(safetyTick)
+    if not ok then logW('safety tick: ' .. tostring(err)) end
+  end
+
   if realTime >= tPlan then
     tPlan = realTime + 0.1
     local ok, err = pcall(planTick)
-    if not ok then logW('plan tick: ' .. tostring(err)); disengage('error', tostring(err)) end
+    if not ok then
+      logW('plan tick: ' .. tostring(err))
+      if planner and planner.mode ~= 'off' then
+        planner:disengage('error', tostring(err))
+        if veh then syncVehicleMode(veh) end
+      end
+    end
   end
 end
 
 local function onClientStartMission()
-  mapMsg, graph, level = nil, nil, nil
-  ap.path, ap.dest, ap.mode = nil, nil, 'off'
+  mapMsg, graph, level, planner = nil, nil, nil, nil
   mapPending = true
   tMapPoll = realTime + 2 -- the road graph is built a moment after the level starts
-  traffic, vehSize = {}, {}
+  traffic, vehSize, beacons, beaconLoaded, vehNames = {}, {}, {}, {}, {}
+  sentMode = 'off'
 end
 
 local function onClientEndMission()
-  mapMsg, graph, level = nil, nil, nil
-  ap.path, ap.dest, ap.mode = nil, nil, 'off'
-  traffic, vehSize = {}, {}
+  mapMsg, graph, level, planner = nil, nil, nil, nil
+  traffic, vehSize, beacons, beaconLoaded, vehNames = {}, {}, {}, {}, {}
+  sentMode = 'off'
 end
 
 local function onVehicleSpawned(vid)
@@ -983,17 +1038,24 @@ local function onVehicleSpawned(vid)
   local pv = playerVehicle()
   if veh and pv and pv:getID() == vid then ensureVehicleExtension(veh, true) end
   vehSize[vid] = nil
+  vehNames[vid] = nil
+  beaconLoaded[vid] = nil
 end
 
 local function onVehicleResetted(vid)
   local pv = playerVehicle()
-  if pv and pv:getID() == vid and ap.mode ~= 'off' then disengage('error', 'vehicle reset') end
+  if pv and pv:getID() == vid and planner and planner.mode ~= 'off' then
+    planner:disengage('error', 'vehicle reset')
+    syncVehicleMode(pv)
+  end
+  beaconLoaded[vid] = nil
 end
 
 local function onVehicleDestroyed(vid)
   traffic[vid] = nil
   vehSize[vid] = nil
   lastVehState[vid] = nil
+  beacons[vid], beaconLoaded[vid], vehNames[vid] = nil, nil, nil
 end
 
 local function onExtensionLoaded()
@@ -1016,7 +1078,7 @@ M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
 
 -- for the test harness
-M._ap = ap
+M._planner = function() return planner end
 M._handleCommand = function(msg) return handleCommand(msg) end
 
 return M

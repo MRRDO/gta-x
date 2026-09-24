@@ -1,3 +1,4 @@
 node_modules/
 beamng/dist/
 bridge/.token
+bridge/feedback/

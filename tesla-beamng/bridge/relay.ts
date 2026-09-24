@@ -7,7 +7,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { connect, type Socket } from 'node:net'
 import { networkInterfaces } from 'node:os'
-import { readFileSync, existsSync, writeFileSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, statSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, dirname, extname, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes, createHash } from 'node:crypto'
@@ -54,6 +54,26 @@ let minimapRequestedFor = ''
 let lastRoute: unknown = null
 let lastState: unknown = null
 const stats = { state: 0, traffic: 0, fromApp: 0, since: Date.now() }
+const recentEvents: unknown[] = []
+const feedbackDir = join(here, 'feedback')
+
+// A voice note from the wheel button / app: save the audio plus what the car was doing.
+function saveVoiceNote(msg: any): string {
+  mkdirSync(feedbackDir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const ext = /webm/.test(msg.mime) ? 'webm' : /mp4|m4a|aac/.test(msg.mime) ? 'm4a' : /wav/.test(msg.mime) ? 'wav' : /ogg/.test(msg.mime) ? 'ogg' : 'bin'
+  const base = `note-${stamp}`
+  writeFileSync(join(feedbackDir, `${base}.${ext}`), Buffer.from(String(msg.audio ?? ''), 'base64'))
+  const s = lastState as any
+  const context = {
+    savedAt: new Date().toISOString(), durationSec: msg.durationSec ?? null, text: msg.text ?? null, audio: `${base}.${ext}`,
+    level: lastMap?.level ?? null,
+    car: s ? { vehicle: s.vehicle, pos: s.pos, speed: s.speed, gear: s.gear, autopilot: s.autopilot, safety: s.safety } : null,
+    recentEvents: recentEvents.slice(-30),
+  }
+  writeFileSync(join(feedbackDir, `${base}.json`), JSON.stringify(context, null, 2))
+  return base
+}
 
 function log(...a: unknown[]) {
   if (!QUIET) console.log(new Date().toISOString().slice(11, 19), ...a)
@@ -194,6 +214,8 @@ function onGameLine(line: string) {
       return
     case 'event':
       log('event', msg.kind, msg.detail ?? '')
+      recentEvents.push({ ...msg, at: new Date().toISOString() })
+      if (recentEvents.length > 100) recentEvents.shift()
       broadcast(msg)
       return
     default:
@@ -247,6 +269,16 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
     return res.end(JSON.stringify({ game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null }))
   }
+  if (path === '/feedback') {
+    const list = existsSync(feedbackDir) ? readdirSync(feedbackDir).filter((f) => f.endsWith('.json')).sort().reverse() : []
+    res.writeHead(200, { 'content-type': 'application/json' })
+    return res.end(JSON.stringify(list.map((f) => JSON.parse(readFileSync(join(feedbackDir, f), 'utf8')))))
+  }
+  if (path.startsWith('/feedback/')) {
+    const f = normalize(join(feedbackDir, decodeURIComponent(path.slice(10))))
+    if (!f.startsWith(feedbackDir) || !existsSync(f)) { res.writeHead(404); return res.end() }
+    return serveFile(res, f)
+  }
   if (path === '/minimap.png') {
     if (!lastMinimap) { res.writeHead(404); return res.end('no minimap yet') }
     res.writeHead(200, { 'content-type': lastMinimap.mime, 'cache-control': 'no-cache' })
@@ -265,7 +297,7 @@ const server = createServer((req, res) => {
   res.end('not found')
 })
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 })
+const wss = new WebSocketServer({ noServer: true, maxPayload: 24 << 20 }) // voice notes can be a few MB
 
 server.on('upgrade', (req, socket, head) => {
   if (!authorized(req)) {
@@ -299,6 +331,16 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (msg.t === 'requestMap' && lastMap) {
       ws.send(JSON.stringify(lastMap))
       if (lastMinimap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))
+      return
+    }
+    if (msg.t === 'voiceNote') {
+      try {
+        const name = saveVoiceNote(msg)
+        log('voice note saved:', name)
+        broadcast({ t: 'event', kind: 'voiceNoteSaved', detail: name })
+      } catch (e) {
+        ws.send(JSON.stringify({ t: 'event', kind: 'error', detail: `voice note not saved: ${e}` }))
+      }
       return
     }
     if (msg.t === 'ping' && !gameConnected) {

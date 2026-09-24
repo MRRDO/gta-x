@@ -8,10 +8,11 @@
 export type Vec3 = [number, number, number]
 export type Gear = 'P' | 'R' | 'N' | 'D'
 export type Profile = 'sloth' | 'chill' | 'standard' | 'hurry' | 'madmax'
-export type AutopilotMode = 'off' | 'autosteer' | 'fsd'
+/** fsd: drives everything · autosteer: steers + cruise (Tesla Autosteer) · tacc: cruise only, you steer */
+export type AutopilotMode = 'off' | 'autosteer' | 'fsd' | 'tacc'
 export type SignalDir = 'left' | 'right' | 'hazard' | null
 export type Arrival = 'Parking Lot' | 'Street' | 'Driveway' | 'Parking Garage' | 'Curbside'
-export type DisengageReason = 'steer' | 'brake' | 'throttle' | 'arrived' | 'error' | 'app'
+export type DisengageReason = 'steer' | 'brake' | 'throttle' | 'arrived' | 'error' | 'app' | 'attention' | 'summon' | 'switch'
 
 // ---------------------------------------------------------------------------
 // Game -> app
@@ -39,6 +40,25 @@ export type State = {
   autopilot: AutopilotState
   /** Force-feedback wheel (G29 etc.) spring that turns the physical wheel while the autopilot drives. */
   wheel?: WheelState
+  /** Active safety, on whether or not FSD drives. */
+  safety?: SafetyState
+}
+
+export type SafetyState = {
+  fcw: boolean // forward collision warning (beep + red car on screen)
+  aeb: boolean // automatic emergency braking right now
+  blindLeft: boolean // car in the left blind spot (red light in the mirror)
+  blindRight: boolean
+  laneDeparture: boolean // lane departure avoidance is steering you back
+  ttc: number | null // seconds to a predicted collision
+}
+
+export type NagState = {
+  level: 0 | 1 | 2 | 3 // 1 "Pay attention to the road" (blue flash), 2 beeping, 3 "Take over immediately" (red)
+  reason: 'phone' | 'eyesOff' | 'hands' | null
+  strikes: number
+  maxStrikes: number // 5
+  lockedOut: boolean // FSD unavailable for the rest of the drive
 }
 
 export type WheelState = {
@@ -60,12 +80,25 @@ export type AutopilotState = {
   targetSpeed: number // m/s
   speedLimit: number | null // m/s at the car, from the road graph (or a class default)
   leadGap: number | null // m to the car ahead in our lane
-  control: { kind: 'stop' | 'signal'; dist: number; red: boolean } | null
+  control: { kind: 'stop' | 'signal'; dist: number; red: boolean; state?: 'red' | 'yellow' | 'green' | null } | null
   nextTurn: { dir: 'left' | 'right' | 'straight'; dist: number; road: string } | null
   remaining: number | null // m to destination
   lastDisengage: { reason: DisengageReason; time: number } | null
   /** The driver is pressing the accelerator (pedal or the app's strip): FSD stays on and goes faster, no braking. */
   accelOverride: boolean
+  /** drive | maneuver (backing out, 3-point turn, back-in parking) | summon */
+  activity?: 'drive' | 'maneuver' | 'summon'
+  setSpeed?: number | null // m/s, TACC / Autosteer
+  lane?: { index: number; count: number; changing?: { dir: 'left' | 'right'; reason: 'route' | 'pass' | 'merge' | 'return' | 'driver' | 'moveOver' | 'madMax' | 'evasion'; phase: 'signal' | 'moving' } }
+  creeping?: boolean // "Creeping for visibility"
+  waitingFor?: 'gap' | 'crossTraffic' | 'emergencyVehicle' | null
+  goAround?: boolean // going around a stopped car
+  emergencyVehicle?: 'pullOver' | 'yield' | 'moveOver' | null
+  schoolBus?: boolean
+  phantomBrake?: boolean
+  weather?: { rain: number; fog: number } | null
+  maneuver?: { kind: string; step: number; total: number; dir: 1 | -1 } | null
+  nag?: NagState
   /** Learned steering calibration, for debugging. */
   steerSign?: number
   steerGain?: number
@@ -74,7 +107,7 @@ export type AutopilotState = {
 /** 5 Hz: other cars within 600 m. */
 export type Traffic = {
   t: 'traffic'
-  cars: { id: number; pos: Vec3; dir: Vec3; speed: number; w: number; l: number }[]
+  cars: { id: number; pos: Vec3; dir: Vec3; speed: number; w: number; l: number; emergency?: boolean; schoolBus?: boolean }[]
 }
 
 /** On connect and on level/vehicle change. */
@@ -93,15 +126,33 @@ export type MapInfo = {
 }
 
 /** The planned route (after `navigate`, or the road ahead when FSD has no destination). Empty points = no route. */
-export type Route = { t: 'route'; points: Vec3[]; length: number; openEnded?: boolean; arrival?: 'parking' | 'curb' | 'point' }
+export type Route = {
+  t: 'route'; points: Vec3[]; length: number; openEnded?: boolean; arrival?: 'parking' | 'curb' | 'point'
+  /** FSD v14 style "P" pin: the parking spot it picked */
+  parkingPin?: { pos: Vec3 }
+}
 
 /** Relay -> app when the minimap image arrives. */
 export type Minimap = { t: 'minimap'; url: string; offset?: number[]; size?: number[] }
 
+export type EventKind =
+  | 'disengage' | 'engaged' | 'reengaged' | 'arrived' | 'vehicleChanged' | 'levelLoaded' | 'error' | 'settings'
+  // FSD behavior
+  | 'laneChange' | 'creeping' | 'nudge' | 'goAround' | 'emergencyVehicle' | 'schoolBus' | 'maneuver' | 'summon'
+  | 'phantomBrake' | 'yellowHesitation' | 'collisionEvasion'
+  // supervision
+  | 'nag' | 'strike' | 'lockout'
+  // active safety
+  | 'fcw' | 'aeb' | 'blindSpotWarning' | 'laneDeparture' | 'obstacleAwareAccel'
+  // voice notes: the wheel button asks the app to start/stop recording; the relay confirms saving
+  | 'voiceNote' | 'voiceNoteSaved'
+
 export type Event = {
   t: 'event'
-  kind: 'disengage' | 'engaged' | 'arrived' | 'vehicleChanged' | 'levelLoaded' | 'error'
+  kind: EventKind
   detail?: string
+  /** the raw event fields (e.g. { dir, reason } for laneChange, { level, reason } for nag) */
+  data?: Record<string, unknown>
 }
 
 /** Relay status. `game` is whether the mod is connected. */
@@ -128,15 +179,26 @@ export type Command =
   | { t: 'navigate'; to: Vec3 | { node: string }; stops?: Vec3[]; arrival?: Arrival }
   | { t: 'cancelRoute' }
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
-  | { t: 'wheel'; spring?: boolean; strength?: number } // FFB wheel spring on/off and strength 0..1 (default on, 0.6)
+  | { t: 'wheel'; spring?: boolean; strength?: number; helper?: boolean } // FFB wheel spring on/off, strength 0..1 (default on, 0.6); helper: the SDL wheel helper drives the wheel
+  | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean }
+  | { t: 'attention'; state: 'ok' | 'phone' | 'eyesOff' | 'unknown' } // from the app's cabin camera, ~2-5 Hz
+  | { t: 'nudge' } // "hands on wheel" (e.g. a button for keyboard players)
+  | { t: 'summon'; dir: 'forward' | 'reverse' | null } // Dumb Summon (null stops)
+  | { t: 'autopark' }
+  | { t: 'resetStrikes' }
+  | { t: 'voiceNote'; audio: string; mime: string; durationSec?: number; text?: string } // base64 audio; saved by the relay
   | { t: 'requestMap' }
   | { t: 'requestMinimap' }
   | { t: 'debug' }
   | { t: 'ping' }
 
+export type Quirks = { phantomBraking: boolean; yellowHesitation: boolean; wiggle: boolean; weather: boolean; creep: boolean }
+export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: boolean; evasion: boolean; lda: boolean; blindSpot: boolean; obstacleAware: boolean }
+
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
-  'throttleOverride', 'wheel', 'requestMap', 'requestMinimap', 'debug', 'ping',
+  'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
+  'requestMap', 'requestMinimap', 'debug', 'ping',
 ])
 
 export const MPH = 0.44704

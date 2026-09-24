@@ -36,6 +36,13 @@ local dirSign = 1
 local dirVotes = 0
 local gearWant, gearTimer = nil, 0
 local wantPark = false
+local watch = nil        -- after a steering takeover: was it an accidental bump?
+local lastReengage = -1e9
+local handsNudges = 0
+local lastNudgeT = -1e9
+local assist = { aeb = 0, ldaSteer = 0, throttleCap = nil, t = -1e9 }
+local assistHeld = false -- local throttle/brake taken away for an assist
+local hazardOn = false
 
 ---------------------------------------------------------------------------
 -- messaging to GE
@@ -57,37 +64,76 @@ local function errorEvent(detail) geEvent('error', { detail = detail }) end
 
 ---------------------------------------------------------------------------
 -- player input capture (raw) vs our injected input
+--
+-- Players' devices reach the car through input.event (wheels, pedals, axes),
+-- input.kbdSteer (keyboard steering), input.padAccelerateBrake (gamepad
+-- trigger axis) and input.toggleEvent. The last three call the module's
+-- internal event() directly, so each is wrapped to see the player's input.
 ---------------------------------------------------------------------------
 
-local origEvent = nil
-local raw = {}      -- [itype] = { v, filter, t }
+local raw = {}       -- [itype] = { v, f (filter), t, args }
 local localSeen = {} -- [itype] = count, for diagnostics
 local injecting = false
+local orig = {}      -- original input functions
+local kbdL, kbdR = 0, 0
 
-local function wrappedEvent(itype, ivalue, filter, a4, a5, a6, source, ...)
-  if not injecting and (source == nil or source == 'local') then
-    raw[itype] = { v = ivalue or 0, f = filter, t = now, args = (a4 or a5) and { a4, a5 } or nil }
-    localSeen[itype] = (localSeen[itype] or 0) + 1
-  end
-  return origEvent(itype, ivalue, filter, a4, a5, a6, source, ...)
+local function record(itype, v, filter, a4, a5)
+  raw[itype] = { v = v or 0, f = filter, t = now, args = (a4 or a5) and { a4, a5 } or nil }
+  localSeen[itype] = (localSeen[itype] or 0) + 1
 end
 
+local function wrappedEvent(itype, ivalue, filter, a4, a5, a6, source, ...)
+  if not injecting and (source == nil or source == 'local') then record(itype, ivalue, filter, a4, a5) end
+  return orig.event(itype, ivalue, filter, a4, a5, a6, source, ...)
+end
+
+local function wrappedKbdSteer(isRight, val, filter, ...)
+  if isRight then kbdR = val or 0 else kbdL = val or 0 end
+  if not injecting then record('steering', kbdR - kbdL, filter) end
+  return orig.kbdSteer(isRight, val, filter, ...)
+end
+
+local function wrappedPad(val, filter, ...)
+  if not injecting then
+    val = val or 0
+    record('throttle', val > 0 and val or 0, filter)
+    record('brake', val < 0 and -val or 0, filter)
+  end
+  return orig.padAccelerateBrake(val, filter, ...)
+end
+
+local function wrappedToggle(itype, ...)
+  if not injecting then
+    local cur = input.state and input.state[itype] and input.state[itype].val or 0
+    record(itype, cur > 0.5 and 0 or 1, 0)
+  end
+  return orig.toggleEvent(itype, ...)
+end
+
+local WRAPS = { event = wrappedEvent, kbdSteer = wrappedKbdSteer, padAccelerateBrake = wrappedPad, toggleEvent = wrappedToggle }
+
 local function installInputHook()
-  if input and type(input.event) == 'function' and input.event ~= wrappedEvent then
-    origEvent = input.event
-    input.event = wrappedEvent
+  if not input then return end
+  for name, fn in pairs(WRAPS) do
+    if type(input[name]) == 'function' and input[name] ~= fn then
+      orig[name] = input[name]
+      input[name] = fn
+    end
   end
 end
 
 local function removeInputHook()
-  if input and input.event == wrappedEvent and origEvent then input.event = origEvent end
+  if not input then return end
+  for name, fn in pairs(WRAPS) do
+    if input[name] == fn and orig[name] then input[name] = orig[name] end
+  end
 end
 
 local function inject(itype, val)
-  if not origEvent then installInputHook() end
-  if not origEvent then return end
+  if not orig.event then installInputHook() end
+  if not orig.event then return end
   injecting = true
-  local ok, err = pcall(origEvent, itype, val, FILTER, nil, nil, nil, SOURCE)
+  local ok, err = pcall(orig.event, itype, val, FILTER, nil, nil, nil, SOURCE)
   injecting = false
   if not ok then log('E', logTag, 'input.event failed: ' .. tostring(err)) end
   lastInjected[itype] = val
@@ -111,24 +157,46 @@ end
 -- force-feedback wheel (G29 etc.): while engaged we drive the wheel motor
 -- ourselves with a position spring, so the physical wheel turns with the car.
 --
--- The game's hydros module owns the FFB device and keeps its id in a local
--- (FFBID). We find it through debug.getupvalue, set it to -1 while engaged
--- (hydros then stops sending forces) and send our own with
--- obj:sendForceFeedback(id, force). On disengage we give the id back.
+-- The game's hydros module owns the FFB device. Two ways to take it over:
+--  1. its device id lives in a local (FFBID): find it with debug.getupvalue,
+--     set it to -1 while engaged (hydros stops sending) and send our own forces
+--     with obj:sendForceFeedback(id, force). Put the id back on disengage.
+--  2. fallback: we keep the FFB config the game hands hydros
+--     (hydros.onFFBConfigChanged), then switch hydros' FFB off with
+--     hydros.enableFFB = false + that call (what BeamMP does), and on again after.
 ---------------------------------------------------------------------------
 
 local Wh = require('teslaBridge/wheel')
 
 local ffb = {
   enabled = true, strength = 0.6,
-  spring = Wh.new(), held = false, fn = nil, idx = nil, id = nil, fcap = 10,
+  spring = Wh.new(), held = false, fn = nil, idx = nil, id = nil, fcap = 10, method = nil,
   status = 'unknown', reason = nil,
   ratio = 1, -- steering_input per raw wheel unit (learned while you drive)
   lastForce = nil, force = 0, target = 0, pos = 0, grip = false,
   minInterval = 0.01, lastSendT = -1, -- wheel drivers misbehave when flooded (hydros throttles too)
+  helper = false, -- the external wheel helper owns the motor (backup mode)
 }
 
 local FFB_ID_NAMES = { FFBID = true, ffbID = true, FFBId = true, ffbId = true, ffbid = true }
+local ffbCfg = nil        -- last FFB config the game gave hydros
+local origFFBCfg = nil
+
+local function wrappedFFBCfg(cfg, ...)
+  if type(cfg) == 'table' then ffbCfg = cfg end
+  return origFFBCfg(cfg, ...)
+end
+
+local function installFFBHook()
+  if type(hydros) == 'table' and type(hydros.onFFBConfigChanged) == 'function' and hydros.onFFBConfigChanged ~= wrappedFFBCfg then
+    origFFBCfg = hydros.onFFBConfigChanged
+    hydros.onFFBConfigChanged = wrappedFFBCfg
+  end
+end
+
+local function removeFFBHook()
+  if type(hydros) == 'table' and hydros.onFFBConfigChanged == wrappedFFBCfg and origFFBCfg then hydros.onFFBConfigChanged = origFFBCfg end
+end
 
 local function ffbModules()
   local mods = {}
@@ -139,16 +207,31 @@ local function ffbModules()
   return mods
 end
 
+-- Find a number upvalue by name in the FFB modules' functions, following
+-- function upvalues a couple of levels deep (e.g. update -> FFBcalc).
 local function scanUpvalues(names)
   if type(debug) ~= 'table' or not debug.getupvalue then return nil, 'no debug library in vehicle Lua' end
+  local seen = {}
+  local function scan(f, depth)
+    if seen[f] then return nil end
+    seen[f] = true
+    local nested = {}
+    for i = 1, 150 do
+      local n, val = debug.getupvalue(f, i)
+      if not n then break end
+      if names[n] and type(val) == 'number' then return f, i, val, n end
+      if type(val) == 'function' and depth < 2 then nested[#nested + 1] = val end
+    end
+    for _, g in ipairs(nested) do
+      local a, b, c, d = scan(g, depth + 1)
+      if a then return a, b, c, d end
+    end
+  end
   for _, m in ipairs(ffbModules()) do
     for _, f in pairs(m) do
       if type(f) == 'function' then
-        for i = 1, 120 do
-          local n, val = debug.getupvalue(f, i)
-          if not n then break end
-          if names[n] and type(val) == 'number' then return f, i, val, n end
-        end
+        local a, b, c, d = scan(f, 0)
+        if a then return a, b, c, d end
       end
     end
   end
@@ -167,26 +250,47 @@ local function ffbSend(force)
   return ok
 end
 
+local function cfgId()
+  local st = ffbCfg and ffbCfg.steering
+  return st and tonumber(st.FFBID) or nil
+end
+
+-- Returns ok, method, f, i, id
 local function ffbProbe()
+  if ffb.helper then ffb.status, ffb.reason = 'helper', 'external wheel helper drives the wheel'; return false end
   if not ffb.enabled then ffb.status, ffb.reason = 'off', 'turned off'; return false end
   if ffb.held then return true end
   if not hasSendFFB() then ffb.status, ffb.reason = 'unavailable', 'obj:sendForceFeedback missing'; return false end
   local f, i, id = scanUpvalues(FFB_ID_NAMES)
-  if not f then ffb.status, ffb.reason = 'unavailable', i; return false end
-  if id < 0 then ffb.status, ffb.reason = 'no wheel', 'no force-feedback wheel bound to steering'; return false end
-  ffb.status, ffb.reason = 'available', nil
-  return true, f, i, id
+  if f then
+    if id < 0 then ffb.status, ffb.reason = 'no wheel', 'no force-feedback wheel bound to steering'; return false end
+    ffb.status, ffb.reason = 'available', nil
+    return true, 'upvalue', f, i, id
+  end
+  local cid = cfgId()
+  if cid and cid >= 0 and origFFBCfg and hydros.enableFFB ~= nil then
+    ffb.status, ffb.reason = 'available', 'via FFB config'
+    return true, 'config', nil, nil, cid
+  end
+  ffb.status, ffb.reason = 'unavailable', i or 'FFB device id not found'
+  return false
 end
 
 local function ffbTake()
-  local ok, f, i, id = ffbProbe()
+  local ok, method, f, i, id = ffbProbe()
   if not ok or ffb.held then return ffb.held end
-  ffb.fn, ffb.idx, ffb.id = f, i, id
+  ffb.method, ffb.fn, ffb.idx, ffb.id = method, f, i, id
   local _, _, fmax = scanUpvalues({ FFmax = true, ffMax = true })
-  ffb.fcap = (fmax and fmax > 0) and fmax or 10
+  local cmax = ffbCfg and ffbCfg.steering and tonumber(ffbCfg.steering.ff_max_force)
+  ffb.fcap = (fmax and fmax > 0) and fmax or ((cmax and cmax > 0) and cmax or 10)
   local _, _, periodms = scanUpvalues({ FFBperiodms = true })
   ffb.minInterval = (periodms and periodms > 0) and math.max(0.002, periodms / 1000) or 0.01
-  debug.setupvalue(f, i, -1) -- hydros stops driving the motor
+  if method == 'upvalue' then
+    debug.setupvalue(f, i, -1) -- hydros stops driving the motor
+  else
+    hydros.enableFFB = false
+    pcall(origFFBCfg, ffbCfg) -- hydros lets go of the device
+  end
   ffb.held = true
   ffb.spring:reset()
   ffb.lastForce = nil
@@ -197,8 +301,13 @@ end
 local function ffbRelease()
   if not ffb.held then return end
   ffbSend(0)
-  local _, cur = debug.getupvalue(ffb.fn, ffb.idx)
-  if cur == -1 then debug.setupvalue(ffb.fn, ffb.idx, ffb.id) end
+  if ffb.method == 'upvalue' then
+    local _, cur = debug.getupvalue(ffb.fn, ffb.idx)
+    if cur == -1 then debug.setupvalue(ffb.fn, ffb.idx, ffb.id) end
+  else
+    hydros.enableFFB = true
+    pcall(origFFBCfg, ffbCfg)
+  end
   ffb.held = false
   ffb.force, ffb.grip = 0, false
   ffb.status = 'available'
@@ -207,11 +316,15 @@ end
 -- Returns true when the driver is holding the wheel against the spring.
 local function ffbUpdate(dt, targetInput)
   if not ffb.held then return false end
-  local _, cur = debug.getupvalue(ffb.fn, ffb.idx)
-  if cur ~= -1 then
-    -- the game re-bound the wheel (settings changed): take the new id
-    if type(cur) == 'number' and cur >= 0 then ffb.id = cur end
-    debug.setupvalue(ffb.fn, ffb.idx, -1)
+  if ffb.method == 'upvalue' then
+    local _, cur = debug.getupvalue(ffb.fn, ffb.idx)
+    if cur ~= -1 then
+      -- the game re-bound the wheel (settings changed): take the new id
+      if type(cur) == 'number' and cur >= 0 then ffb.id = cur end
+      debug.setupvalue(ffb.fn, ffb.idx, -1)
+    end
+  elseif ffbCfg and cfgId() and cfgId() >= 0 then
+    ffb.id = cfgId()
   end
   local r = raw.steering
   local pos = r and r.v or 0
@@ -410,8 +523,10 @@ local function buildState(s)
       lastDisengage = lastDisengage,
       steerSign = driver and driver.steerSign, steerGain = driver and driver.kmax[2],
     },
+    handsNudges = handsNudges,
+    rawThrottle = rawValue('throttle') or 0,
     wheel = {
-      status = ffb.status, reason = ffb.reason, strength = ffb.strength,
+      status = ffb.status, reason = ffb.reason, strength = ffb.strength, method = ffb.method,
       pos = ffb.pos, target = ffb.target, force = ffb.force / max(ffb.fcap, 1e-6), ratio = ffb.ratio,
       calibrated = ffb.spring.confirmed,
     },
@@ -420,62 +535,83 @@ end
 
 ---------------------------------------------------------------------------
 -- autopilot engage / disengage
+--   fsd       : we steer, accelerate and brake (and stop for signs/lights)
+--   autosteer : we steer + hold speed/distance (like Tesla Autosteer)
+--   tacc      : we hold speed/distance, you steer (Traffic-Aware Cruise Control)
 ---------------------------------------------------------------------------
 
-local CONTROLLED = { 'steering', 'throttle', 'brake', 'parkingbrake' }
+local ALL = { 'steering', 'throttle', 'brake', 'parkingbrake' }
+local SPEED_ONLY = { 'throttle', 'brake', 'parkingbrake' }
+local REENGAGE_SPEED = 10.06 -- 22.5 mph
+
+
+local function controlledFor(mode)
+  return mode == 'tacc' and SPEED_ONLY or ALL
+end
 
 local function disengage(reason, detail)
   if not ap.engaged then return end
+  local mode, profile = ap.mode, ap.profile
   ap.engaged = false
   ap.mode = 'off'
   ffbRelease()
-  allowLocal(CONTROLLED, true)
-  inject('throttle', 0)
-  inject('brake', 0)
-  if reason ~= 'steer' then inject('steering', 0) end
+  allowLocal(ALL, true)
+  -- hand the controls back as the player has them right now
+  inject('throttle', rawValue('throttle') or 0)
+  inject('brake', rawValue('brake') or 0)
+  inject('parkingbrake', 0)
+  if reason ~= 'steer' then inject('steering', rawValue('steering') or 0) end
   if ap.lastSignal then
     pcall(electrics.set_warn_signal, 0)
     ap.lastSignal = nil
   end
+  if hazardOn and reason ~= 'attention' then pcall(electrics.set_warn_signal, 0) end
+  hazardOn = false
   local mc = mainController()
   if savedGearboxMode and mc and mc.setGearboxMode then pcall(mc.setGearboxMode, savedGearboxMode) end
   savedGearboxMode = nil
   lastDisengage = { reason = reason, time = now }
-  if reason ~= 'app' and reason ~= 'switch' then
+  if reason == 'steer' and mode ~= 'tacc' then
+    -- watch the next moments: an accidental bump at speed gets FSD back on
+    local speed = electrics.values.wheelspeed or 0
+    watch = { t = now, mode = mode, profile = profile, speed = speed, target = lastOut and lastOut.steer or 0,
+      peak = 0, lastMove = now, prev = rawValue('steering') }
+  end
+  if reason ~= 'app' and reason ~= 'switch' and reason ~= 'arrived' and reason ~= 'summon' then
     geEvent('disengage', { reason = reason, detail = detail })
   end
 end
 
 local function engage(mode, opts)
   if not driver then driver = C.new() end
+  local was = ap.engaged
   ap.mode = mode
   ap.profile = opts.profile or ap.profile
   ap.gapTime = opts.gapTime or ap.gapTime
   ap.throttleMax = opts.throttleMax or ap.throttleMax
-  if ap.engaged then return end
   installInputHook()
-  ap.engaged = true
-  ap.engagedAt = now
-  takeover.steering, takeover.brake, takeover.throttle = 0, 0, 0
-  baseline.steering = rawValue('steering') or 0
-  driver.u = electrics.values.steering_input or 0
-  driver.speedI, driver.latI = 0, 0
-  local e = electrics.values
-  local mc = mainController()
-  if not isManual(gearboxDevice()) and e.gearboxMode == 'arcade' and mc and mc.setGearboxMode then
-    -- arcade mode shifts into reverse when braking at a stop; drive like a real automatic
-    savedGearboxMode = 'arcade'
-    pcall(mc.setGearboxMode, 'realistic')
+  if not was then
+    ap.engaged = true
+    ap.engagedAt = now
+    takeover.steering, takeover.brake, takeover.throttle = 0, 0, 0
+    baseline.steering = rawValue('steering') or 0
+    driver.u = electrics.values.steering_input or 0
+    driver.speedI, driver.latI = 0, 0
+    watch = nil
+    local e = electrics.values
+    local mc = mainController()
+    if not isManual(gearboxDevice()) and e.gearboxMode == 'arcade' and mc and mc.setGearboxMode then
+      -- arcade mode shifts into reverse when braking at a stop; drive like a real automatic
+      savedGearboxMode = 'arcade'
+      pcall(mc.setGearboxMode, 'realistic')
+    end
+    inject('parkingbrake', 0)
+    wantPark = false
+    gearWant, gearTimer = nil, 0
   end
-  if mode == 'fsd' then
-    allowLocal(CONTROLLED, false)
-  else
-    allowLocal({ 'steering' }, false)
-  end
-  inject('parkingbrake', 0)
-  wantPark = false
-  gearWant, gearTimer = 'D', 0
-  ffbTake()
+  allowLocal(ALL, true)
+  allowLocal(controlledFor(mode), false)
+  if mode == 'tacc' then ffbRelease() else ffbTake() end
 end
 
 ---------------------------------------------------------------------------
@@ -495,7 +631,7 @@ local handlers = {}
 handlers.gear = function(cmd)
   local g = cmd.gear
   if not GEAR_INDEX[g] then errorEvent('unknown gear ' .. tostring(g)); return end
-  if ap.engaged and g ~= 'D' then disengage('app') end
+  if ap.engaged and g ~= 'D' and not cmd.fromPlanner then disengage('app') end
   if not shiftTo(g) then errorEvent('this car has no gearbox we can shift') end
   if g ~= 'P' and isManual(gearboxDevice()) then inject('parkingbrake', 0) end
 end
@@ -516,7 +652,10 @@ handlers.lights = function(cmd)
   end
 end
 
-handlers.signal = function(cmd) setSignal(cmd.dir) end
+handlers.signal = function(cmd)
+  setSignal(cmd.dir)
+  hazardOn = cmd.dir == 'hazard'
+end
 
 handlers.horn = function(cmd)
   if electrics.horn then pcall(electrics.horn, cmd.on and true or false) else errorEvent('no horn') end
@@ -542,20 +681,25 @@ end
 
 handlers.wheel = function(cmd)
   if cmd.strength ~= nil then ffb.strength = math.max(0, math.min(1, tonumber(cmd.strength) or ffb.strength)) end
+  if cmd.helper ~= nil then
+    ffb.helper = cmd.helper and true or false
+    if ffb.helper then ffbRelease() end
+  end
   if cmd.spring ~= nil then
     ffb.enabled = cmd.spring and true or false
     if not ffb.enabled then ffbRelease(); ffb.status = 'off'
     else
       ffb.spring = Wh.new()
-      if ap.engaged then ffbTake() else ffbProbe() end
+      if ap.engaged and ap.mode ~= 'tacc' then ffbTake() else ffbProbe() end
     end
   end
 end
 
 handlers.autopilot = function(cmd)
   if cmd.mode == 'off' then
-    disengage(cmd.reason == 'switch' and 'switch' or (cmd.reason == 'arrived' and 'arrived' or 'app'))
-  elseif cmd.mode == 'fsd' or cmd.mode == 'autosteer' then
+    local r = cmd.reason
+    disengage((r == 'switch' or r == 'arrived' or r == 'summon' or r == 'attention' or r == 'error') and r or 'app')
+  elseif cmd.mode == 'fsd' or cmd.mode == 'autosteer' or cmd.mode == 'tacc' then
     engage(cmd.mode, cmd)
   end
 end
@@ -581,6 +725,14 @@ function M.setPlan(json)
   driver:setPlan(plan)
 end
 
+-- Active safety while you drive (and as a backstop under FSD): emergency braking,
+-- lane departure steering, obstacle-aware throttle limit. Sent at 20 Hz while active.
+function M.assist(json)
+  local ok, a = pcall(jsonDecode, json)
+  if not ok or type(a) ~= 'table' then return end
+  assist = { aeb = tonumber(a.aeb) or 0, ldaSteer = tonumber(a.ldaSteer) or 0, throttleCap = tonumber(a.throttleCap), t = now }
+end
+
 ---------------------------------------------------------------------------
 -- per frame
 ---------------------------------------------------------------------------
@@ -596,82 +748,156 @@ end
 local function checkTakeover(dt)
   local st = rawSinceEngage('steering')
   local br = rawSinceEngage('brake') or 0
-  local th = rawSinceEngage('throttle') or 0
   local steerDev = st and abs(st - baseline.steering) or 0
-  if ffb.held then steerDev = 0 end -- the spring moves the wheel; a grip is detected by the spring instead
-  if ap.mode == 'fsd' or ap.mode == 'autosteer' then
-    takeover.steering = (steerDev > 0.15) and takeover.steering + dt or 0
-    takeover.brake = (br > 0.1) and takeover.brake + dt or 0
-    -- the accelerator doesn't disengage (like a Tesla): it speeds the car up while held
-    takeover.throttle = 0
-  end
+  if ffb.held or ap.mode == 'tacc' then steerDev = 0 end -- the spring moves the wheel; grips are caught by it
+  takeover.steering = (steerDev > 0.15) and takeover.steering + dt or 0
+  takeover.brake = (br > 0.1) and takeover.brake + dt or 0
+  takeover.throttle = 0 -- the accelerator never disengages (like a Tesla): it speeds you up
   if takeover.steering > 0.15 then disengage('steer'); return true end
   if takeover.brake > 0.15 then disengage('brake'); return true end
-  if takeover.throttle > 0.15 then disengage('throttle'); return true end
   if override.active and override.value < -0.1 then disengage('brake', 'app brake'); return true end
   return false
+end
+
+-- "Hands on the wheel": a small wheel movement (or a push against the spring)
+-- that isn't a takeover. Feeds the nag timer on the GE side.
+local function detectNudge()
+  if now - lastNudgeT < 1 then return end
+  local hit = false
+  if ffb.held then
+    local e = abs((ffb.pos or 0) - (ffb.target or 0))
+    hit = e > 0.012 and e < 0.1 and not ffb.grip
+  else
+    local r = raw.steering
+    if r and r.t > ap.engagedAt and now - r.t < 0.1 then
+      local d = abs(r.v - baseline.steering)
+      hit = d > 0.01 and d < 0.15
+    end
+  end
+  if hit then handsNudges = handsNudges + 1; lastNudgeT = now end
+end
+
+-- After a steering takeover at speed: if the wheel was only bumped (small, short,
+-- then left alone, no pedals), put FSD back on.
+local function checkAccidental()
+  if not watch then return end
+  local age = now - watch.t
+  if age > 1.6 then watch = nil; return end
+  local br, th = rawValue('brake') or 0, rawValue('throttle') or 0
+  if (raw.brake and raw.brake.t > watch.t and br > 0.1) or (raw.throttle and raw.throttle.t > watch.t and th > 0.15) then watch = nil; return end
+  local st = rawValue('steering') or 0
+  local dev = abs(st - watch.target)
+  watch.peak = math.max(watch.peak, dev)
+  if watch.prev and abs(st - watch.prev) > 0.01 then watch.lastMove = now end
+  watch.prev = st
+  if age > 0.7 and watch.speed > REENGAGE_SPEED and watch.peak < 0.45 and dev < 0.12 and now - watch.lastMove > 0.5 and now - lastReengage > 10 then
+    lastReengage = now
+    geEvent('reengage', { mode = watch.mode, profile = watch.profile })
+    watch = nil
+  end
+end
+
+local function applyAssist(engaged, s)
+  local fresh = now - assist.t < 0.25
+  local aeb = fresh and assist.aeb or 0
+  local cap = fresh and assist.throttleCap or nil
+  local lda = (fresh and not engaged) and assist.ldaSteer or 0
+  if engaged then return aeb end -- under FSD the drive loop folds AEB into its own brake
+  local need = aeb > 0 or cap ~= nil
+  if need and not assistHeld then
+    assistHeld = true
+    allowLocal(SPEED_ONLY, false)
+  end
+  if need then
+    local th = rawValue('throttle') or 0
+    if aeb > 0 then inject('throttle', 0); inject('brake', aeb)
+    else inject('throttle', math.min(th, cap)); inject('brake', rawValue('brake') or 0) end
+  elseif assistHeld then
+    assistHeld = false
+    allowLocal(SPEED_ONLY, true)
+    inject('throttle', rawValue('throttle') or 0)
+    inject('brake', rawValue('brake') or 0)
+  end
+  if lda ~= 0 then
+    inject('steering', (rawValue('steering') or electrics.values.steering_input or 0) + lda)
+    ap.ldaActive = true
+  elseif ap.ldaActive then
+    ap.ldaActive = false
+    inject('steering', rawValue('steering') or 0)
+  end
+  local _ = s
+  return 0
 end
 
 local function updateGFX(dt)
   now = now + dt
   if input and input.event ~= wrappedEvent then installInputHook() end
+  installFFBHook()
   local s = sense(dt)
   override.active = (now - override.t) < 0.5
 
   if ap.engaged then
+    local aeb = applyAssist(true, s)
     if not checkTakeover(dt) then
-      local out = driver:update(dt, s, { steerOnly = ap.mode == 'autosteer' })
+      local out = driver:update(dt, s, {})
       lastOut = out
-      inject('steering', out.steer)
-      if ffbUpdate(dt, out.steer) then disengage('steer', 'wheel grabbed') end
+      if ap.mode ~= 'tacc' then
+        inject('steering', out.steer)
+        if ffbUpdate(dt, out.steer) then disengage('steer', 'wheel grabbed') end
+      end
+      detectNudge()
     end
     if ap.engaged and lastOut then
       local out = lastOut
-      if ap.mode == 'fsd' then
-        local th, br = out.throttle, out.brake
-        local pb = out.parkingbrake or 0
-        -- accelerator (your pedal or the app's strip) overrides: go faster while held, never brake
-        local pedal = rawSinceEngage('throttle') or 0
-        local accel = max(pedal, (override.active and override.value > 0) and override.value or 0)
-        ap.accelOverride = accel > 0.05
-        if ap.accelOverride then
-          th, br, pb = max(th, accel), 0, 0
-          driver.speedI = 0 -- no wind-up: settle back to the set speed smoothly on release
-        end
-        if not ap.accelOverride and electrics.values.gearboxMode == 'arcade' and s.v < 0.5 and out.targetSpeed < 0.3 then
-          -- still in arcade (manual gearbox): brake at a standstill would shift to reverse, hold with the parking brake
-          br, pb = 0, 1
-        end
-        inject('throttle', th)
-        inject('brake', br)
-        inject('parkingbrake', pb)
-        -- keep it in drive (e.g. engaged in P or N)
-        local g = gearLetter()
-        gearTimer = gearTimer - dt
-        if not (ap.plan and ap.plan.hold) and g ~= 'D' and g:sub(1, 1) ~= 'M' and gearTimer <= 0 then
-          gearTimer = 0.5
-          if s.v < 1 then shiftTo('D') end
-        end
-      else
-        -- autosteer: speed is the driver's; we only brake for a car ahead
-        if out.brake > 0.05 then inject('brake', out.brake)
-        elseif (lastInjected.brake or 0) > 0 then inject('brake', 0) end
-        if override.active then inject('throttle', max(0, override.value)) end
+      local plan = ap.plan or {}
+      local th, br = out.throttle, out.brake
+      local pb = out.parkingbrake or 0
+      -- accelerator (your pedal or the app's strip) overrides: go faster while held, never brake
+      local pedal = rawSinceEngage('throttle') or 0
+      local accel = max(pedal, (override.active and override.value > 0) and override.value or 0)
+      ap.accelOverride = accel > 0.05 and plan.dir ~= -1
+      if ap.accelOverride then
+        th, br, pb = max(th, accel), 0, 0
+        driver.speedI = 0 -- no wind-up: settle back to the set speed smoothly on release
       end
-      -- turn signals from the planner
-      local want = ap.plan and ap.plan.signal or nil
-      if want ~= ap.lastSignal then
-        setSignal(want)
-        ap.lastSignal = want
+      if aeb > 0 then th, br = 0, max(br, aeb) end
+      if not ap.accelOverride and electrics.values.gearboxMode == 'arcade' and abs(s.v) < 0.5 and out.targetSpeed < 0.3 then
+        -- still in arcade (manual gearbox): brake at a standstill would shift to reverse, hold with the parking brake
+        br, pb = 0, 1
+      end
+      -- right gear for the plan (reverse legs of a maneuver), shifted only when stopped
+      local want = plan.dir == -1 and 'R' or 'D'
+      local g = gearLetter()
+      gearTimer = gearTimer - dt
+      local inGear = (want == 'R' and g == 'R') or (want == 'D' and (g == 'D' or g:sub(1, 1) == 'M'))
+      if not inGear and not plan.hold then
+        th = 0
+        br = max(br, 0.3)
+        if abs(s.v) < 0.8 and gearTimer <= 0 then
+          gearTimer = 0.5
+          shiftTo(want)
+        end
+      end
+      inject('throttle', th)
+      inject('brake', br)
+      inject('parkingbrake', pb)
+      -- turn signals and hazards from the planner
+      local sig = plan.hazard and 'hazard' or plan.signal
+      if sig ~= ap.lastSignal then
+        setSignal(sig)
+        ap.lastSignal = sig
+        hazardOn = sig == 'hazard'
       end
     end
   else
     learnWheelRatio()
+    checkAccidental()
+    applyAssist(false, s)
     -- accelerator strip in the app, autopilot off
     if override.active then
       inject('throttle', max(0, override.value))
       inject('brake', max(0, -override.value))
-    elseif (lastInjected.throttle or 0) ~= 0 or (lastInjected.brake or 0) ~= 0 then
+    elseif not assistHeld and ((lastInjected.throttle or 0) ~= 0 or (lastInjected.brake or 0) ~= 0) and not raw.throttle and not raw.brake then
       inject('throttle', 0)
       inject('brake', 0)
     end
@@ -729,8 +955,11 @@ function M.diag()
     hydros = hydros and keysOf(hydros, 80) or 'none',
     ffbEnabled = hydros and hydros.enableFFB,
     ev = isEV(),
+    inputWraps = (function() local o = {} for k in pairs(orig) do o[#o + 1] = k end table.sort(o) return o end)(),
     ffb = {
       status = ffb.status, reason = ffb.reason, held = ffb.held, id = ffb.id, fcap = ffb.fcap, ratio = ffb.ratio,
+      method = ffb.method, configCaptured = ffbCfg ~= nil, configId = cfgId(), configHook = origFFBCfg ~= nil,
+      enableFFB = type(hydros) == 'table' and hydros.enableFFB or nil,
       sign = ffb.spring.sign, flips = ffb.spring.flips, confirmed = ffb.spring.confirmed,
       debugLib = type(debug) == 'table' and debug.getupvalue ~= nil, sendForceFeedback = hasSendFFB(),
       rawSteer = raw.steering and raw.steering.v, rawSteerFilter = raw.steering and raw.steering.f,
@@ -753,6 +982,7 @@ end
 local function onExtensionLoaded()
   driver = C.new()
   installInputHook()
+  installFFBHook()
   ffbProbe()
   log('I', logTag, 'loaded')
 end
@@ -761,6 +991,7 @@ local function onExtensionUnloaded()
   if ap.engaged then disengage('error', 'extension unloaded') end
   ffbRelease()
   removeInputHook()
+  removeFFBHook()
 end
 
 local function onReset()

@@ -37,7 +37,8 @@ function M.new(opts)
   return d
 end
 
--- plan = { seq, pts = {x,y,z,...}, vcap = {...}, stopS, lead = {s, v}, hold, profile, mode, throttleMax }
+-- plan = { seq, pts = {x,y,z,...}, vcap = {...}, stopS, lead = {s, v}, hold, throttleMax, gapTime,
+--          dir = 1 | -1 (reverse), maxSpeed, urgent (evasive: faster steering), wiggle (low-speed quirk) }
 function Driver:setPlan(plan)
   if not plan or not plan.pts or #plan.pts < 6 then self.path = nil; return end
   if plan.seq == self.planSeq then return end
@@ -83,9 +84,14 @@ function Driver:update(dt, sense, opts)
     return out
   end
   dt = clamp(dt, 0.001, 0.1)
-  local v = max(0, sense.v)
+  self.t = (self.t or 0) + dt
+  local reverse = plan.dir == -1
+  -- in reverse we steer the car's tail: flip the heading and use backward speed
+  local hx, hy = sense.hx, sense.hy
+  if reverse then hx, hy = -hx, -hy end
+  local v = max(0, reverse and -sense.v or sense.v)
 
-  self:learn(dt, v, sense.yawRate or 0, self.u)
+  if not reverse then self:learn(dt, v, sense.yawRate or 0, self.u) end
 
   -- where are we on the window?
   local pr = P.project(path, sense.x, sense.y, self.hint, 8, 40)
@@ -96,15 +102,19 @@ function Driver:update(dt, sense, opts)
   out.remaining = path.s[#path.s] - s
 
   -- steering: pure pursuit + a little lane-centering integral
-  local L = clamp(2 + 0.7 * v, 4, 30)
-  local k = P.purePursuit(path, s, sense.x, sense.y, sense.hx, sense.hy, L, pr.i)
-  if v > 1 then
+  local L = reverse and clamp(2.5 + 0.7 * v, 3, 8) or clamp(2 + 0.7 * v, 4, 30)
+  local k = P.purePursuit(path, s, sense.x, sense.y, hx, hy, L, pr.i)
+  if v > 1 and not reverse then
     self.latI = clamp(self.latI + pr.lat * dt, -3, 3)
   end
-  k = k - 0.004 * self.latI
+  if not reverse then k = k - 0.004 * self.latI end
   local kmax = self.kmax[binOf(v)]
-  local uWant = clamp(-self.steerSign * k / kmax, -1, 1)
-  local rate = self.steerRate * (v < 6 and 2 or 1)
+  -- backing up, the same curvature needs the opposite steering
+  local uWant = clamp((reverse and 1 or -1) * self.steerSign * k / kmax, -1, 1)
+  if plan.wiggle and not reverse and v < 8 and v > 0.5 then
+    uWant = uWant + 0.018 * math.sin(self.t * 4.1) -- FSD's little low-speed steering fidget
+  end
+  local rate = plan.urgent and 4 or self.steerRate * (v < 6 and 2 or 1)
   local du = clamp(uWant - self.u, -rate * dt, rate * dt)
   self.u = self.u + du
   out.steer = self.u
@@ -128,7 +138,8 @@ function Driver:update(dt, sense, opts)
     vt = min(vt, max(0, vlead))
     out.leadGap = gap
   end
-  if plan.hold or out.remaining < 0.5 and not plan.openEnded then vt = 0 end
+  if plan.maxSpeed then vt = min(vt, plan.maxSpeed) end
+  if plan.hold or out.remaining < (reverse and 0.3 or 0.5) and not plan.openEnded then vt = 0 end
   vt = max(0, vt)
   out.targetSpeed = vt
 
@@ -142,6 +153,7 @@ function Driver:update(dt, sense, opts)
   else
     self.speedI = clamp(self.speedI + e * dt * 0.08, -0.3, 0.4)
     local u = 0.25 * e + self.speedI
+    if plan.urgent and e < -1 then u = min(u, e * 0.5) end -- evasive: brake decisively
     -- hard stop needed? required decel beyond comfort -> brake harder
     if plan.stopS then
       local d = plan.stopS - 2 - s
