@@ -317,6 +317,7 @@ end
 ---------------------------------------------------------------------------
 
 local engagements, engagedFor, wasEngaged = 0, 0, false
+local pressedGas, releasedGas = false, false
 local function scenario(dt)
   local al = V.input.allowed.steering
   local engaged = al and al['local'] == false
@@ -332,8 +333,19 @@ local function scenario(dt)
   if engagements == 2 and not engaged and engagedFor > 4 then
     V.input.event('brake', 0, 0)
   end
-  -- third engagement: after 3 s the driver grabs the wheel and turns it right
-  if engaged and engagements == 3 and engagedFor > 3 and not WHEEL.hand then
+  -- third engagement: 1-3 s in the driver presses the accelerator (FSD stays on and
+  -- speeds up), then at 5 s grabs the wheel and turns it right
+  if engaged and engagements == 3 and engagedFor > 1 and not pressedGas then
+    pressedGas = true
+    hlog('driver presses the accelerator')
+    V.input.event('throttle', 0.8, 0)
+  end
+  if engagements == 3 and pressedGas and not releasedGas and engagedFor > 3 then
+    releasedGas = true
+    hlog('driver releases the accelerator')
+    V.input.event('throttle', 0, 0)
+  end
+  if engaged and engagements == 3 and engagedFor > 5 and not WHEEL.hand then
     hlog('driver grabs the wheel')
     WHEEL.hand = function(p, w) return 25 * (0.4 - p) * RAD_PER_RAW / 7.85 - 0.8 * w end
   end

@@ -405,6 +405,7 @@ local function buildState(s)
     fuel = (not ev) and fuel or false,
     autopilot = {
       engaged = ap.engaged, mode = ap.mode, profile = ap.profile,
+      accelOverride = (ap.engaged and ap.accelOverride) and true or false,
       targetSpeed = lastOut and lastOut.targetSpeed or 0,
       lastDisengage = lastDisengage,
       steerSign = driver and driver.steerSign, steerGain = driver and driver.kmax[2],
@@ -601,7 +602,8 @@ local function checkTakeover(dt)
   if ap.mode == 'fsd' or ap.mode == 'autosteer' then
     takeover.steering = (steerDev > 0.15) and takeover.steering + dt or 0
     takeover.brake = (br > 0.1) and takeover.brake + dt or 0
-    takeover.throttle = (ap.mode == 'fsd' and th > 0.2) and takeover.throttle + dt or 0
+    -- the accelerator doesn't disengage (like a Tesla): it speeds the car up while held
+    takeover.throttle = 0
   end
   if takeover.steering > 0.15 then disengage('steer'); return true end
   if takeover.brake > 0.15 then disengage('brake'); return true end
@@ -628,8 +630,15 @@ local function updateGFX(dt)
       if ap.mode == 'fsd' then
         local th, br = out.throttle, out.brake
         local pb = out.parkingbrake or 0
-        if override.active and override.value > 0 then th, br = max(th, override.value), 0 end
-        if electrics.values.gearboxMode == 'arcade' and s.v < 0.5 and out.targetSpeed < 0.3 then
+        -- accelerator (your pedal or the app's strip) overrides: go faster while held, never brake
+        local pedal = rawSinceEngage('throttle') or 0
+        local accel = max(pedal, (override.active and override.value > 0) and override.value or 0)
+        ap.accelOverride = accel > 0.05
+        if ap.accelOverride then
+          th, br, pb = max(th, accel), 0, 0
+          driver.speedI = 0 -- no wind-up: settle back to the set speed smoothly on release
+        end
+        if not ap.accelOverride and electrics.values.gearboxMode == 'arcade' and s.v < 0.5 and out.targetSpeed < 0.3 then
           -- still in arcade (manual gearbox): brake at a standstill would shift to reverse, hold with the parking brake
           br, pb = 0, 1
         end

@@ -64,6 +64,8 @@ export type AutopilotState = {
   nextTurn: { dir: 'left' | 'right' | 'straight'; dist: number; road: string } | null
   remaining: number | null // m to destination
   lastDisengage: { reason: DisengageReason; time: number } | null
+  /** The driver is pressing the accelerator (pedal or the app's strip): FSD stays on and goes faster, no braking. */
+  accelOverride: boolean
   /** Learned steering calibration, for debugging. */
   steerSign?: number
   steerGain?: number

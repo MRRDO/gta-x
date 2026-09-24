@@ -7,7 +7,7 @@
     "bridge": "tsx bridge/relay.ts",
     "mod": "tsx bridge/buildMod.ts",
     "test": "luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua",
-    "e2e": "tsx bridge/e2e.ts",
+    "e2e": "tsx bridge/e2e.ts && tsx bridge/app/selftest.ts",
     "harness": "luajit beamng/test/harness.lua",
     "typecheck": "tsc --noEmit"
   },
@@ -18,8 +18,11 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/qrcode-terminal": "^0.12.2",
+    "@types/react": "^19.3.0",
     "@types/ws": "^8.5.12",
+    "react": "^19.3.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "zustand": "^5.0.15"
   }
 }

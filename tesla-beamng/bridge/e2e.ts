@@ -182,6 +182,23 @@ try {
   events.length = 0
   send({ t: 'autopilot', mode: 'fsd' })
   check('FSD engages a third time', await until('engaged', () => st().autopilot.engaged, 4000))
+  {
+    // the harness floors the accelerator 1-3 s in: FSD stays on and goes faster than it would
+    let sawOverride = false, fasterThanTarget = false
+    const t1 = Date.now()
+    while (Date.now() - t1 < 6000 && st().autopilot.engaged) {
+      const s = st()
+      if (s.autopilot.accelOverride) {
+        sawOverride = true
+        if (s.throttle >= 0.75) fasterThanTarget = true // the driver's 0.8 goes through, above FSD's own 0.7 cap
+      }
+      if (sawOverride && !s.autopilot.accelOverride) break
+      await sleep(30)
+    }
+    check('accelerator overrides without disengaging', sawOverride && st().autopilot.engaged)
+    check('accelerator pedal goes through (more throttle than FSD uses)', fasterThanTarget)
+    check('no throttle disengage', !events.some((e) => e.kind === 'disengage'), events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+  }
   check('grabbing the wheel disengages', await until('grab', () => events.some((e) => e.kind === 'disengage' && /steer/.test(e.detail ?? '')), 15000),
     events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
   }

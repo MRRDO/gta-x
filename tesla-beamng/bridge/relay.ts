@@ -301,6 +301,10 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       if (lastMinimap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))
       return
     }
+    if (msg.t === 'ping' && !gameConnected) {
+      ws.send(JSON.stringify({ t: 'pong', time: Date.now() / 1000 })) // keep-alive while the game is closed
+      return
+    }
     if (!sendGame(msg)) ws.send(JSON.stringify({ t: 'event', kind: 'error', detail: 'game not connected' }))
   })
   ws.on('close', () => {

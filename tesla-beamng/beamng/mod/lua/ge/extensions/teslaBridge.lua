@@ -769,6 +769,7 @@ function M.onVehicleState(vid, json)
     nextTurn = ap.nextTurn,
     remaining = ap.remaining and num(ap.remaining, 0) or nil,
     lastDisengage = ap.lastDisengage,
+    accelOverride = va.accelOverride or false,
     steerGain = va.steerGain, steerSign = va.steerSign,
   }
   send(st, true)

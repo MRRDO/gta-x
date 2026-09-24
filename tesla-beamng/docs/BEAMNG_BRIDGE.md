@@ -100,6 +100,67 @@ public copy (2020). If a newer version renamed things, the wheel card says
 `unavailable` with the reason, the diagnostics list `hydros`' contents, and
 the autopilot still drives (the wheel just doesn't move).
 
+### Wiring the app
+
+`bridge/app/` is the app-side connector. Copy it and `bridge/protocol.ts`
+into the app. They need only React + zustand, which the app already has.
+
+```ts
+import { connectBeamNG, disconnectBeamNG, syncBeamNGToApp, useBeamNG, bridge, MPS_TO_MPH } from './bridge/app'
+import { useVehicleStore } from '@/store'
+import { useSimStore } from '@/sim/drive'
+import { useNavStore } from '@/nav/store'
+
+// "Vehicle source: BeamNG" turned on (stop useDriveSim first so it doesn't fight):
+connectBeamNG('ws://192.168.1.20:8765/?token=ab12cd34') // or connectBeamNG() to use ?bridge= / the relay host / the saved URL
+const stopSync = syncBeamNGToApp({ vehicle: useVehicleStore, sim: useSimStore, nav: useNavStore })
+// turned off:
+stopSync(); disconnectBeamNG()
+```
+
+**What `syncBeamNGToApp` does:**
+- **Game → app, 20 Hz:**
+  - vehicle store: gear, `speedMph`, doors FL/FR/RL/RR, frunk/trunk, `chargePercent`, headlights/fog
+  - sim store: `heading`, `signal`, `control`, `lead`, `fsd`, `autopilot`
+  - nav store: `position [lat, lon]`, `heading`, `route.coords`
+- **App → game:** when the existing UI changes gear, doors, frunk, trunk,
+  headlights or fog in the vehicle store, the command goes to the game, and
+  the game's state then confirms it.
+- **Field names** follow the handoff. If the app names something
+  differently, edit the three small functions at the top of `appSync.ts`.
+  Fields a store doesn't have are skipped.
+
+**Other controls** go through the client, for example
+`bridge()?.autopilot('fsd', 'standard')`:
+
+| UI control | Client call |
+|---|---|
+| FSD button | `autopilot('fsd', profile)` |
+| Autopilot off | `autopilot('off')` |
+| Turn signal stalk | `setSignal('left')` |
+| Horn | `horn(true)` / `horn(false)` |
+| Accelerator strip | `holdThrottle(v)` while held, `releaseThrottle()` on release. With FSD on it speeds up and stays engaged. |
+| Nav destination | `navigate(lngLatToWorld(lon, lat, originFor(level), map))` |
+| Cancel route | `cancelRoute()` |
+| Wheel spring | `wheel({ strength: 0.6 })` |
+
+**For the map** (`geo.ts`):
+- `roadsGeoJSON(map)`, `routeGeoJSON(route)` and `trafficGeoJSON(cars)` give
+  MapLibre sources.
+- `worldToLatLon`, `worldToLngLat` and `lngLatToWorld` convert coordinates.
+  Each level is pinned near a real place (West Coast USA sits by the Bay
+  Area), so the map tiles look plausible.
+- `worldToDriveView` converts to the driving view's `(X = −east, Z = north)`
+  meters.
+
+**Reading state in components:**
+`useBeamNG((s) => s.state?.autopilot.nextTurn)` and similar. Pick small
+slices, because the store updates at 20 Hz.
+
+`npm run e2e` also runs `bridge/app/selftest.ts`, which hooks this connector
+to stand-in copies of the app's stores and drives the fake game through it
+(19 checks).
+
 ### Connecting the real app (for the UI session)
 
 - WebSocket: `ws://<pc-ip>:8765/?token=<token>`. Message types are in
@@ -123,7 +184,7 @@ Try **a stock sedan, a pickup, a mod EV and a manual-transmission car**.
 | Every command | Use the P/R/N/D, lights, signal, horn and door buttons, plus the accelerator strip (hold it). |
 | Multi-turn route | Click a destination a few blocks away on the map, then press **FSD**. It should stay in the right lane, slow for curves and turns, signal about 60 m before turns, stop at stop signs (2 s) and red lights, follow traffic, then pull over or park and shift to P. |
 | Wheel turns in the car | Use the cockpit camera while FSD drives. The test page wheel icon shows the same angle. |
-| Takeover | While engaged, steer, brake or press the throttle. It disengages within about 0.15 s and the page logs `disengage: steer/brake/throttle`. |
+| Takeover | While engaged, steer or brake. It disengages within about 0.15 s and the page logs `disengage: steer/brake`. Pressing the gas instead speeds it up and it stays on. |
 | Switching vehicles, reloading the level | Switch cars (autopilot turns off, the new car reports within about 2 s). Reload the level (the map is re-exported, and the log shows `map …`). |
 | FFB wheel (G29) | Engage FSD: the physical wheel should turn with the car through every turn (the wheel card shows wheel vs target). Turn it hard against the autopilot: it disengages with `steer: wheel grabbed`. |
 | Wheel button | Bind *Toggle FSD* to a G29 button, then press it once to engage and again to disengage. |
@@ -179,8 +240,12 @@ and the BeamNG console lines that start with `teslaBridge` or
   (source `local`) separately from ours. Only events after engaging count.
   - Steering moves more than 0.15 from where it was when you engaged, for
     150 ms. For a wheel, that means you turned it.
-  - Brake over 0.1, or throttle over 0.2 (FSD only), for 150 ms.
+  - Brake over 0.1, for 150 ms.
   - The app's accelerator strip below −0.1 counts as braking.
+  - The **accelerator doesn't disengage** (like a Tesla). Your pedal or the
+    app's strip makes the car go faster while held and never brakes (the
+    state shows `accelOverride`). Let go and it eases back to the set
+    speed.
 - **Arrival.**
   - *Parking Lot*, *Parking Garage* or unset, with a parking spot within
     60 m: it curves into the spot.
@@ -224,7 +289,8 @@ and the BeamNG console lines that start with `teslaBridge` or
 
 All of these are in `bridge/protocol.ts`:
 
-- `state.parkingbrake`, `state.wheel` (force-feedback wheel status)
+- `state.parkingbrake`, `state.wheel` (force-feedback wheel status),
+  `autopilot.accelOverride`
 - command `wheel` (spring on/off, strength)
 - `route` (the planned path, for the nav map)
 - `minimap` (image URL on the relay)
