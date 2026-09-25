@@ -165,8 +165,12 @@ do
   local FFBID = NO_WHEEL and -1 or 7
   local FFmax = 10
   V.hydros = { enableFFB = true, wheelFFBForceLimit = 2 }
+  -- HARNESS_FFB_SIGN models our guess of the motor direction being wrong; the game's own
+  -- forces are always right (the player set the wheel up for the game)
   V.hydros.update = function()
-    if FFBID >= 0 and FFmax > 0 then V.obj:sendForceFeedback(FFBID, -4 * WHEEL.p) end
+    WHEEL.fromGame = true
+    if FFBID >= 0 and FFmax > 0 then V.obj:sendForceFeedback(FFBID, math.max(-FFmax, math.min(FFmax, -(4 + 1.2 * math.abs(player.v)) * WHEEL.p))) end -- self-centering grows with speed
+    WHEEL.fromGame = false
   end
   V.hydros.onFFBConfigChanged = function(cfg) FFBID = cfg and cfg.steering and cfg.steering.FFBID or -1 end
   V.jsonEncode, V.jsonDecode = jsonEncode, jsonDecode
@@ -177,7 +181,7 @@ do
     getDirectionVectorXYZ = function() return math.cos(player.psi), math.sin(player.psi), 0 end,
     getVelocityXYZ = function() return math.cos(player.psi) * player.v, math.sin(player.psi) * player.v, 0 end,
     queueGameEngineLua = function(_, code) geQueue[#geQueue + 1] = code end,
-    sendForceFeedback = function(_, id, force) if id == 7 then WHEEL.force = force end end,
+    sendForceFeedback = function(_, id, force) if id == 7 then WHEEL.force = WHEEL.fromGame and force * FFB_SIGN or force end end,
   }
   -- obj methods are called with ':' so shift the arguments
   for k, f in pairs(V.obj) do
@@ -318,7 +322,23 @@ end
 
 local engagements, engagedFor, wasEngaged = 0, 0, false
 local pressedGas, releasedGas = false, false
+local releaseIn, bumped = nil, nil
+local summonSent = false
+local SCENARIO = os.getenv('HARNESS_SCENARIO')
 local function scenario(dt)
+  if SCENARIO == 'summon' then
+    if not summonSent and gameT > 2 then
+      summonSent = true
+      teslaBridge._handleCommand({ t = 'summon', dir = 'forward' })
+    end
+    if summonSent and gameT % 0.5 < dt then
+      local pl = teslaBridge._planner()
+      local ap = vehExtensions.teslaAutopilot and vehExtensions.teslaAutopilot._debug and vehExtensions.teslaAutopilot._debug()
+      local x, y = refPos(player)
+      print(string.format('t=%.1f ref=%.2f,%.2f v=%.2f steer=%.2f mode=%s act=%s %s', gameT, x, y, player.v, V.electrics.values.steering_input, pl.mode, pl.activity, ap or ''))
+    end
+    return
+  end
   local al = V.input.allowed.steering
   local engaged = al and al['local'] == false
   if engaged then started = true end
@@ -335,7 +355,7 @@ local function scenario(dt)
   end
   -- third engagement: 1-3 s in the driver presses the accelerator (FSD stays on and
   -- speeds up), then at 5 s grabs the wheel and turns it right
-  if engaged and engagements == 3 and engagedFor > 1 and not pressedGas then
+  if not NO_WHEEL and engaged and engagements == 3 and engagedFor > 1 and not pressedGas then
     pressedGas = true
     hlog('driver presses the accelerator')
     V.input.event('throttle', 0.8, 0)
@@ -345,12 +365,29 @@ local function scenario(dt)
     hlog('driver releases the accelerator')
     V.input.event('throttle', 0, 0)
   end
-  if engaged and engagements == 3 and engagedFor > 5 and not WHEEL.hand then
+  if not NO_WHEEL and engaged and engagements == 3 and engagedFor > 5 and not WHEEL.hand then
     hlog('driver grabs the wheel')
-    WHEEL.hand = function(p, w) return 25 * (0.4 - p) * RAD_PER_RAW / 7.85 - 0.8 * w end
+    WHEEL.hand = function(p, w) return 25 * (0.4 - p) - 0.8 * w end
   end
+  -- after taking over, the driver keeps steering for a few seconds, then lets go
   if not engaged and WHEEL.hand and engagements == 3 then
+    releaseIn = (releaseIn or 3) - dt
+    if releaseIn <= 0 then
+      WHEEL.hand = nil; releaseIn = nil
+      -- (test shortcut) the driver steers back onto the road: put the car on the first street
+      player.x, player.y, player.psi, player.delta = 160, -1.8, 0, 0
+      hlog('driver lets go of the wheel, back on the road')
+    end
+  end
+  -- fourth engagement: once at speed, the driver's knee leans on the wheel for a second
+  if not NO_WHEEL and engaged and engagements == 4 and engagedFor > 3 and player.v > 10.8 and not bumped then
+    bumped = gameT
+    hlog('driver bumps the wheel')
+    WHEEL.hand = function(p, w) return 25 * (0.2 - p) - 0.8 * w end
+  end
+  if bumped and WHEEL.hand and gameT - bumped > 1.0 and engagements == 4 then
     WHEEL.hand = nil
+    hlog('bump over')
   end
 end
 
@@ -381,7 +418,9 @@ while true do
   if gameT - lastPrint > (tonumber(os.getenv("HARNESS_PRINT") or "5")) then
     lastPrint = gameT
     local e = V.electrics.values
-    hlog(string.format("car x=%.1f y=%.1f v=%.1f gear=%s steer=%.2f thr=%.2f brk=%.2f wheel=%.2f ffb=%.2f", player.x, player.y, player.v, e.gear, e.steering_input, e.throttle_input, e.brake_input, WHEEL.p, WHEEL.force))
+    local pl = teslaBridge._planner and teslaBridge._planner()
+    hlog(string.format("car x=%.1f y=%.1f v=%.1f gear=%s steer=%.2f thr=%.2f brk=%.2f wheel=%.2f ffb=%.2f fsd=%s/%s", player.x, player.y, player.v, e.gear, e.steering_input, e.throttle_input, e.brake_input, WHEEL.p, WHEEL.force,
+      pl and pl.mode or '-', pl and pl.activity or '-') .. (os.getenv('HARNESS_DEBUG') and (' | ' .. vehExtensions.teslaAutopilot._debug()) or ''))
   end
   if MAX_T > 0 and gameT > MAX_T then break end
   local ahead = gameT / SPEED - (socket.gettime() - wall0)

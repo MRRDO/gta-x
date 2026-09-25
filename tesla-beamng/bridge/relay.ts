@@ -2,7 +2,7 @@
 //   game:  TCP client to the mod on 127.0.0.1:8766 (newline-delimited JSON), reconnects every 2 s
 //   app:   WebSocket + HTTP on 0.0.0.0:8765 (test page at /, minimap at /minimap.png)
 //
-//   npm run bridge [-- --port 8765 --game-port 8766 --app ../dist --no-auth]
+//   npm run bridge [-- --port 8765 --game-port 8766 --app ../dist --no-auth --feedback-dir ./notes]
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { connect, type Socket } from 'node:net'
@@ -55,7 +55,7 @@ let lastRoute: unknown = null
 let lastState: unknown = null
 const stats = { state: 0, traffic: 0, fromApp: 0, since: Date.now() }
 const recentEvents: unknown[] = []
-const feedbackDir = join(here, 'feedback')
+const feedbackDir = resolve(arg('feedback-dir') ?? join(here, 'feedback')) // voice notes land here
 
 // A voice note from the wheel button / app: save the audio plus what the car was doing.
 function saveVoiceNote(msg: any): string {

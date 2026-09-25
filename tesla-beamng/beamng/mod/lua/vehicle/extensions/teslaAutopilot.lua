@@ -543,6 +543,7 @@ end
 local ALL = { 'steering', 'throttle', 'brake', 'parkingbrake' }
 local SPEED_ONLY = { 'throttle', 'brake', 'parkingbrake' }
 local REENGAGE_SPEED = 10.06 -- 22.5 mph
+local ACCIDENTAL_PEAK = 0.25 -- of full lock
 
 
 local function controlledFor(mode)
@@ -574,8 +575,10 @@ local function disengage(reason, detail)
   if reason == 'steer' and mode ~= 'tacc' then
     -- watch the next moments: an accidental bump at speed gets FSD back on
     local speed = electrics.values.wheelspeed or 0
-    watch = { t = now, mode = mode, profile = profile, speed = speed, target = lastOut and lastOut.steer or 0,
-      peak = 0, lastMove = now, prev = rawValue('steering') }
+    local target = lastOut and lastOut.steer or 0
+    local st = rawValue('steering')
+    watch = { t = now, mode = mode, profile = profile, speed = speed, target = target,
+      peak = st and abs(st - target) or 0, lastMove = now, prev = st }
   end
   if reason ~= 'app' and reason ~= 'switch' and reason ~= 'arrived' and reason ~= 'summon' then
     geEvent('disengage', { reason = reason, detail = detail })
@@ -790,7 +793,8 @@ local function checkAccidental()
   watch.peak = math.max(watch.peak, dev)
   if watch.prev and abs(st - watch.prev) > 0.01 then watch.lastMove = now end
   watch.prev = st
-  if age > 0.7 and watch.speed > REENGAGE_SPEED and watch.peak < 0.45 and dev < 0.12 and now - watch.lastMove > 0.5 and now - lastReengage > 10 then
+  -- a bump is small (under ~110 deg of a 900 deg wheel) and the wheel ends up back where FSD had it
+  if age > 0.7 and watch.speed > REENGAGE_SPEED and watch.peak < ACCIDENTAL_PEAK and dev < 0.08 and now - watch.lastMove > 0.5 and now - lastReengage > 10 then
     lastReengage = now
     geEvent('reengage', { mode = watch.mode, profile = watch.profile })
     watch = nil
@@ -819,7 +823,8 @@ local function applyAssist(engaged, s)
     inject('brake', rawValue('brake') or 0)
   end
   if lda ~= 0 then
-    inject('steering', (rawValue('steering') or electrics.values.steering_input or 0) + lda)
+    -- the driver's own input plus the nudge (never the last injected value: that would snowball)
+    inject('steering', math.max(-1, math.min(1, (rawValue('steering') or 0) + lda)))
     ap.ldaActive = true
   elseif ap.ldaActive then
     ap.ldaActive = false
@@ -839,7 +844,7 @@ local function updateGFX(dt)
   if ap.engaged then
     local aeb = applyAssist(true, s)
     if not checkTakeover(dt) then
-      local out = driver:update(dt, s, {})
+      local out = driver:update(dt, s, { noLearn = ap.mode == 'tacc' })
       lastOut = out
       if ap.mode ~= 'tacc' then
         inject('steering', out.steer)
@@ -855,7 +860,12 @@ local function updateGFX(dt)
       -- accelerator (your pedal or the app's strip) overrides: go faster while held, never brake
       local pedal = rawSinceEngage('throttle') or 0
       local accel = max(pedal, (override.active and override.value > 0) and override.value or 0)
-      ap.accelOverride = accel > 0.05 and plan.dir ~= -1
+      if plan.maneuver and accel > 0.3 then
+        -- summon / autopark / 3-point turn: the accelerator cancels it (like a Tesla), never speeds it up
+        disengage('throttle', plan.maneuver .. ' cancelled')
+        return
+      end
+      ap.accelOverride = accel > 0.05 and plan.dir ~= -1 and not plan.maneuver
       if ap.accelOverride then
         th, br, pb = max(th, accel), 0, 0
         driver.speedI = 0 -- no wind-up: settle back to the set speed smoothly on release
@@ -1004,5 +1014,10 @@ M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
 M.onReset = onReset
 M.updateGFX = updateGFX
+-- one-line driver snapshot for the test harness
+M._debug = function()
+  local o, p = lastOut or {}, ap.plan or {}
+  return string.format('held=%s cap=%s aeb=%s ovr=%s acc=%s | eng=%s s=%.2f rem=%.2f vt=%.2f lat=%.2f seq=%s n=%d dir=%s', tostring(assistHeld), tostring(assist.throttleCap), tostring(assist.aeb), tostring(override.active), tostring(ap.accelOverride), tostring(ap.engaged), o.s or -1, o.remaining or -1, o.targetSpeed or -1, o.lat or 0, tostring(p.seq), p.pts and #p.pts / 3 or 0, tostring(p.dir))
+end
 
 return M

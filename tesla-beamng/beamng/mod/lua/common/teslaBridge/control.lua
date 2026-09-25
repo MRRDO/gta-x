@@ -91,7 +91,8 @@ function Driver:update(dt, sense, opts)
   if reverse then hx, hy = -hx, -hy end
   local v = max(0, reverse and -sense.v or sense.v)
 
-  if not reverse then self:learn(dt, v, sense.yawRate or 0, self.u) end
+  -- learn only from steering we actually applied (not in TACC, where the driver steers)
+  if not reverse and not opts.noLearn then self:learn(dt, v, sense.yawRate or 0, self.u) end
 
   -- where are we on the window?
   local pr = P.project(path, sense.x, sense.y, self.hint, 8, 40)

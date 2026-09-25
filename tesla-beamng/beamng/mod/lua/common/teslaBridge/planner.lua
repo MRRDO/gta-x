@@ -309,6 +309,14 @@ function Planner:engage(mode, profile, ego, cars)
   self.maneuver = nil
   self.nag:onDisengage()
   local stationary = abs(ego.v or 0) < 0.5
+  if mode ~= 'tacc' and not stationary and self.graph then
+    -- rolling through a field / car park far from any road: nothing to follow
+    local e, _, ed = P.nearestEdge(self.graph, ego.x, ego.y, nil, nil, 60)
+    if not e or ed > (self.graph.nodes[e.a].r or 4) + 8 then
+      self.mode = 'off'
+      return false, 'not on a road'
+    end
+  end
   if not self.path or (self.path.openEnded and self.dest) or (not self.path.openEnded and not self.dest) or self.builtFor ~= self.profile then
     local ok, err = self:planPath(ego, cars)
     if not ok then self.mode = 'off'; return false, err end
@@ -1176,6 +1184,15 @@ function Planner:tickManeuver(ego, cars, out)
   local remaining = segPath.s[#segPath.s] - (pr and pr.s or 0)
   local moving = abs(ego.v) > 0.15
   self.status = { maneuver = { kind = mv.kind, step = mv.idx, total = #mv.segs, dir = seg.dir }, remaining = nil }
+  -- failsafe: way off the maneuver's path (bad steering, pushed by something) -> stop, hand back
+  if pr and pr.dist > 3 then
+    self.maneuver, self.kturn = nil, nil
+    self.activity = 'drive'
+    out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+    self:emit('error', { detail = mv.kind .. ' went off course, stopped' })
+    self:disengage('error', mv.kind .. ' off course')
+    return
+  end
   -- obstacle in the way (summon / autopark): stop
   local blocked = false
   for _, c in ipairs(cars) do
@@ -1236,6 +1253,7 @@ function Planner:tickManeuver(ego, cars, out)
   out.plan = {
     seq = self.seq, pts = flat, vcap = vcap, dir = seg.dir, maxSpeed = blocked and 0 or seg.maxSpeed,
     hold = blocked, openEnded = false, gapTime = 2, throttleMax = 0.35, signal = false, mode = self.mode,
+    maneuver = mv.kind,
   }
 end
 

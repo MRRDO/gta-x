@@ -3,6 +3,9 @@
 //   npx tsx bridge/e2e.ts      (needs luajit + lua-socket + lua-dkjson)
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import type { State, MapInfo } from './protocol.ts'
 
@@ -29,7 +32,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 start('luajit', ['beamng/test/harness.lua'], { HARNESS_SPEED: '6', HARNESS_QUIET: process.env.VERBOSE ? '0' : '1' }, !!process.env.VERBOSE)
 await sleep(500)
-start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), '--game-port', String(GAME_PORT), '--quiet'])
+const feedbackDir = mkdtempSync(join(tmpdir(), 'tesla-notes-'))
+start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), '--game-port', String(GAME_PORT), '--quiet', '--feedback-dir', feedbackDir])
 
 let state = null as State | null
 let map = null as MapInfo | null
@@ -54,11 +58,14 @@ ws.on('message', (d) => {
   const m = JSON.parse(String(d))
   if (m.t === 'state') { state = m; states.push(m) }
   else if (m.t === 'map') map = m
-  else if (m.t === 'event') events.push(m)
+  else if (m.t === 'event') { events.push(m); if (process.env.VERBOSE) console.log('  EVENT', m.kind, m.detail ?? '', JSON.stringify(m.data ?? {}).slice(0, 200)) }
   else if (m.t === 'route') route = m
   else if (m.t === 'debug') debug = m
 })
 const send = (m: unknown) => ws.send(JSON.stringify(m))
+// the app's cabin camera reports the driver's attention a few times a second
+let attn: 'ok' | 'phone' | 'eyesOff' | null = 'ok'
+const attnTimer = setInterval(() => { if (attn && ws.readyState === ws.OPEN) send({ t: 'attention', state: attn }) }, 150)
 
 async function until(what: string, fn: () => boolean, timeoutMs: number) {
   const t0 = Date.now()
@@ -201,11 +208,84 @@ try {
   }
   check('grabbing the wheel disengages', await until('grab', () => events.some((e) => e.kind === 'disengage' && /steer/.test(e.detail ?? '')), 15000),
     events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+  await sleep(1500)
+  check('a real takeover (held 3 s) does not re-engage', !events.some((e) => e.kind === 'reengaged') && !st().autopilot.engaged,
+    events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+
+  // --- the harness leans on the wheel for 1 s once the car is over 24 mph: FSD should come back on by itself
+  await until('wheel back', () => st().wheel?.status === 'available', 3000)
+  events.length = 0
+  send({ t: 'autopilot', mode: 'fsd', profile: 'hurry' })
+  check('FSD engages a fourth time', await until('engaged', () => st().autopilot.engaged, 4000))
+  check('knee bump disengages', await until('bump', () => events.some((e) => e.kind === 'disengage' && e.detail === 'steer'), 30000),
+    events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+  check('...and FSD re-engages by itself (accidental, > 22.5 mph)', await until('reengaged', () => events.some((e) => e.kind === 'reengaged') && st().autopilot.engaged, 6000),
+    events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+
+  // --- the cabin camera sees the driver on their phone: nag, then clears when they look back up
+  events.length = 0
+  attn = 'phone'
+  check('phone in hand -> nag', await until('nag', () => events.some((e) => e.kind === 'nag' && /phone/.test(e.detail ?? '')), 8000),
+    events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+  attn = 'ok'
+  check('eyes back on the road clears the nag', await until('nag clear', () => (st().autopilot.nag?.level ?? 0) === 0, 4000), JSON.stringify(st().autopilot.nag))
+  check('no strike for a short glance', !events.some((e) => e.kind === 'strike'))
+  }
+
+  // --- traffic-aware cruise only: the car keeps speed, you steer (the wheel is yours)
+  send({ t: 'autopilot', mode: 'off' })
+  await until('off', () => !st().autopilot.engaged, 3000)
+  send({ t: 'autopilot', mode: 'tacc' })
+  check('TACC engages', await until('tacc', () => st().autopilot.engaged && st().autopilot.mode === 'tacc', 4000), st().autopilot.mode)
+  await sleep(600)
+  check('TACC leaves the wheel to the driver', st().wheel?.status !== 'active', st().wheel?.status)
+
+  // --- settings round trip
+  send({ t: 'settings', quirks: { phantomBraking: false }, speedOffsetMph: 3, followDistance: 4 })
+  await sleep(300)
+  check('settings accepted (no error)', !events.some((e) => e.kind === 'error' && /settings/.test(e.detail ?? '')))
+
+  // --- Dumb Summon: park, then creep forward ~12 m and stop by itself
+  send({ t: 'autopilot', mode: 'off' })
+  await until('off', () => !st().autopilot.engaged, 3000)
+  send({ t: 'gear', gear: 'P' })
+  await until('P', () => st().gear === 'P' && st().speed < 0.1, 4000)
+  {
+    const p0 = [...st().pos]
+    events.length = 0
+    send({ t: 'summon', dir: 'forward' })
+    check('summon starts', await until('summon', () => st().autopilot.engaged && st().autopilot.activity === 'summon', 4000), st().autopilot.activity)
+    let maxV = 0
+    const ok = await until('summon done', () => {
+      if (process.env.VERBOSE && st().speed > maxV) console.log('  summon speed', st().speed.toFixed(2), st().gear, st().time.toFixed(1), st().autopilot.activity)
+      maxV = Math.max(maxV, st().speed); return !st().autopilot.engaged
+    }, 20000)
+    const moved = Math.hypot(st().pos[0] - p0[0], st().pos[1] - p0[1])
+    check('summon creeps forward and stops', ok && moved > 8 && moved < 16, `${moved.toFixed(1)} m`)
+    check('summon stays at walking pace', maxV < 1.6, `${maxV.toFixed(2)} m/s`)
+  }
+
+  // --- voice note from the iPad mic: the relay saves it with the car's context
+  {
+    const audio = Buffer.from('RIFF....WAVEfmt fake audio').toString('base64')
+    send({ t: 'voiceNote', audio, mime: 'audio/wav', durationSec: 2.5, text: 'it braked for a shadow' })
+    check('voice note saved', await until('saved', () => events.some((e) => e.kind === 'voiceNoteSaved'), 3000))
+    const files = readdirSync(feedbackDir)
+    const meta = files.find((f) => f.endsWith('.json'))
+    const ctx = meta ? JSON.parse(readFileSync(join(feedbackDir, meta), 'utf8')) : null
+    check('voice note has audio + context', files.some((f) => f.endsWith('.wav')) && ctx?.text === 'it braked for a shadow' && !!ctx?.car?.pos && Array.isArray(ctx?.recentEvents),
+      files.join(', '))
+    const list = await fetch(`http://127.0.0.1:${PORT}/feedback`).then((r) => r.json()).catch(() => null)
+    check('GET /feedback lists it', Array.isArray(list) ? list.length > 0 : !!list && JSON.stringify(list).includes('note-'), JSON.stringify(list)?.slice(0, 120))
+  }
+  {
   }
 } catch (e) {
   check('no exceptions', false, String(e))
 }
 
+clearInterval(attnTimer)
+rmSync(feedbackDir, { recursive: true, force: true })
 const failed = results.filter((r) => !r[1]).length
 console.log(`\n${results.length - failed} passed, ${failed} failed`)
 cleanup()
