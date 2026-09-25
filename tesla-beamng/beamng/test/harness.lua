@@ -22,6 +22,9 @@ local QUIET = os.getenv('HARNESS_QUIET') == '1'
 local TRUE_SIGN = tonumber(os.getenv('HARNESS_STEER_SIGN') or '1') -- +1: positive input steers right
 local FFB_SIGN = tonumber(os.getenv('HARNESS_FFB_SIGN') or '1')     -- -1: wheel motor wired backwards
 local NO_WHEEL = os.getenv('HARNESS_NO_WHEEL') == '1'
+-- the external wheel helper drives the motor (BeamNG's own FFB turned off by the player);
+-- modelled as an SDL spring toward the target the mod reports
+local HELPER_SIM = os.getenv('HARNESS_HELPER_SIM') == '1'
 
 local gameT = 0
 local function hlog(...) if not QUIET then print(string.format('[harness %6.1f]', gameT), ...) end end
@@ -125,12 +128,24 @@ do
     horn = function(on) e.horn = on and 1 or 0 end,
   }
   local input = { state = {}, allowed = {} }
-  function input.event(itype, val, filter, a4, a5, a6, source)
+  -- like the game's input.lua: kbdSteer / padAccelerateBrake call the module's local
+  -- event() directly, not input.event, so a hook on input.event alone misses them
+  local function event(itype, val, filter, a4, a5, a6, source)
     source = source or 'local'
     local al = input.allowed[itype]
     if al and al[source] == false then return end
     input.state[itype] = { val = val, source = source }
     e[itype .. '_input'] = val
+  end
+  input.event = event
+  local kl, kr = 0, 0
+  function input.kbdSteer(isRight, val, filter)
+    if isRight then kr = val else kl = val end
+    event('steering', kr - kl, filter)
+  end
+  function input.padAccelerateBrake(val, filter)
+    event('throttle', val > 0 and val or 0, filter)
+    event('brake', val < 0 and -val or 0, filter)
   end
   function input.setAllowedInputSource(itype, source, allowed)
     input.allowed[itype] = input.allowed[itype] or {}
@@ -162,9 +177,26 @@ do
   V.v = { data = { input = { steeringWheelLock = 450 } } }
   -- the game's FFB owner, shaped like hydros.lua: FFBID/FFmax are locals, and
   -- update() sends a centering force every physics step while FFBID >= 0
-  local FFBID = NO_WHEEL and -1 or 7
+  local FFBID = (NO_WHEEL or HELPER_SIM) and -1 or 7
   local FFmax = 10
   V.hydros = { enableFFB = true, wheelFFBForceLimit = 2 }
+  if os.getenv('HARNESS_FFB_MODE') == 'config' then
+    -- a hydros that keeps the device id only inside its config table (no FFBID local):
+    -- the mod has to use the config route (enableFFB=false + onFFBConfigChanged)
+    local ffbConfig = { steering = { FFBID = NO_WHEEL and -1 or 7, ff_max_force = 10 } }
+    local active = ffbConfig.steering.FFBID >= 0
+    V.hydros.update = function()
+      WHEEL.fromGame = true
+      if active and V.hydros.enableFFB then
+        V.obj:sendForceFeedback(ffbConfig.steering.FFBID, math.max(-10, math.min(10, -(4 + 1.2 * math.abs(player.v)) * WHEEL.p)))
+      end
+      WHEEL.fromGame = false
+    end
+    V.hydros.onFFBConfigChanged = function(cfg)
+      ffbConfig = cfg or ffbConfig
+      active = V.hydros.enableFFB and ffbConfig.steering and ffbConfig.steering.FFBID >= 0
+    end
+  else
   -- HARNESS_FFB_SIGN models our guess of the motor direction being wrong; the game's own
   -- forces are always right (the player set the wheel up for the game)
   V.hydros.update = function()
@@ -173,6 +205,7 @@ do
     WHEEL.fromGame = false
   end
   V.hydros.onFFBConfigChanged = function(cfg) FFBID = cfg and cfg.steering and cfg.steering.FFBID or -1 end
+  end
   V.jsonEncode, V.jsonDecode = jsonEncode, jsonDecode
   V.log = function(l, tag, msg) hlog('veh', l, tag, msg) end
   V.obj = {
@@ -286,6 +319,15 @@ local function stepWheel(dt)
     local h = dt / sub
     local tau = FFB_SIGN * WHEEL.force / 10 * WHEEL.tmax - 0.02 * WHEEL.w * RAD_PER_RAW
     if WHEEL.hand then tau = tau + WHEEL.hand(WHEEL.p, WHEEL.w) end
+    if HELPER_SIM and vehExtensions.teslaAutopilot then
+      local f = vehExtensions.teslaAutopilot._ffb()
+      if f.helper then
+        local engaged = V.input.allowed.steering and V.input.allowed.steering['local'] == false
+        local c = engaged and (f.target or 0) or 0
+        local k = engaged and 0.6 or 0.1
+        tau = tau + WHEEL.tmax * k * math.max(-1, math.min(1, (c - WHEEL.p) / 0.1)) - 0.15 * k * WHEEL.w * RAD_PER_RAW
+      end
+    end
     local wr = WHEEL.w * RAD_PER_RAW
     if math.abs(wr) < 1e-3 and math.abs(tau) <= WHEEL.fric then
       wr = 0
@@ -324,6 +366,7 @@ local engagements, engagedFor, wasEngaged = 0, 0, false
 local pressedGas, releasedGas = false, false
 local releaseIn, bumped = nil, nil
 local summonSent = false
+local kbdPressed, kbdReleased, padPressed, padReleased = nil, false, nil, false
 local SCENARIO = os.getenv('HARNESS_SCENARIO')
 local function scenario(dt)
   if SCENARIO == 'summon' then
@@ -368,6 +411,26 @@ local function scenario(dt)
   if not NO_WHEEL and engaged and engagements == 3 and engagedFor > 5 and not WHEEL.hand then
     hlog('driver grabs the wheel')
     WHEEL.hand = function(p, w) return 25 * (0.4 - p) - 0.8 * w end
+  end
+  -- no wheel: a keyboard player steers right on the third engagement, a gamepad player
+  -- squeezes the brake trigger on the fourth
+  if NO_WHEEL and engaged and engagements == 3 and engagedFor > 3 and not kbdPressed then
+    kbdPressed = gameT
+    hlog('keyboard: steer right')
+    V.input.kbdSteer(true, 1, 0)
+  end
+  if NO_WHEEL and kbdPressed and gameT - kbdPressed > 0.6 and not kbdReleased then
+    kbdReleased = true
+    V.input.kbdSteer(true, 0, 0)
+  end
+  if NO_WHEEL and engaged and engagements == 4 and engagedFor > 2 and not padPressed then
+    padPressed = gameT
+    hlog('gamepad: brake trigger')
+    V.input.padAccelerateBrake(-0.7, 0)
+  end
+  if NO_WHEEL and padPressed and gameT - padPressed > 0.6 and not padReleased then
+    padReleased = true
+    V.input.padAccelerateBrake(0, 0)
   end
   -- after taking over, the driver keeps steering for a few seconds, then lets go
   if not engaged and WHEEL.hand and engagements == 3 then

@@ -209,6 +209,7 @@ end
 
 -- Find a number upvalue by name in the FFB modules' functions, following
 -- function upvalues a couple of levels deep (e.g. update -> FFBcalc).
+-- `names` is a set of names, or a function(name, value) -> true for a match.
 local function scanUpvalues(names)
   if type(debug) ~= 'table' or not debug.getupvalue then return nil, 'no debug library in vehicle Lua' end
   local seen = {}
@@ -219,7 +220,9 @@ local function scanUpvalues(names)
     for i = 1, 150 do
       local n, val = debug.getupvalue(f, i)
       if not n then break end
-      if names[n] and type(val) == 'number' then return f, i, val, n end
+      if type(names) == 'function' then
+        if names(n, val) then return f, i, val, n end
+      elseif names[n] and type(val) == 'number' then return f, i, val, n end
       if type(val) == 'function' and depth < 2 then nested[#nested + 1] = val end
     end
     for _, g in ipairs(nested) do
@@ -250,7 +253,17 @@ local function ffbSend(force)
   return ok
 end
 
+-- the config hydros keeps in a local table ({ steering = { FFBID = n, ... } }), for when the
+-- game handed it over before we loaded (so the onFFBConfigChanged hook never saw it)
+local function findStoredCfg()
+  local _, _, t = scanUpvalues(function(_, v)
+    return type(v) == 'table' and type(v.steering) == 'table' and type(v.steering.FFBID) == 'number'
+  end)
+  return t
+end
+
 local function cfgId()
+  if not ffbCfg then ffbCfg = findStoredCfg() end
   local st = ffbCfg and ffbCfg.steering
   return st and tonumber(st.FFBID) or nil
 end
@@ -686,7 +699,10 @@ handlers.wheel = function(cmd)
   if cmd.strength ~= nil then ffb.strength = math.max(0, math.min(1, tonumber(cmd.strength) or ffb.strength)) end
   if cmd.helper ~= nil then
     ffb.helper = cmd.helper and true or false
-    if ffb.helper then ffbRelease() end
+    if ffb.helper then
+      ffbRelease()
+      ffb.status, ffb.reason = 'helper', 'external wheel helper drives the wheel'
+    elseif ap.engaged and ap.mode ~= 'tacc' then ffbTake() else ffbProbe() end
   end
   if cmd.spring ~= nil then
     ffb.enabled = cmd.spring and true or false
@@ -752,11 +768,19 @@ local function checkTakeover(dt)
   local st = rawSinceEngage('steering')
   local br = rawSinceEngage('brake') or 0
   local steerDev = st and abs(st - baseline.steering) or 0
-  if ffb.held or ap.mode == 'tacc' then steerDev = 0 end -- the spring moves the wheel; grips are caught by it
-  takeover.steering = (steerDev > 0.15) and takeover.steering + dt or 0
+  local devLimit, holdT = 0.15, 0.15
+  if ffb.helper and ap.mode ~= 'tacc' then
+    -- the external helper turns the wheel to FSD's angle: a takeover is the wheel
+    -- being well away from that (it lags a little in quick turns, hence the margin)
+    steerDev = st and abs(st - (lastOut and lastOut.steer or 0) / ffb.ratio) or 0
+    devLimit, holdT = 0.2, 0.3
+  elseif ffb.held or ap.mode == 'tacc' then
+    steerDev = 0 -- the spring moves the wheel; grips are caught by it
+  end
+  takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
   takeover.brake = (br > 0.1) and takeover.brake + dt or 0
   takeover.throttle = 0 -- the accelerator never disengages (like a Tesla): it speeds you up
-  if takeover.steering > 0.15 then disengage('steer'); return true end
+  if takeover.steering > holdT then disengage('steer'); return true end
   if takeover.brake > 0.15 then disengage('brake'); return true end
   if override.active and override.value < -0.1 then disengage('brake', 'app brake'); return true end
   return false
@@ -773,7 +797,7 @@ local function detectNudge()
   else
     local r = raw.steering
     if r and r.t > ap.engagedAt and now - r.t < 0.1 then
-      local d = abs(r.v - baseline.steering)
+      local d = abs(r.v - (ffb.helper and ffb.target or baseline.steering))
       hit = d > 0.01 and d < 0.15
     end
   end
@@ -848,6 +872,11 @@ local function updateGFX(dt)
       lastOut = out
       if ap.mode ~= 'tacc' then
         inject('steering', out.steer)
+        if ffb.helper then
+          -- report where the helper should hold the wheel (it reads wheel.target from the state)
+          ffb.target = out.steer / ffb.ratio
+          ffb.pos = rawValue('steering') or ffb.pos
+        end
         if ffbUpdate(dt, out.steer) then disengage('steer', 'wheel grabbed') end
       end
       detectNudge()
@@ -1014,6 +1043,8 @@ M.onExtensionLoaded = onExtensionLoaded
 M.onExtensionUnloaded = onExtensionUnloaded
 M.onReset = onReset
 M.updateGFX = updateGFX
+-- test harness hooks
+M._ffb = function() return ffb end
 -- one-line driver snapshot for the test harness
 M._debug = function()
   local o, p = lastOut or {}, ap.plan or {}

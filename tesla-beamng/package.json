@@ -6,10 +6,12 @@
   "scripts": {
     "bridge": "tsx bridge/relay.ts",
     "mod": "tsx bridge/buildMod.ts",
-    "test": "luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua",
+    "test": "luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua && luajit beamng/test/test_maneuver.lua && luajit beamng/test/test_behaviors.lua",
     "e2e": "tsx bridge/e2e.ts && tsx bridge/app/selftest.ts",
     "harness": "luajit beamng/test/harness.lua",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "helper": "python3 bridge/wheel_helper.py",
+    "test:helper": "python3 beamng/test/test_wheel_helper.py"
   },
   "dependencies": {
     "qrcode-terminal": "^0.12.0",

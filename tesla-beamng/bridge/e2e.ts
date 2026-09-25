@@ -181,6 +181,21 @@ try {
   check('player brake disengages', await until('disengage', () => events.some((e) => e.kind === 'disengage' && /brake/.test(e.detail ?? '')), 15000),
     events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
   check('state shows lastDisengage=brake', await until('lastDisengage', () => st().autopilot.lastDisengage?.reason === 'brake' && !st().autopilot.engaged, 3000))
+  if (process.env.HARNESS_NO_WHEEL === '1') {
+    // keyboard steering and gamepad triggers skip input.event in the game: still caught
+    await sleep(500)
+    events.length = 0
+    send({ t: 'autopilot', mode: 'fsd' })
+    check('FSD engages (keyboard player)', await until('engaged', () => st().autopilot.engaged, 4000))
+    check('keyboard steering takes over', await until('kbd', () => events.some((e) => e.kind === 'disengage' && e.detail === 'steer'), 15000),
+      events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    await sleep(1500)
+    events.length = 0
+    send({ t: 'autopilot', mode: 'fsd' })
+    check('FSD engages (gamepad player)', await until('engaged', () => st().autopilot.engaged, 4000))
+    check('gamepad brake trigger takes over', await until('pad', () => events.some((e) => e.kind === 'disengage' && e.detail === 'brake'), 15000),
+      events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+  }
   if (process.env.HARNESS_NO_WHEEL !== '1') {
   check('wheel handed back to the game after disengage', await until('available', () => st().wheel?.status === 'available', 3000), st().wheel?.status)
 

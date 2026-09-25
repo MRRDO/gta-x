@@ -62,8 +62,8 @@ export type NagState = {
 }
 
 export type WheelState = {
-  /** active = driving the wheel now; available = FFB wheel found; no wheel / unavailable / off / disabled otherwise */
-  status: 'active' | 'available' | 'no wheel' | 'unavailable' | 'off' | 'disabled' | 'unknown'
+  /** active = driving the wheel now; available = FFB wheel found; helper = the external wheel helper drives it; no wheel / unavailable / off / disabled otherwise */
+  status: 'active' | 'available' | 'no wheel' | 'unavailable' | 'off' | 'disabled' | 'helper' | 'unknown'
   reason?: string
   strength: number // 0..1 of the wheel's max force
   pos: number // physical wheel, raw axis -1..1
