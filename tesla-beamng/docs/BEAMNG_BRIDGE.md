@@ -1,178 +1,267 @@
 # BeamNG ⇄ Tesla UI bridge
 
-The iPad app shows and drives a car in **BeamNG.drive**. There are three parts:
+The iPad app shows and drives a car in **BeamNG.drive**, and our own FSD
+(Supervised)–style autopilot drives it through the player's inputs, so the
+in-car steering wheel and a real force-feedback wheel (G29) turn with it.
 
 ```
-BeamNG.drive (PC)                         relay (PC, Node)                 iPad
-┌──────────────────────────────┐  TCP     ┌─────────────────────┐  Wi-Fi  ┌──────────────┐
-│ teslaBridge   (GE extension) │◀───────▶│ bridge/relay.ts      │◀──────▶│ Tesla UI app │
-│  map, traffic, signals,      │ 127.0.0.1│  ws + http :8765     │   ws   │  or test page│
-│  route planner (10 Hz)       │   :8766  │  test page, minimap  │        └──────────────┘
-│ teslaAutopilot (vehicle ext) │          │  pairing token, QR   │
-│  state 20 Hz, commands,      │          └─────────────────────┘
-│  driving via player inputs   │
-└──────────────────────────────┘
+BeamNG.drive (PC)                           relay (PC, Node)                 iPad
+┌────────────────────────────────┐  TCP     ┌─────────────────────┐  Wi-Fi  ┌──────────────┐
+│ teslaBridge    (GE extension)  │◀───────▶│ bridge/relay.ts      │◀──────▶│ Tesla UI app │
+│  map, traffic, signals, weather│ 127.0.0.1│  ws + http :8765     │   ws   │  or test page│
+│  planner 10 Hz, safety 20 Hz   │   :8766  │  test page, minimap  │        └──────────────┘
+│ teslaAutopilot (vehicle ext)   │          │  voice notes, token  │
+│  state 20 Hz, commands, driving│          └──────────▲──────────┘
+│  via player inputs, FFB wheel  │                     │ ws (optional)
+│ teslaBeacon (nearby cars)      │          ┌──────────┴──────────┐
+│  emergency lightbars           │          │ bridge/wheel_helper │ backup: turns the
+└────────────────────────────────┘          │  SDL spring (G29)   │ wheel via SDL
+                                            └─────────────────────┘
 ```
 
 ## Status
 
-**Built without the game.** Everything here was written and tested in a
-cloud container against a fake BeamNG (`beamng/test/harness.lua`). The
-harness runs the real mod Lua with stubbed game APIs, a simple car model and
-a simulated G29 (motor, gear friction, the game's own centering force),
-talking to the real relay.
+**Built without the game.** Everything was written and tested in a cloud
+container against a fake BeamNG (`beamng/test/harness.lua`) that runs the real
+mod Lua with stubbed game APIs, a bicycle-model car, a simulated G29 (motor,
+gear friction, the game's own centering force) and the real relay.
 
-- Unit tests: 29 driving + 14 wheel, all passing.
-- End-to-end: 38/38, also with a backwards motor, backwards car steering,
-  and no wheel.
+| Suite | Checks |
+|---|---|
+| `npm test` (pure Lua) | driving 29, wheel 14, maneuvers 12, **FSD behaviors 80** |
+| `npm run e2e` (harness + relay + fake app) | 57, also with a backwards motor, backwards car steering, config-only FFB (all 57) and no wheel (46) |
+| app connector self-test | 27 |
+| `npm run test:helper` (backup wheel helper) | 11 |
 
-The API names come from the game's docs and from BeamMP's source (BeamMP is
-a multiplayer mod built for BeamNG 0.39). The parts I'm least sure of are
-wrapped so a mismatch turns off that one feature instead of crashing the
-mod, and the **Diagnostics** button reports what your game version exposes.
-Expect a round or two of fixes after the first real run.
+API names come from the game's docs, BeamMP's source (a multiplayer mod for
+BeamNG 0.39) and the Advanced Steering mod. Anything unsure is wrapped so a
+mismatch switches that one feature off instead of crashing, and
+**Run diagnostics** reports what your game version exposes. Expect a round or
+two of fixes after the first real run.
 
 ## Setup (Quentin)
 
 You need Node 20+ on the PC. The PC and the iPad must be on the same Wi-Fi.
 
 1. **Install:** in this folder, run `npm install`.
-2. **Build the mod:** run `npm run mod`. This writes `beamng/dist/tesla_bridge.zip`.
-3. **Install the mod:** copy the zip into the BeamNG user folder's `mods/`
-   folder. To find it: BeamNG launcher → *Manage User Folder* → *Open in
-   Explorer*. Usually it's `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`.
-   Don't unzip it.
-4. **Start the game:** load **West Coast USA** and spawn any car. Open the
-   console with the `~` key. You should see `teslaBridge: listening on
-   127.0.0.1:8766`, then `map west_coast_usa: … nodes`.
-5. **Start the relay:** run `npm run bridge`. It prints the addresses, a
-   pairing token and a QR code. If Windows Firewall asks, allow Node on
-   **private** networks.
-6. **Test page:** open `http://localhost:8765/` on the PC, or scan the QR
-   code with the iPad. The QR link includes the `?token=`, which the iPad
-   needs. The token is saved in `bridge/.token`; delete that file to get a
-   new one.
-7. **First thing:** click **Run diagnostics** → **Copy**, and send me the
-   output. It shows what this BeamNG version's Lua has: input functions,
-   gearbox type, door controllers, traffic-signal API, map link fields, and
-   the force-feedback code.
+2. **Build the mod:** `npm run mod` writes `beamng/dist/tesla_bridge.zip`.
+3. **Install the mod:** copy the zip (don't unzip it) into the BeamNG user
+   folder's `mods/` (launcher → *Manage User Folder* → *Open in Explorer*;
+   usually `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`).
+4. **Start the game:** load **West Coast USA**, spawn any car. In the `~`
+   console you should see `teslaBridge: listening on 127.0.0.1:8766`, then
+   `map west_coast_usa: … nodes`.
+5. **Start the relay:** `npm run bridge`. It prints addresses, a pairing token
+   and a QR code. If Windows Firewall asks, allow Node on **private** networks.
+6. **Test page:** `http://localhost:8765/` on the PC, or scan the QR code with
+   the iPad (the link carries the `?token=`; it's saved in `bridge/.token`).
+7. **First thing:** **Run diagnostics** → **Copy**, and send me the output.
+
+### Wheel buttons (Options → Controls → Bindings → *Tesla UI Bridge*)
+
+| Action | What it does |
+|---|---|
+| Toggle FSD | engage / disengage FSD (like the stalk) |
+| Toggle Autosteer | steering + cruise only |
+| Voice note (iPad mic) | starts recording on the iPad; press again to save (or it stops after 60 s) |
+| Hands-on nudge | counts as a wheel nudge for the attention monitor |
 
 ### Logitech G29 (or any force-feedback wheel)
 
-While the autopilot drives, the mod takes over the wheel's force-feedback
-motor and pulls the physical wheel to the car's steering angle. When it
-disengages, the game's normal force feedback comes back.
+While FSD or Autosteer drives, the mod takes over the wheel motor and pulls
+the physical wheel to the car's steering angle. On disengage the game's own
+force feedback comes back.
 
-1. **Logitech G HUB** (or Logitech Gaming Software):
-   - Operating range: **900°**.
-   - **Turn off the centering spring** ("Use Special Centering Spring" /
-     centering spring in FFB games). It fights the autopilot.
-   - Force-feedback strength: 100%.
-2. **BeamNG → Options → Controls:**
-   - Use the default G29 profile, with force feedback **on** for steering.
-   - Leave the steering lock at 1:1. If you change it, the mod learns the
-     wheel-to-car ratio from your own driving before you engage.
-   - Keep the pedals on separate axes (the G29 default). A brake-pedal
-     takeover needs a real brake axis.
-3. **Bind a wheel button to FSD** (optional): Options → Controls → Bindings →
-   **Tesla UI Bridge** → *Toggle FSD* (and *Toggle Autosteer*). One press
-   engages, the next disengages, like the stalk.
-4. **Strength:** the test page's *Steering wheel* card has an on/off toggle
-   and a strength slider (default 60% of the wheel's max force). The force
-   ramps up over 0.8 s when you engage.
-5. **Taking over:** turn the wheel against the autopilot (hold it more than
-   about 45° away from where it's pulling for 0.35 s). It disengages with
-   `steer: wheel grabbed` and hands the motor back. Resting your hands on it
-   while it turns is fine.
-6. **First turn of a session:** if the motor pushes the wrong way (some
-   drivers or settings invert it), the mod notices within about 0.1 s,
-   flips, and remembers the direction. The test page shows `calibrated`
-   once it's proven.
+1. **G HUB:** operating range **900°**, **centering spring off**, FFB 100%.
+2. **BeamNG → Options → Controls:** default G29 profile, force feedback
+   **on** for steering, steering lock 1:1 (otherwise the mod learns the ratio
+   from your driving), pedals on separate axes.
+3. **Strength:** the test page's *Steering wheel* card has on/off and a
+   strength slider (default 60%). The force ramps in over 0.8 s.
+4. **Taking over:** turn it against FSD (≈45° away from where it's pulling,
+   for 0.35 s). It disengages with `steer` (detail `wheel grabbed`). Hands
+   resting on it are fine, and small pushes count as "hands on" for the nag.
+5. **Wrong direction?** If the motor pushes the wrong way, the mod notices in
+   about 0.1 s, flips and remembers. The card shows `calibrated` once proven.
 
-How it works: the game's `hydros.lua` owns the wheel motor and keeps the
-device id in a local called `FFBID`. The mod finds it with
-`debug.getupvalue`, sets it to −1 while engaged (so the game stops sending
-forces), and drives the motor itself with `obj:sendForceFeedback(id,
-force)`. That's a position spring with damping, `force = Kp·(target − wheel)
-− Kd·speed`, capped at 60% of the device max. On disengage it sends 0 and
-gives the id back. This matches the game's `hydros.lua` as of the last
-public copy (2020). If a newer version renamed things, the wheel card says
-`unavailable` with the reason, the diagnostics list `hydros`' contents, and
-the autopilot still drives (the wheel just doesn't move).
+**How the mod gets the motor even though the game owns it** (researched from
+BeamMP and the game's `hydros.lua`): two routes, tried in order.
+
+1. **Upvalue:** `hydros` keeps the device id in a local `FFBID`. The mod finds
+   it with a recursive `debug.getupvalue` scan, sets it to −1 while engaged (the
+   game stops sending forces), and drives the motor itself with
+   `obj:sendForceFeedback(id, force)`: a damped position spring. On disengage
+   it sends 0 and puts the id back.
+2. **Config (BeamMP's way):** keep the FFB config `hydros` was given (hooking
+   `hydros.onFFBConfigChanged`, or finding the stored config table), then
+   `hydros.enableFFB = false` + re-apply the config to make the game let go, and
+   the reverse on disengage.
+
+The card shows which one it used (`method`). If neither works, it says
+`unavailable` with the reason, FSD still drives, and you can use the helper:
+
+### Backup wheel helper (if the wheel doesn't move)
+
+`bridge/wheel_helper.py` turns the wheel from outside the game with SDL haptics
+(DirectInput underneath, same as the game).
+
+1. Once: `pip install pysdl2 pysdl2-dll websocket-client`.
+2. In BeamNG, turn **force feedback off** for the wheel (two programs fighting
+   over the motor feels awful).
+3. With the relay running: double-click `bridge/wheel_helper.bat` (or
+   `npm run helper`). `--list` shows wheels, `--invert` if it turns the wrong
+   way, `--strength 0.8` for a firmer wheel.
+
+It tells the car the helper owns the wheel (card: `helper`), then holds a
+spring centred on FSD's steering angle, with a light speed-based centring
+when FSD is off. Takeover works against FSD's angle (≈90° off for 0.3 s).
+Ctrl+C / closing the window hands the wheel back to the mod.
 
 ### Wiring the app
 
-`bridge/app/` is the app-side connector. Copy it and `bridge/protocol.ts`
-into the app. They need only React + zustand, which the app already has.
+`bridge/app/` is the app-side connector. Copy it and `bridge/protocol.ts` into
+the app (it needs only React + zustand).
 
 ```ts
-import { connectBeamNG, disconnectBeamNG, syncBeamNGToApp, useBeamNG, bridge, MPS_TO_MPH } from './bridge/app'
+import { connectBeamNG, disconnectBeamNG, syncBeamNGToApp, startVoiceNotes, useBeamNG, bridge } from './bridge/app'
 import { useVehicleStore } from '@/store'
 import { useSimStore } from '@/sim/drive'
 import { useNavStore } from '@/nav/store'
 
-// "Vehicle source: BeamNG" turned on (stop useDriveSim first so it doesn't fight):
-connectBeamNG('ws://192.168.1.20:8765/?token=ab12cd34') // or connectBeamNG() to use ?bridge= / the relay host / the saved URL
+// "Vehicle source: BeamNG" on (stop useDriveSim first so it doesn't fight):
+connectBeamNG('ws://192.168.1.20:8765/?token=ab12cd34') // or connectBeamNG() for ?bridge= / relay host / saved URL
 const stopSync = syncBeamNGToApp({ vehicle: useVehicleStore, sim: useSimStore, nav: useNavStore })
-// turned off:
-stopSync(); disconnectBeamNG()
+const stopNotes = startVoiceNotes()  // the wheel's voice-note button records on the iPad
+// cabin camera → FSD attention, 2–5×/s while driving:
+setInterval(() => bridge()?.attention(onPhone ? 'phone' : eyesOnRoad ? 'ok' : 'eyesOff'), 250)
+// off:
+stopSync(); stopNotes(); disconnectBeamNG()
 ```
 
-**What `syncBeamNGToApp` does:**
-- **Game → app, 20 Hz:**
-  - vehicle store: gear, `speedMph`, doors FL/FR/RL/RR, frunk/trunk, `chargePercent`, headlights/fog
-  - sim store: `heading`, `signal`, `control`, `lead`, `fsd`, `autopilot`
-  - nav store: `position [lat, lon]`, `heading`, `route.coords`
-- **App → game:** when the existing UI changes gear, doors, frunk, trunk,
-  headlights or fog in the vehicle store, the command goes to the game, and
-  the game's state then confirms it.
-- **Field names** follow the handoff. If the app names something
-  differently, edit the three small functions at the top of `appSync.ts`.
-  Fields a store doesn't have are skipped.
+**What `syncBeamNGToApp` does**
+- **Game → app, 20 Hz:** vehicle store (gear, `speedMph`, doors, frunk/trunk,
+  `chargePercent`, headlights/fog), sim store (`heading`, `signal`,
+  `control`, `lead`, the FSD switch, profile, `autopilot`), nav store
+  (`position [lat, lon]`, `heading`, `route.coords`).
+- **App → game:** the existing UI already controls the game:
+  - **gear shifter** (vehicle `gear`), doors, frunk, trunk, headlights, fog
+  - **FSD switch** in the sim store (`fsd`, or `fsdEngaged` / `fsdOn` /
+    `fsdActive` / `autopilotEngaged`, whichever is a boolean) → engage/disengage,
+    with the store's **profile** (`profile` / `fsdProfile` / `speedProfile`;
+    'Mad Max' or 'madmax' both work)
+  - **destination** and **stops** in the nav store (`[lat, lon]`,
+    `{lat, lon}` or `{coords: [lon, lat]}`) → route in the game, with the sim
+    store's `arrivalPark` as the arrival choice; clearing it cancels the route
+- Field names follow the handoff; if the app differs, edit the MAP section at
+  the top of `appSync.ts`. Fields a store doesn't have are skipped.
 
-**Other controls** go through the client, for example
-`bridge()?.autopilot('fsd', 'standard')`:
+**Other controls** (`bridge()?.…`):
 
 | UI control | Client call |
 |---|---|
-| FSD button | `autopilot('fsd', profile)` |
-| Autopilot off | `autopilot('off')` |
-| Turn signal stalk | `setSignal('left')` |
-| Horn | `horn(true)` / `horn(false)` |
-| Accelerator strip | `holdThrottle(v)` while held, `releaseThrottle()` on release. With FSD on it speeds up and stays engaged. |
-| Nav destination | `navigate(lngLatToWorld(lon, lat, originFor(level), map))` |
-| Cancel route | `cancelRoute()` |
+| FSD / Autosteer / TACC / off | `autopilot('fsd' \| 'autosteer' \| 'tacc' \| 'off', profile?)` |
+| Profile | `setProfile('hurry')` |
+| Turn signal stalk (lane change while FSD is on) | `setSignal('left')` |
+| Accelerator strip | `holdThrottle(v)` while held, `releaseThrottle()` on release |
+| Nav destination | `navigate(lngLatToWorld(lon, lat, originFor(level), map), { stops, arrival })` |
+| Cabin camera | `attention('ok' \| 'phone' \| 'eyesOff')` |
+| "Hands on" button | `nudge()` |
+| Summon / Autopark | `summon('forward' \| 'reverse' \| null)`, `autopark()` |
+| FSD settings | `settings({ quirks, safety, speedOffsetMph, followDistance, laneChanges, nags })` |
+| Voice note | `voiceNote(blob)` (done for you by `startVoiceNotes`; `useVoiceNote` has `recording` for a mic badge) |
 | Wheel spring | `wheel({ strength: 0.6 })` |
 
-**For the map** (`geo.ts`):
-- `roadsGeoJSON(map)`, `routeGeoJSON(route)` and `trafficGeoJSON(cars)` give
-  MapLibre sources.
-- `worldToLatLon`, `worldToLngLat` and `lngLatToWorld` convert coordinates.
-  Each level is pinned near a real place (West Coast USA sits by the Bay
-  Area), so the map tiles look plausible.
-- `worldToDriveView` converts to the driving view's `(X = −east, Z = north)`
-  meters.
+**Map helpers** (`geo.ts`): `roadsGeoJSON`, `routeGeoJSON`, `trafficGeoJSON`,
+`worldToLatLon` / `worldToLngLat` / `lngLatToWorld`, `worldToDriveView`. The
+route message has `parkingPin` (the spot FSD picked) for the **P** pin.
 
-**Reading state in components:**
-`useBeamNG((s) => s.state?.autopilot.nextTurn)` and similar. Pick small
-slices, because the store updates at 20 Hz.
-
-`npm run e2e` also runs `bridge/app/selftest.ts`, which hooks this connector
-to stand-in copies of the app's stores and drives the fake game through it
-(19 checks).
+**Events for the UI** (`useBeamNG(s => s.events)`, newest first; `detail` is a
+short string, `data` has the fields): `engaged`, `disengage` (detail = reason),
+`reengaged`, `arrived`, `laneChange`, `creeping`, `nudge`, `goAround`,
+`emergencyVehicle`, `schoolBus`, `maneuver`, `summon`, `phantomBrake`,
+`yellowHesitation`, `fcw`, `aeb`, `collisionEvasion`, `laneDeparture`,
+`blindSpotWarning`, `obstacleAwareAccel`, `nag`, `strike`, `lockout`,
+`voiceNote`, `voiceNoteSaved`, `settings`, `vehicleChanged`, `levelLoaded`,
+`error`.
 
 ### Connecting the real app (for the UI session)
 
-- WebSocket: `ws://<pc-ip>:8765/?token=<token>`. Message types are in
-  `bridge/protocol.ts`.
-- **Mixed content:** the live app is served over `https://…workers.dev`, and
-  Safari blocks `ws://` from an https page. The fix is to have the relay
-  serve the built app over plain http on the LAN:
-  `npm run bridge -- --app ../dist`, then open
-  `http://<pc-ip>:8765/app/?token=…` on the iPad. Service workers won't
-  register over http, but the app still runs.
-- `--no-auth` turns the token check off. Connections from the PC itself
-  never need the token.
+- WebSocket `ws://<pc-ip>:8765/?token=<token>`; types in `bridge/protocol.ts`.
+- **Mixed content:** Safari blocks `ws://` from the https live app. Serve the
+  built app from the relay: `npm run bridge -- --app ../dist`, then open
+  `http://<pc-ip>:8765/app/?token=…`. The iPad mic (voice notes) and camera
+  need a secure page on Safari, so for those use the PC's `localhost` page or
+  an https tunnel to the relay.
+- `--no-auth` turns the token off; the PC itself never needs it.
+
+## FSD features
+
+Modes: **FSD** (everything below), **Autosteer** (lane keeping + TACC),
+**TACC** (cruise only, you steer). Profiles: Sloth, Chill, Standard, Hurry,
+Mad Max (speed offset −2/0/+2/+5/+8 mph, gap, how eager it is to pass).
+
+**Driving**
+- **Lanes** from the road width (up to 4 per direction, 5 on one-ways);
+  drives in the right lane, keeps lanes through turns.
+- **Lane changes:** for the route (well before a turn), merges, passing slow
+  cars (by profile), moving over for stopped emergency vehicles, Mad Max
+  keep-left, returning right. Signals 1.2 s, checks the gap and the blind
+  spot, then moves. The signal stalk asks for one.
+- **Stop signs:** stops at the line, waits 2 s, **creeps for visibility**,
+  peeks for cross traffic, goes. Sometimes a little go-stop-go.
+- **Traffic lights:** stops for red; yellow: goes or stops by distance, with
+  the occasional hesitation.
+- **Unprotected lefts:** waits for a gap in oncoming traffic, keeps checking
+  until it commits.
+- **Nudging** around parked cars / bikes in the lane edge, and **going
+  around** a stopped car when the other lane is clear.
+- **Emergency vehicles** (lightbar on, or police/ambulance/fire cars):
+  pulls over and stops for one coming up behind, yields at junctions, moves
+  over for stopped ones.
+- **School bus:** slower and more careful near a stopped one.
+- **Speed limits** from the map (class defaults otherwise) + profile offset.
+- **Accelerator** speeds it up and never disengages it; **brake** or
+  **steering** takes over.
+- **Accidental takeover:** a small wheel bump (under ≈110°) above 22.5 mph that
+  settles back to FSD's line, with no pedals, turns FSD back on after ~1 s
+  (`reengaged` event), at most once every 10 s.
+
+**Parking and low speed**
+- **Better spot choice + P pin:** picks a free parking spot near the
+  destination and shows it; **backs in** to perpendicular spots.
+- **Remembers your arrival choice** per destination.
+- **Start from Park:** backs out of a spot when the road is behind you;
+  **3-point turn** when the route goes the other way on a narrow road.
+- **Dumb Summon:** ~12 m forward/back at walking pace, stops for obstacles.
+- **Autopark** into the nearest free spot beside you.
+- Maneuvers stop and hand back if they drift over 3 m off their path; the
+  accelerator cancels them.
+
+**Active safety (on even when you drive)**
+- **FCW** (early 2.8 s / medium 2.2 s / late 1.6 s / off), **AEB**.
+- **Automatic Collision Evasion:** if a crash is coming and braking alone
+  won't do it, it takes over and **steers** into free space (checks the blind
+  spot), then brakes.
+- **Lane departure avoidance** (40–90 mph, no signal), stronger toward a car
+  in the blind spot.
+- **Blind spot** warnings; **obstacle-aware acceleration** (flooring it at a
+  wall/car from a stop is limited).
+
+**Supervision** (the cabin camera from the app + wheel nudges)
+- Camera: looking away or on your phone for 2.5–5 s (by profile; phone is
+  30% quicker) → **1** "Pay attention to the road" → **2** beeping →
+  **3** "Take over immediately", 5 s each. No camera: a wheel nudge every
+  20–45 s.
+- Ignored at 3 → slows to a stop with hazards, FSD off, **strike**. 5 strikes
+  → locked out for the drive (`resetStrikes` for testing).
+
+**Quirks** (each can be turned off in settings): phantom braking (rare; more
+likely under bridges), yellow-light hesitation, a little low-speed steering
+wiggle after pulling away, slowing down in rain and fog.
+
+**Voice notes:** the wheel button opens the iPad mic; the relay saves the
+audio plus what the car was doing (position, speed, FSD state, last 30
+events) in `bridge/feedback/`. Browse them at `http://localhost:8765/feedback`.
 
 ## Testing in the game (the acceptance list)
 
@@ -180,149 +269,110 @@ Try **a stock sedan, a pickup, a mod EV and a manual-transmission car**.
 
 | Check | How |
 |---|---|
-| State at 20 Hz | The test page header shows `20 Hz`, and the relay prints the rate every 5 s. |
-| Every command | Use the P/R/N/D, lights, signal, horn and door buttons, plus the accelerator strip (hold it). |
-| Multi-turn route | Click a destination a few blocks away on the map, then press **FSD**. It should stay in the right lane, slow for curves and turns, signal about 60 m before turns, stop at stop signs (2 s) and red lights, follow traffic, then pull over or park and shift to P. |
-| Wheel turns in the car | Use the cockpit camera while FSD drives. The test page wheel icon shows the same angle. |
-| Takeover | While engaged, steer or brake. It disengages within about 0.15 s and the page logs `disengage: steer/brake`. Pressing the gas instead speeds it up and it stays on. |
-| Switching vehicles, reloading the level | Switch cars (autopilot turns off, the new car reports within about 2 s). Reload the level (the map is re-exported, and the log shows `map …`). |
-| FFB wheel (G29) | Engage FSD: the physical wheel should turn with the car through every turn (the wheel card shows wheel vs target). Turn it hard against the autopilot: it disengages with `steer: wheel grabbed`. |
-| Wheel button | Bind *Toggle FSD* to a G29 button, then press it once to engage and again to disengage. |
+| State at 20 Hz | Header shows `20 Hz`. |
+| Every command | P/R/N/D, lights, signals, horn, doors, accelerator strip. |
+| Multi-turn route | Click a destination, press **FSD**: right lane, signals + lane changes before turns, creeps at stop signs, stops for reds, follows traffic, parks (P pin) or pulls over, shifts to P. |
+| App controls | The app's gear shifter, FSD switch, profile and map destination drive the game. |
+| Wheel | Cockpit camera: the in-car wheel turns. G29: the physical wheel follows (card: wheel vs target, `method`). Grab it → `disengage: steer`. |
+| Accidental bump | Above 25 mph, knock the wheel briefly and let go: `disengage` then `reengaged`. |
+| Takeovers | Brake / keyboard / gamepad trigger → disengage. Gas → faster, stays on. |
+| Attention | Test page *camera says: on phone* → nag 1→2→3 → stops with hazards, strike. |
+| Safety | Drive at a stopped car yourself with FSD off: FCW, then AEB or an evasive swerve. Drift over a lane line at 45+ mph: it steers back. |
+| Parking | Start in a parking spot facing it, destination behind you: it backs out. Try **Summon** and **Autopark**. |
+| Emergency vehicle | Spawn a police car with lights on behind you (traffic): it pulls over. |
+| Voice note | Press the bound button, talk, press again → `voiceNoteSaved`, file in `bridge/feedback/`. |
+| Vehicles / level | Switch cars (FSD off, new car reports in ~2 s); reload the level (map re-sent). |
 
-When something's off, send me: the diagnostics output, what the car did,
-and the BeamNG console lines that start with `teslaBridge` or
-`teslaAutopilot`.
+When something's off, send: the diagnostics output, what the car did, and the
+console lines starting with `teslaBridge` / `teslaAutopilot`.
 
-## How the autopilot works
+## How it works
 
-- **Planning (GE, 10 Hz).** A* on the level's road graph (`map.getMap()`).
-  It respects one-way roads, avoids undrivable links and U-turns, and routes
-  leg by leg through `stops`. The centerline gets arcs at corners, is offset
-  into the right lane (`min(radius/2, 1.8 m)`, centered on one-way roads, and
-  blended over about 24 m where the road type changes), then resampled every
-  2 m. Speed caps per point come from:
-  - the posted limit or a class default (25/35/45/65 mph by road width) plus
-    the profile offset
-  - `sqrt(a_lat / curvature)`
-  - a 2.5 m/s² braking pass backwards along the path
-  - 3 m/s over the last 40 m before arrival
-
-  With no destination, FSD and autosteer follow the straightest road ahead,
-  and the path is re-extended as the car drives.
-- **Every 0.1 s the GE sends the car a 300 m window.** The window has the
-  lane points, the speed caps, the next stop point (a stop sign not yet
-  served, a red light, or a yellow it can stop for), the car ahead in our
-  lane (or a crossing or oncoming car, treated as stopped), and the turn
-  signal to show.
-- **Driving (vehicle, every frame).**
-  - *Steering:* pure pursuit, look-ahead `clamp(2 + 0.7·v, 4, 30)` m. This is
-    shorter than the handoff's `4 + 0.9·v`, because the simulator cut
-    corners by about 2 m with the longer one. Plus a small lane-centering
-    integral, rate-limited to 1.5 full locks per second (3 below 6 m/s).
-  - *Self-calibrating:* it measures how much the car actually turns per
-    unit of steering input, per speed band. If the car turns the wrong way
-    for 0.4 s, it flips the steering sign. So it needs no per-car wheelbase
-    or steering-angle data.
-  - *Speed:* a PI loop to throttle or brake, never both. Throttle is capped
-    at 0.6 (0.9 on Mad Max) and brake at 0.8. It follows lead cars with a
-    time gap (3 s Sloth … 1.2 s Mad Max, 6 m minimum) and brakes to a stop
-    2 m before the stop line.
-  - *Inputs:* everything goes through `input.event(..., FILTER_DIRECT, …,
-    'teslaAP')`, the same path the player's controller uses, so the steering
-    wheel animates. While FSD is engaged, the player's `local` source is
-    turned off for steering, throttle, brake and parking brake. In autosteer,
-    only steering is turned off.
-  - *Gearbox:* automatics in *arcade* mode switch to *realistic* while
-    engaged, because arcade mode shifts into reverse when you hold the brake
-    at a stop. The same trick BeamMP uses. The setting is restored on
-    disengage.
-- **Takeover.** `input.event` is wrapped to record the player's own events
-  (source `local`) separately from ours. Only events after engaging count.
-  - Steering moves more than 0.15 from where it was when you engaged, for
-    150 ms. For a wheel, that means you turned it.
-  - Brake over 0.1, for 150 ms.
-  - The app's accelerator strip below −0.1 counts as braking.
-  - The **accelerator doesn't disengage** (like a Tesla). Your pedal or the
-    app's strip makes the car go faster while held and never brakes (the
-    state shows `accelOverride`). Let go and it eases back to the set
-    speed.
-- **Arrival.**
-  - *Parking Lot*, *Parking Garage* or unset, with a parking spot within
-    60 m: it curves into the spot.
-  - *Street*, *Curbside* (or no spot nearby): it pulls toward the right edge
-    over the last 30 m with the right signal on.
-  - *Driveway*: it stops on the point.
-
-  Then it shifts to P, disengages with `arrived`, and sends an `arrived`
-  event.
+- **Planner (GE, 10 Hz, `planner.lua`).** A* on the level's road graph,
+  leg by leg through stops. Lane-shifted path with arcs at corners, speed caps
+  (limit + offset, curvature, braking pass, stops). Each tick it looks at the
+  traffic around the path (150 m behind to 300 m ahead) and decides lane
+  changes, stops, creeping, gaps, nudges, emergency vehicles, quirks and
+  supervision, then sends the car a **plan window**: points, speed caps, stop
+  point, lead car, signal, direction (forward/reverse), hazards.
+- **Safety (GE, 20 Hz, `safety.lua`).** Predicts our path (constant turn
+  rate) against every car, gets time-to-collision, and raises FCW / AEB /
+  evasion / lane departure / blind spot / throttle cap. Sent to the car as
+  `assist` when active; evasion hands a sideways "bump" to the planner.
+- **Driver (vehicle, every frame, `control.lua`).** Pure pursuit steering
+  (look-ahead `clamp(2 + 0.7·v, 4, 30)` m, shorter in reverse), speed PI,
+  self-calibrating steering sign and gain (only from steering it applied).
+- **Inputs.** Everything goes through `input.event(…, FILTER_DIRECT, …,
+  'teslaAP')`, the player's own path, so the wheel animates. The player's
+  `local` source is switched off for what FSD controls. `input.event`,
+  `kbdSteer`, `padAccelerateBrake` and `toggleEvent` are wrapped to see the
+  player's own inputs (keyboard and gamepad skip `input.event`).
+- **Takeover:** steering > 0.15 from where it was for 150 ms (without FFB),
+  a wheel grip against the spring (with FFB), brake > 0.1 for 150 ms, or the
+  app's strip below −0.1.
+- **Gearbox:** arcade automatics switch to realistic while engaged (arcade
+  reverses when you hold the brake at a stop), restored after.
 
 ## Known gaps / next steps
 
-1. **Force-feedback wheel:** built against the last public copy of
-   `hydros.lua` (2020), then tested with a simulated G29 in the harness:
-   - normal
-   - a backwards motor
-   - backwards car steering
-   - no wheel at all
-
-   The first real-game run confirms the rest. If the wheel card says
-   `unavailable`, send the diagnostics (the `ffb` block).
-2. **Traffic lights:** the probe tries `core_trafficSignals`
-   `getSignalsDict/getSignals/getValues` and reads states by name
-   (red/yellow/green). If the page shows `signals: 0` or lights never go
-   red, send me the diagnostics.
-3. **Stop signs:** these come from the signal system and from level props
-   whose shape name has `stop_sign` in it. At 4-way stops it can stop a
-   second time for the cross street's sign; later signs within 25 m after a
-   stop are ignored to limit that.
-4. **Cross traffic at junctions** is only handled when a crossing car is in
-   our lane. There are no lane changes.
-5. **Parking spots:** read from `gameplay_parking` or `BeamNGParking`
-   objects. The spot's facing direction is best-effort.
-6. **Minimap image:** read from the level's `info.json`. Its placement on
-   the test map is a guess, so toggle it off if it doesn't line up.
-7. **Manual cars:** P = neutral + parking brake. They drive in arcade
-   gearbox mode (auto-clutch), and stops hold with the brake plus the
-   parking brake.
+1. **FFB wheel:** both routes are tested only against simulated `hydros`. If
+   the card says `unavailable`, send the diagnostics (`ffb` block) and use the
+   helper meanwhile.
+2. **Traffic lights / stop signs:** from `core_trafficSignals` and stop-sign
+   props; if lights never go red, send diagnostics.
+3. **Emergency vehicles:** detected by the `lightbar` electric (our beacon
+   extension in nearby cars) or the car's name. Mod police cars with a
+   different electric name only count by name.
+4. **Weather:** read from the rain object and `core_environment` fog; if it
+   never slows down in rain, send diagnostics.
+5. **Raycasts** (walls for obstacle-aware acceleration, bridges for phantom
+   braking) use `castRayStatic` if the game has it; otherwise those two only
+   use cars.
+6. **Parking spots** come from the level's parking objects; facing direction
+   is best effort.
+7. **Manual cars:** P = neutral + parking brake; they drive in arcade
+   (auto-clutch).
+8. **iPad mic/camera** need a secure page in Safari (see *Connecting the real
+   app*).
 
 ## Protocol additions vs. the handoff
 
-All of these are in `bridge/protocol.ts`:
+All in `bridge/protocol.ts`:
+- modes `tacc`; disengage reasons `app`, `attention`, `summon`, `switch`
+- `state.parkingbrake`, `state.wheel`, `state.safety`, `autopilot.accelOverride`,
+  `activity`, `setSpeed`, `lane`, `creeping`, `waitingFor`, `goAround`,
+  `emergencyVehicle`, `schoolBus`, `phantomBrake`, `weather`, `maneuver`, `nag`
+- traffic `emergency` / `schoolBus`; `route` (+ `parkingPin`), `minimap`,
+  `bridge`, `hello`, `debug`, `pong`; events with `data`
+- commands `wheel` (spring, strength, helper), `settings`, `attention`,
+  `nudge`, `summon`, `autopark`, `resetStrikes`, `voiceNote`,
+  `requestMinimap`, `debug`, `ping`
 
-- `state.parkingbrake`, `state.wheel` (force-feedback wheel status),
-  `autopilot.accelOverride`
-- command `wheel` (spring on/off, strength)
-- `route` (the planned path, for the nav map)
-- `minimap` (image URL on the relay)
-- `bridge` (relay ⇄ game link status)
-- `hello`, `debug`, `pong`
-- commands `requestMinimap`, `debug`, `ping`
-- disengage reason `app`
-- event kind `error`
-
-`steeringWheelDeg` is positive when turned right.
+`steeringWheelDeg` is positive when turned right. `PROTOCOL = 2`.
 
 ## Files
 
 ```
-beamng/mod/                         the mod (npm run mod zips it)
+beamng/mod/                                   the mod (npm run mod zips it)
   scripts/tesla_bridge/modScript.lua
-  lua/ge/extensions/teslaBridge.lua      TCP server, map/traffic/signals, planner, commands
-  lua/vehicle/extensions/teslaAutopilot.lua  state, commands, input driving, takeover
-  lua/common/teslaBridge/pathing.lua     A*, lane path geometry, speed profile (pure Lua)
-  lua/common/teslaBridge/control.lua     the driver: pure pursuit + speed PI + self-calibration
-  lua/common/teslaBridge/wheel.lua       force-feedback wheel spring, grip detection, motor-direction learning
-  lua/ge/extensions/core/input/actions/teslaBridge.json   bindable "Toggle FSD / Autosteer" controls
-beamng/test/test_driving.lua        unit + closed-loop tests      (npm test, needs luajit)
-beamng/test/test_wheel.lua          wheel spring vs a G29 model   (npm test)
-beamng/test/harness.lua             fake BeamNG                   (npm run harness)
-bridge/relay.ts                     relay                         (npm run bridge)
-bridge/protocol.ts                  message types for the app
-bridge/test.html                    test page served at /
-bridge/e2e.ts                       harness + relay + fake app    (npm run e2e)
-bridge/buildMod.ts                  zips the mod
+  lua/ge/extensions/teslaBridge.lua           TCP server, map/traffic/signals/weather, runs planner + safety, commands
+  lua/vehicle/extensions/teslaAutopilot.lua   state, commands, input driving, takeover, FFB wheel, assists
+  lua/vehicle/extensions/teslaBeacon.lua      nearby cars report emergency lights
+  lua/common/teslaBridge/pathing.lua          A*, lanes, path geometry, speed profile
+  lua/common/teslaBridge/planner.lua          FSD brain: lane changes, stops, creep, lefts, EVs, maneuvers, quirks
+  lua/common/teslaBridge/safety.lua           FCW, AEB, evasion, LDA, blind spot, obstacle-aware
+  lua/common/teslaBridge/nag.lua              attention, nags, strikes
+  lua/common/teslaBridge/maneuver.lua         back out, 3-point turn, back-in parking
+  lua/common/teslaBridge/control.lua          driver: pure pursuit + speed PI + self-calibration
+  lua/common/teslaBridge/wheel.lua            FFB spring, grip detection, motor direction
+  lua/ge/extensions/core/input/actions/teslaBridge.json   bindable wheel buttons
+beamng/test/                                  test_*.lua (npm test), world.lua (sim), harness.lua (fake BeamNG),
+                                              test_wheel_helper.py (npm run test:helper)
+bridge/relay.ts          relay (npm run bridge)          bridge/protocol.ts    message types
+bridge/test.html         test page at /                  bridge/e2e.ts         npm run e2e
+bridge/app/              the app connector               bridge/wheel_helper.py/.bat  backup wheel helper
+bridge/buildMod.ts       zips the mod                    bridge/feedback/      voice notes (git-ignored)
 ```
 
-The harness and e2e test need `luajit`, `lua-socket` and `lua-dkjson` (on
-Debian/Ubuntu: `apt install luajit lua-socket lua-dkjson`). They're for
-development; you don't need them to play.
+The harness and e2e need `luajit`, `lua-socket`, `lua-dkjson` (Debian/Ubuntu:
+`apt install luajit lua-socket lua-dkjson`). Development only.
