@@ -5,7 +5,7 @@ graphics; BeamNG runs on Low at ~30 fps). Nothing here needs a GPU: the mod is C
 Lua, the relay is a small Node program. **Don't change BeamNG's graphics settings, and
 don't set anything that changes what's on the laptop screen.**
 
-Talk to Quentin casually (he's a teen; he likes slang, humor, and being asked questions).
+Talk to Quentin casually (a teen who likes slang, humor, and being asked questions).
 Ask before anything you're unsure about.
 
 ## What this is
@@ -53,7 +53,7 @@ puts a **Tesla Bridge** shortcut on the desktop, and runs the setup check.
 Check the result at any time with `npm run doctor` (read-only). ❌ lines must be fixed;
 ⚠️ lines are fine until BeamNG and the relay are running.
 
-## Setup that needs Quentin (walk him through it)
+## Setup that needs Quentin (walk them through it)
 
 1. **Wi-Fi set to Private** (Settings → Network → Wi-Fi → the network → *Private*). Without
    it the iPad can't reach the laptop.
@@ -70,7 +70,7 @@ Check the result at any time with `npm run doctor` (read-only). ❌ lines must b
    - the test page
    
    If Windows asks about the firewall, allow **Private**.
-5. **Map the wheel buttons:** test page → *Wheel buttons*. For each action he wants
+5. **Map the wheel buttons:** test page → *Wheel buttons*. For each action Quentin wants
    (Start/stop FSD, Voice note, lane changes, faster/slower, ...), click **Set**, then press
    the button on the wheel. Saved automatically; the ▶ button tries an action.
    - Don't use buttons BeamNG already uses for something else, or both will happen. Either
