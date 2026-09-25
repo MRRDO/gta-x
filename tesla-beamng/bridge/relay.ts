@@ -6,10 +6,10 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { connect, type Socket } from 'node:net'
-import { networkInterfaces } from 'node:os'
+import { homedir, networkInterfaces } from 'node:os'
 import { readFileSync, existsSync, writeFileSync, statSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, dirname, extname, normalize, resolve } from 'node:path'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -31,6 +31,8 @@ const PORT = Number(arg('port', process.env.BRIDGE_PORT ?? '8765'))
 const GAME_HOST = arg('game-host', '127.0.0.1')!
 const GAME_PORT = Number(arg('game-port', '8766'))
 const APP_DIR = arg('app')
+// --lan-token: also ask for the token on the home Wi-Fi (off by default: the tunnel always needs it)
+const LAN_TOKEN = arg('lan-token') === 'true'
 const NO_AUTH = arg('no-auth') === 'true'
 const QUIET = arg('quiet') === 'true'
 // --tunnel: a Cloudflare quick tunnel gives the relay an https address, so the live (https)
@@ -98,9 +100,13 @@ let camMisses = 0
 let camInlineAsked = false
 const userFolders = () => [arg('beamng-user'), ...beamngModsDirs().map((d) => dirname(d))].filter(Boolean) as string[]
 
-function pngComplete(b: Buffer) {
-  return b.length > 24 && b.readUInt32BE(0) === 0x89504e47 && b.subarray(b.length - 12).includes('IEND')
+/** PNG or JPEG, fully written (the game may still be writing it). */
+function imageKind(b: Buffer): 'image/png' | 'image/jpeg' | null {
+  if (b.length > 24 && b.readUInt32BE(0) === 0x89504e47 && b.subarray(b.length - 12).includes('IEND')) return 'image/png'
+  if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8 && b[b.length - 2] === 0xff && b[b.length - 1] === 0xd9) return 'image/jpeg'
+  return null
 }
+let camFormatAsked = false
 
 async function onCamFrame(msg: any) {
   if (msg.off) {
@@ -113,22 +119,39 @@ async function onCamFrame(msg: any) {
   else {
     const paths = [msg.path, ...userFolders().map((u) => join(u, String(msg.rel ?? '')))].filter(Boolean) as string[]
     for (const p of paths) {
-      try { data = await readFile(p); break } catch { /* next */ }
+      try {
+        // a leftover frame from an earlier session doesn't count as live
+        if (Date.now() - (await stat(p)).mtimeMs > 3000) continue
+        data = await readFile(p)
+        break
+      } catch { /* next */ }
     }
   }
-  if (!data || !pngComplete(data)) {
-    // not there (or still being written): after a few misses, have the game send the bytes
-    if (!msg.data && ++camMisses >= 3 && !camInlineAsked) {
+  const mime = data && imageKind(data)
+  if (!data || !mime) {
+    // not there (or still being written): after a few misses, have the game send the bytes;
+    // if that doesn't work either, maybe this game can't write JPEG: ask for PNG
+    camMisses++
+    if (camMisses >= 3 && !camInlineAsked) {
       camInlineAsked = true
       log('backup camera: frames not readable from disk, asking the game to send them inline')
       sendGame({ t: 'camera', inline: true })
+    } else if (camMisses >= 8 && !camFormatAsked) {
+      camFormatAsked = true
+      log('backup camera: still no frames, asking the game for PNG')
+      sendGame({ t: 'camera', format: 'png' })
     }
     return
   }
   camMisses = 0
-  lastCam = { data, mime: 'image/png', seq: msg.seq ?? 0 }
+  lastCam = { data, mime, seq: msg.seq ?? 0 }
+  if (msg.width && (msg.width !== camInfo.width || msg.height !== camInfo.height || (msg.fps && msg.fps !== camInfo.fps))) {
+    camInfo = { width: msg.width, height: msg.height, fps: msg.fps ?? camInfo.fps }
+    broadcast(camerasMsg())
+  }
+  for (const c of camClients) if (c.readyState === WebSocket.OPEN && c.bufferedAmount < 1_000_000) c.send(data, { binary: true })
   broadcast({
-    t: 'camera', view: 'rear', seq: msg.seq, mime: 'image/png', data: data.toString('base64'),
+    t: 'camera', view: 'rear', seq: msg.seq, mime, data: data.toString('base64'),
     width: msg.width, height: msg.height, mirrored: msg.mirrored !== false,
   } satisfies CameraFrame, true)
 }
@@ -389,8 +412,23 @@ function tokenOk(given: string | null) {
   const a = Buffer.from(given), b = Buffer.from(TOKEN)
   return a.length === b.length && timingSafeEqual(a, b)
 }
+function proxied(req: IncomingMessage) {
+  return PROXY_HEADERS.some((h) => req.headers[h] != null)
+}
+/** A device on the home network talking to us directly (not through the tunnel). */
+function onLan(req: IncomingMessage) {
+  if (proxied(req)) return false
+  const a = (req.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
+  return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(a) || /^(fc|fd|fe80)/i.test(a)
+}
+function cookieToken(req: IncomingMessage) {
+  const m = /(?:^|;\s*)tb_token=([0-9a-f]+)/.exec(String(req.headers.cookie ?? ''))
+  return m ? m[1] : null
+}
 function authorized(req: IncomingMessage) {
   if (NO_AUTH || isLoopback(req)) return true
+  if (!LAN_TOKEN && onLan(req)) return true
+  if (tokenOk(cookieToken(req))) return true
   const who = clientAddress(req)
   const now = Date.now()
   const f = authFails.get(who)
@@ -416,10 +454,25 @@ function serveFile(res: ServerResponse, file: string) {
   res.end(readFileSync(file))
 }
 
+/** The app's BeamNG build (dist-beamng) to serve at /: --app, $TESLA_APP_DIR, or next to this project. */
+function appRoot(): string | null {
+  const c = [APP_DIR, process.env.TESLA_APP_DIR, join(here, '..', '..', 'tesla-ui-atv', 'dist-beamng'),
+    join(homedir(), 'tesla-ui-atv', 'dist-beamng')].filter(Boolean) as string[]
+  for (const d of c) if (existsSync(join(d, 'index.html'))) return resolve(d)
+  return null
+}
+
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const path = url.pathname
-  if (path === '/' || path === '/test' || path === '/test.html') return serveFile(res, join(here, 'test.html'))
+  // a link with ?token= (the tunnel QR) leaves a cookie, so the app's own WebSocket gets in too
+  const qt = url.searchParams.get('token')
+  if (qt && tokenOk(qt)) {
+    const secure = req.headers['x-forwarded-proto'] === 'https' || proxied(req)
+    res.setHeader('set-cookie', `tb_token=${TOKEN}; Path=/; Max-Age=2592000; SameSite=Lax${secure ? '; Secure' : ''}; HttpOnly`)
+  }
+  if (path === '/test' || path === '/test.html') return serveFile(res, join(here, 'test.html'))
+  if (path === '/' && !appRoot()) return serveFile(res, join(here, 'test.html'))
   if (path === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
     const local = isLoopback(req)
@@ -427,7 +480,7 @@ const server = createServer((req, res) => {
       tunnel: local ? tunnelUrl : undefined, appLink: local && tunnelUrl ? appPairingLink(APP_URL, tunnelUrl, TOKEN) : undefined }))
   }
   // private: voice notes (with where the car was) and the backup camera need the token off this PC
-  if ((path === '/feedback' || path.startsWith('/feedback/') || path.startsWith('/camera')) && !authorized(req)) {
+  if ((path === '/feedback' || path.startsWith('/feedback/') || path.startsWith('/camera') || path.startsWith('/cam/')) && !authorized(req)) {
     res.writeHead(401)
     return res.end('token required')
   }
@@ -441,9 +494,10 @@ const server = createServer((req, res) => {
     if (!f.startsWith(feedbackDir) || !existsSync(f)) { res.writeHead(404); return res.end() }
     return serveFile(res, f)
   }
-  if (path === '/camera.png') {
-    if (!lastCam) { res.writeHead(404); return res.end('backup camera off') }
-    res.writeHead(200, { 'content-type': lastCam.mime, 'cache-control': 'no-store' })
+  if (path === '/camera.png' || /^\/cam\/rear\.(jpg|png)$/.test(path)) {
+    const cors = { 'access-control-allow-origin': '*', 'cache-control': 'no-store' }
+    if (!lastCam) { res.writeHead(404, cors); return res.end('backup camera off') }
+    res.writeHead(200, { ...cors, 'content-type': lastCam.mime })
     return res.end(lastCam.data)
   }
   if (path === '/minimap.png') {
@@ -451,14 +505,18 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': lastMinimap.mime, 'cache-control': 'no-cache' })
     return res.end(lastMinimap.data)
   }
-  // Optional: serve the built app over plain http on the LAN, so it can open ws:// (an https page can't).
-  if (APP_DIR && (path === '/app' || path.startsWith('/app/'))) {
-    const root = resolve(APP_DIR)
-    let rel = decodeURIComponent(path.slice(4)) || '/'
+  // The app (its dist-beamng build) at / with an SPA fallback (also at /app/ for old links). Same origin
+  // as the relay, so it can use ws:// on the Wi-Fi, or wss:// through the tunnel.
+  const root = appRoot()
+  if (root && (req.method === 'GET' || req.method === 'HEAD')) {
+    const rel = decodeURIComponent(path.startsWith('/app/') || path === '/app' ? path.slice(4) || '/' : path)
     let file = normalize(join(root, rel))
     if (!file.startsWith(root)) { res.writeHead(403); return res.end() }
-    if (!existsSync(file) || statSync(file).isDirectory()) file = join(root, 'index.html') // SPA fallback
-    if (existsSync(file)) return serveFile(res, file)
+    if (!existsSync(file) || statSync(file).isDirectory()) {
+      if (extname(rel)) { res.writeHead(404); return res.end('not found') } // a missing asset, not a page
+      file = join(root, 'index.html') // SPA fallback
+    }
+    return serveFile(res, file)
   }
   res.writeHead(404)
   res.end('not found')
@@ -475,7 +533,18 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
 })
 
+const camClients = new Set<WebSocket>()
+let camInfo = { width: 320, height: 180, fps: 5 }
+const camerasMsg = () => ({ t: 'cameras', cams: [{ id: 'rear', ...camInfo }] })
+
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  // ws://host/cam/rear: one binary image per message (the backup camera, while in R)
+  if (new URL(req.url ?? '/', 'http://x').pathname.startsWith('/cam/')) {
+    camClients.add(ws)
+    if (lastCam) ws.send(lastCam.data, { binary: true })
+    ws.on('close', () => camClients.delete(ws))
+    return
+  }
   clients.add(ws)
   log(`app connected from ${req.socket.remoteAddress} (${clients.size} total)`)
   ws.send(JSON.stringify({ t: 'bridge', game: gameConnected ? 'connected' : 'disconnected', version: gameVersion }))
@@ -484,6 +553,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   if (lastRoute) ws.send(JSON.stringify(lastRoute))
   if (lastState) ws.send(JSON.stringify(lastState))
   ws.send(JSON.stringify(buttonMapMsg()))
+  ws.send(JSON.stringify(camerasMsg()))
   ws.on('message', (data) => {
     let msg: any
     try {
@@ -497,6 +567,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     stats.fromApp++
     if (handleButtons(ws, msg)) return
+    if (msg.t === 'hello') { log(`app: ${msg.app ?? '?'} ${msg.version ?? ''}`); return }
     if (msg.t === 'requestMap' && lastMap) {
       ws.send(JSON.stringify(lastMap))
       if (lastMinimap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))
@@ -547,7 +618,10 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  test page (this PC):  http://localhost:${PORT}/`)
   for (const a of ips) console.log(`  test page (iPad):     http://${a}:${PORT}/${q}`)
   console.log(`  app WebSocket:        ws://${ip}:${PORT}/${q}`)
-  if (APP_DIR) console.log(`  app over http:        http://${ip}:${PORT}/app/${q}`)
+  const app = appRoot()
+  if (app) console.log(`  Tesla UI app:         http://${ip}:${PORT}/   (from ${app})`)
+  else console.log('  Tesla UI app:         not found (build it: npm run build:beamng in tesla-ui-atv, or pass --app <dist-beamng>)')
+  console.log(`  test page:            http://${ip}:${PORT}/test`)
   if (!NO_AUTH) console.log(`  pairing token:        ${TOKEN}`)
   console.log(`  waiting for BeamNG on ${GAME_HOST}:${GAME_PORT} ...`)
   console.log('')
@@ -578,6 +652,9 @@ function findCloudflared(): string | null {
 
 /** The live app's address with the tunnel's wss URL (the app's bridgeUrl() reads ?bridge=). */
 function appPairingLink(appUrl: string, tunnel: string, token: string) {
+  // the relay serves the app's BeamNG build itself: open it through the tunnel (same origin; the
+  // ?token leaves a cookie for its WebSocket). Otherwise the live app with ?bridge=wss://...
+  if (appRoot() && !arg('app-url')) return `${tunnel}/?token=${token}`
   const wss = tunnel.replace(/^https:/, 'wss:') + '/?token=' + token
   return `${appUrl}/?bridge=${encodeURIComponent(wss)}`
 }

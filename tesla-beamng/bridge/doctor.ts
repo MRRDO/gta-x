@@ -79,6 +79,14 @@ async function main() {
     else fail(`installed mod is out of date: ${installed}`, 'run setup.ps1 again (or copy the new zip over it)')
   } else warn('not Windows: skipped the BeamNG mods folder check')
 
+  {
+    const { homedir } = await import('node:os')
+    const cands = [process.env.TESLA_APP_DIR, join(root, '..', 'tesla-ui-atv', 'dist-beamng'), join(homedir(), 'tesla-ui-atv', 'dist-beamng')].filter(Boolean) as string[]
+    const app = cands.find((d) => existsSync(join(d, 'index.html')))
+    if (app) ok(`Tesla UI app build found: ${app} (the relay serves it at /)`)
+    else warn('Tesla UI app build (dist-beamng) not found: the relay shows the test page at /', 'in tesla-ui-atv: npm run build:beamng (setup.ps1 does it)')
+  }
+
   head('Running')
   const relay = await fetch(`http://127.0.0.1:${PORT}/health`).then((r) => r.json()).catch(() => null) as any
   if (relay) {

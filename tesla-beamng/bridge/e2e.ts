@@ -3,7 +3,7 @@
 //   npx tsx bridge/e2e.ts      (needs luajit + lua-socket + lua-dkjson)
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
@@ -30,12 +30,20 @@ process.on('exit', cleanup)
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-start('luajit', ['beamng/test/harness.lua'], { HARNESS_SPEED: '6', HARNESS_QUIET: process.env.VERBOSE ? '0' : '1' }, !!process.env.VERBOSE)
+const ctrlFile = join(mkdtempSync(join(tmpdir(), 'tesla-ctrl-')), 'ctrl')
+writeFileSync(ctrlFile, '')
+const playerInput = (line: string) => writeFileSync(ctrlFile, line)
+start('luajit', ['beamng/test/harness.lua'], { HARNESS_CTRL: ctrlFile, HARNESS_SPEED: '6', HARNESS_QUIET: process.env.VERBOSE ? '0' : '1' }, !!process.env.VERBOSE)
 await sleep(500)
 const feedbackDir = mkdtempSync(join(tmpdir(), 'tesla-notes-'))
 const buttonsDir = mkdtempSync(join(tmpdir(), 'tesla-buttons-'))
+// a stand-in for the app's dist-beamng build, served by the relay at /
+const appDir = mkdtempSync(join(tmpdir(), 'tesla-app-'))
+mkdirSync(join(appDir, 'assets'))
+writeFileSync(join(appDir, 'index.html'), '<!doctype html><title>Tesla UI</title>app-index')
+writeFileSync(join(appDir, 'assets', 'main.js'), 'console.log(1)')
 const buttonsFile = join(buttonsDir, 'buttons.json')
-start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), '--game-port', String(GAME_PORT), '--quiet', '--feedback-dir', feedbackDir, '--buttons-file', buttonsFile])
+start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), '--game-port', String(GAME_PORT), '--quiet', '--feedback-dir', feedbackDir, '--buttons-file', buttonsFile, '--app', appDir])
 
 let state = null as State | null
 let map = null as MapInfo | null
@@ -45,6 +53,9 @@ let route: any = null
 let debug: any = null
 let buttonMap: any = null
 const camFrames: any[] = []
+let camerasMsg: any = null
+let camWs: WebSocket | null = null
+let camBinary = 0
 let camOff = 0
 const buttonPresses: number[] = []
 
@@ -68,6 +79,7 @@ ws.on('message', (d) => {
   else if (m.t === 'route') route = m
   else if (m.t === 'debug') debug = m
   else if (m.t === 'buttonMap') buttonMap = m
+  else if (m.t === 'cameras') camerasMsg = m
   else if (m.t === 'camera') { if (m.off) camOff++; else camFrames.push(m) }
   else if (m.t === 'wheelButton' && m.down) buttonPresses.push(m.button)
 })
@@ -89,6 +101,15 @@ async function until(what: string, fn: () => boolean, timeoutMs: number) {
 try {
   check('map arrives', await until('map', () => !!map && map.nodes.length > 0, 15000), map ? `${map.nodes.length} nodes, ${map.signals.length} signals` : '')
   check('state streams', await until('state', () => states.length > 30, 10000))
+  {
+    const get = async (p: string) => { const r = await fetch(`http://127.0.0.1:${PORT}${p}`); return [r.status, await r.text()] as const }
+    const [s1, b1] = await get('/'), [s2, b2] = await get('/navigate/somewhere'), [s3, b3] = await get('/assets/main.js')
+    const [s4] = await get('/assets/missing.js'), [s5, b5] = await get('/test')
+    check('relay serves the app at / (SPA fallback, assets, 404 for missing files)',
+      s1 === 200 && b1.includes('app-index') && s2 === 200 && b2.includes('app-index') && s3 === 200 && b3.includes('console') && s4 === 404,
+      `${s1} ${s2} ${s3} ${s4}`)
+    check('test page moved to /test', s5 === 200 && b5.includes('BeamNG bridge test'))
+  }
   {
     const s = states.slice(-40)
     const span = s[s.length - 1].time - s[0].time
@@ -115,20 +136,37 @@ try {
   check('door FL opens', await until('door', () => st().doors.FL === true, 3000), JSON.stringify(st().doors))
   send({ t: 'door', door: 'FL', open: false })
   check('door FL closes', await until('door', () => st().doors.FL === false, 3000))
+  send({ t: 'gear', gear: 'D' })
+  await until('D', () => st().gear === 'D', 3000)
+  send({ t: 'door', door: 'FR', open: true })
+  check('opening a door in D (stopped) shifts to P first', await until('P+door', () => st().gear === 'P' && st().doors.FR === true, 3000),
+    `gear ${st().gear}, FR ${st().doors.FR}`)
+  send({ t: 'door', door: 'FR', open: false })
+  await until('FR closed', () => st().doors.FR === false, 3000)
   send({ t: 'door', door: 'sunroof', open: true })
   check('missing door reports error', await until('error', () => events.some((e) => e.kind === 'error' && /sunroof/.test(e.detail ?? '')), 3000))
   send({ t: 'gear', gear: 'D' })
   check('gear D', await until('D', () => st().gear === 'D', 3000))
   send({ t: 'gear', gear: 'P' })
   check('gear P', await until('P', () => st().gear === 'P', 3000))
+  // the UI app's camera socket: one binary image per message
+  camWs = new WebSocket(`ws://127.0.0.1:${PORT}/cam/rear`)
+  camWs.on('message', (d, isBinary) => { if (isBinary) camBinary++ })
+  send({ t: 'hello', app: 'e2e', version: 'test' })
   // --- backup camera: shift to R -> small off-screen frames stream to the app; out of R -> off
   send({ t: 'gear', gear: 'R' })
   check('backup camera streams in R', await until('cam', () => camFrames.length >= 3, 6000), `${camFrames.length} frames`)
   {
     const f = camFrames[camFrames.length - 1]
     const png = f ? Buffer.from(f.data, 'base64') : Buffer.alloc(0)
-    check('camera frames are PNGs, mirrored, low-res', png.readUInt32BE(0) === 0x89504e47 && f.mirrored === true && f.width === 320 && f.height === 180,
-      f ? `${png.length} B ${f.width}x${f.height}` : 'none')
+    const isJpeg = png[0] === 0xff && png[1] === 0xd8, isPng = png.length > 4 && png.readUInt32BE(0) === 0x89504e47
+    const wantJpeg = process.env.HARNESS_NO_JPG !== '1'
+    check(`camera frames are ${wantJpeg ? 'JPEG' : 'PNG (JPEG fallback)'}, mirrored, low-res`, (wantJpeg ? isJpeg : isPng) && f.mirrored === true && f.width === 320 && f.height === 180,
+      f ? `${f.mime} ${png.length} B ${f.width}x${f.height}` : 'none')
+    const r = await fetch(`http://127.0.0.1:${PORT}/cam/rear.jpg`)
+    check('GET /cam/rear.jpg (UI protocol) with CORS', r.status === 200 && r.headers.get('access-control-allow-origin') === '*', String(r.status))
+    check('cameras announced on connect', JSON.stringify(camerasMsg?.cams?.[0] ?? {}).includes('"rear"'), JSON.stringify(camerasMsg))
+    check('ws /cam/rear streams binary frames', camBinary > 0, `${camBinary} frames`)
     const seqs = camFrames.map((x) => x.seq)
     check('camera frames keep coming (seq increases)', seqs.every((v, i) => i === 0 || v > seqs[i - 1]), seqs.join(','))
   }
@@ -157,6 +195,7 @@ try {
   send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
   check('FSD engages', await until('engaged', () => st().autopilot.engaged && st().autopilot.mode === 'fsd', 4000))
   check('shifts into D', await until('D', () => st().gear === 'D', 4000))
+  check('phase: driving', await until('driving', () => st().autopilot.phase === 'driving', 3000), String(st().autopilot.phase))
 
   let stoppedAtSign = false, stoppedAtLight = false, minGap = Infinity, maxOver = 0, sawSignal = false, sawTurn = false
   let wheelMoved = 0
@@ -199,6 +238,7 @@ try {
   }
   check('arrives', events.some((e) => e.kind === 'arrived'))
   check('parks in P and disengages', await until('P', () => st().gear === 'P' && !st().autopilot.engaged, 5000), `gear ${st().gear}`)
+  check('phase: parked', await until('parked', () => st().autopilot.phase === 'parked', 3000), String(st().autopilot.phase))
   {
     const d = Math.hypot(st().pos[0] - 450, st().pos[1] - 300)
     check('ends near the destination', d < 12, `${d.toFixed(1)} m away`)
@@ -335,6 +375,30 @@ try {
     check('clear a button', await until('cleared', () => buttonMap?.map?.toggleFSD === undefined, 3000))
   }
 
+  // --- Start Self-Driving from Park with Brake Confirm: the app sends fromPark while the driver
+  // holds the game's brake; that held brake must not count as a takeover
+  {
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off', () => !st().autopilot.engaged, 3000)
+    send({ t: 'gear', gear: 'P' })
+    await until('P', () => st().gear === 'P', 3000)
+    events.length = 0
+    playerInput('brake 0.6')
+    check('app sees the brake pedal (Brake Confirm)', await until('brake', () => st().brake > 0.3, 4000), String(st().brake))
+    send({ t: 'autopilot', mode: 'fsd', profile: 'standard', fromPark: true })
+    check('Start Self-Driving from Park engages', await until('fsd', () => st().autopilot.engaged, 4000))
+    await sleep(800)
+    check('held brake (the confirm) does not disengage', st().autopilot.engaged, events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('brake 0')
+    check('the car picks its own gear and moves off', await until('go', () => (st().gear === 'D' || st().gear === 'R') && st().speed > 0.3, 8000),
+      `gear ${st().gear}, ${st().speed.toFixed(2)} m/s, phase ${st().autopilot.phase}`)
+    await sleep(400) // let the release land first
+    playerInput('brake 0.7')
+    check('a new brake press still takes over', await until('brake takeover', () => events.some((e) => e.kind === 'disengage' && e.detail === 'brake'), 5000),
+      events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('brake 0')
+  }
+
   {
     const audio = Buffer.from('RIFF....WAVEfmt fake audio').toString('base64')
     send({ t: 'voiceNote', audio, mime: 'audio/wav', durationSec: 2.5, text: 'it braked for a shadow' })
@@ -354,8 +418,10 @@ try {
 }
 
 clearInterval(attnTimer)
+try { camWs?.close() } catch { /* already closed */ }
 rmSync(feedbackDir, { recursive: true, force: true })
 rmSync(buttonsDir, { recursive: true, force: true })
+rmSync(appDir, { recursive: true, force: true })
 const failed = results.filter((r) => !r[1]).length
 console.log(`\n${results.length - failed} passed, ${failed} failed`)
 cleanup()

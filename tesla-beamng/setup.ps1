@@ -116,6 +116,20 @@ if (-not $userFolder) {
   Warn 'if BeamNG is open: restart it (or reload Lua with Ctrl+L) to load the new mod'
 }
 
+# ---------------------------------------------------------------- 3b. the Tesla UI app's BeamNG build
+$uiRepo = Join-Path $env:USERPROFILE 'tesla-ui-atv'
+if (Test-Path (Join-Path $uiRepo 'package.json')) {
+  Step 'Tesla UI app (dist-beamng, served by the relay)'
+  Push-Location $uiRepo
+  try {
+    npm.cmd install --no-fund --no-audit | Out-Host
+    npm.cmd run build:beamng | Out-Host
+    if (Test-Path (Join-Path $uiRepo 'dist-beamng\index.html')) { Ok "built $uiRepo\dist-beamng" } else { Warn 'build:beamng did not produce dist-beamng' }
+  } catch { Warn "could not build the app: $_" } finally { Pop-Location }
+} else {
+  Warn "no ${uiRepo}: the relay shows the test page at / until the app's dist-beamng exists (or pass --app)"
+}
+
 # ---------------------------------------------------------------- 4. companion packages
 if ($py) {
   Step 'Wheel companion packages'

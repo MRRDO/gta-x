@@ -86,6 +86,8 @@ export type AutopilotState = {
   lastDisengage: { reason: DisengageReason; time: number } | null
   /** The driver is pressing the accelerator (pedal or the app's strip): FSD stays on and goes faster, no braking. */
   accelOverride: boolean
+  /** What the app shows: 'leaving' while backing out of a spot, 'parking' during the arrival move, 'parked' after. */
+  phase?: 'driving' | 'leaving' | 'parking' | 'parked' | null
   /** drive | maneuver (backing out, 3-point turn, back-in parking) | summon */
   activity?: 'drive' | 'maneuver' | 'summon'
   setSpeed?: number | null // m/s, TACC / Autosteer
@@ -214,7 +216,14 @@ export type CameraFrame = {
   seq?: number; mime?: string; data?: string; width?: number; height?: number; mirrored?: boolean
 }
 
-export type GameMessage = State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame
+/**
+ * Relay -> app on connect: the car cameras it can stream. Each one: ws://host/cam/<id> sends one
+ * binary image (JPEG, or PNG if the game can't write JPEG) per message; GET /cam/<id>.jpg is the
+ * latest frame. Only 'rear' (the backup camera), and only while in R.
+ */
+export type Cameras = { t: 'cameras'; cams: { id: 'rear'; width: number; height: number; fps: number }[] }
+
+export type GameMessage = Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame
 
 // ---------------------------------------------------------------------------
 // App -> game
@@ -226,7 +235,7 @@ export type Command =
   | { t: 'signal'; dir: SignalDir }
   | { t: 'horn'; on: boolean }
   | { t: 'door'; door: string; open: boolean }
-  | { t: 'autopilot'; mode: AutopilotMode; profile?: Profile }
+  | { t: 'autopilot'; mode: AutopilotMode; profile?: Profile; fromPark?: boolean } // fromPark: Start Self-Driving from P (the car picks D/R and backs out itself)
   | { t: 'navigate'; to: Vec3 | { node: string }; stops?: Vec3[]; arrival?: Arrival }
   | { t: 'cancelRoute' }
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
@@ -242,6 +251,7 @@ export type Command =
   | { t: 'learnButton'; action: ActionName | null } // the next wheel button pressed gets this action (null cancels)
   | { t: 'setButton'; action: ActionName; button: number | null } // set / clear directly
   | { t: 'requestButtonMap' }
+  | { t: 'hello'; app?: string; version?: string } // the app says hi on connect (logged by the relay)
   | { t: 'camera'; on?: boolean } // show the backup camera for 15 s without shifting to R (a preview button); false hides it
   | { t: 'wheelButton'; button: number; down: boolean } // from the wheel companion
   | { t: 'companionHello'; name: string; buttons: number } // from the wheel companion
@@ -258,7 +268,7 @@ export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: bo
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
-  'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera',
+  'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
   'requestMap', 'requestMinimap', 'debug', 'ping',
 ])
 

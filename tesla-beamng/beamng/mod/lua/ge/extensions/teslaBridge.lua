@@ -49,7 +49,7 @@ local vehDiag = nil
 
 -- backup camera state (see the backup camera section)
 local cam = {
-  settings = { backup = true, fps = 5, width = 320, height = 180, fov = 100 },
+  settings = { backup = true, fps = 5, width = 320, height = 180, fov = 100, format = 'jpg' },
   on = false, previewUntil = -1, nextT = 0, seq = 0, pending = nil, inline = false,
   reverseUntil = -1, failed = nil, buf = 0,
 }
@@ -723,6 +723,7 @@ function M.onVehicleState(vid, json)
     mode = (va.engaged and planner) and planner.mode or 'off',
     profile = planner and planner.profile or 'standard',
     activity = ps.activity,
+    phase = ps.phase,
     targetSpeed = num(va.targetSpeed or 0),
     speedLimit = ps.speedLimit and num(ps.speedLimit) or nil,
     setSpeed = ps.setSpeed and num(ps.setSpeed) or nil,
@@ -836,11 +837,11 @@ local function camAnnounce()
   cam.pending = nil
   if not rel then return end
   local msg = { t = 'camFrame', view = 'rear', seq = cam.seq, rel = rel, path = camRealPath(rel),
-    width = cam.settings.width, height = cam.settings.height, mirrored = true }
+    width = cam.settings.width, height = cam.settings.height, fps = cam.settings.fps, mirrored = true }
   if cam.inline and readFile and mime then
     local data = try(readFile, rel)
-    if not data then return end
-    msg.data = mime.b64(data)
+    -- no file: still tell the relay (it counts misses and may ask for another format)
+    if data then msg.data = mime.b64(data) else msg.missing = true end
   end
   send(msg)
 end
@@ -865,7 +866,7 @@ local function camTick(veh)
   cam.on = true
   camAnnounce()
   cam.buf = 1 - cam.buf
-  local rel = CAM_DIR .. '/rear_' .. (cam.buf == 0 and 'a' or 'b') .. '.png'
+  local rel = CAM_DIR .. '/rear_' .. (cam.buf == 0 and 'a' or 'b') .. '.' .. cam.settings.format
   local ok, err = pcall(function()
     if FS and FS.directoryExists and not FS:directoryExists(CAM_DIR) then FS:directoryCreate(CAM_DIR, true) end
     local pos, rot = camPose(veh)
@@ -879,6 +880,8 @@ local function camTick(veh)
     cam.seq = cam.seq + 1
     cam.pending = rel
     cam.failed = nil
+  elseif cam.settings.format ~= 'png' then
+    cam.settings.format = 'png' -- this game can't write JPEG screenshots this way: try PNG
   elseif not cam.failed then
     cam.failed = tostring(err)
     event('error', 'backup camera: ' .. cam.failed)
@@ -968,6 +971,7 @@ handleCommand = function(msg)
     -- { on = true } shows the backup camera for 15 s (a preview button); { inline = true } comes
     -- from the relay when it can't read the frames from disk itself
     if msg.inline ~= nil then cam.inline = msg.inline and true or false end
+    if msg.format == 'png' or msg.format == 'jpg' then cam.settings.format = msg.format end
     if msg.on == true then cam.previewUntil = realTime + 15 elseif msg.on == false then cam.previewUntil = -1 end
   elseif t == 'resetStrikes' then
     if planner then planner.nag:reset() end

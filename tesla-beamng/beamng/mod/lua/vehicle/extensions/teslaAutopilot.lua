@@ -464,7 +464,11 @@ local function groupState(c)
   if ok then return st end
 end
 
-local function couplerOpen(c)
+local function couplerOpen(c, name)
+  -- the stock controller publishes <name>_notAttached (> 0 = open); fall back to its group state
+  local na = name and electrics and electrics.values and electrics.values[name .. '_notAttached']
+  if type(na) == 'number' then return na > 0 end
+  if type(na) == 'boolean' then return na end
   local st = string.lower(tostring(groupState(c) or ''))
   return not (st == 'attached' or st == 'closed' or st == 'locked' or st == 'attaching' or st == '')
 end
@@ -513,7 +517,7 @@ local function buildState(s)
   local low = (ls and ls >= 1) or ((e.lowbeam or 0) > 0)
   local high = (ls and ls >= 2) or ((e.highbeam or 0) > 0)
   local doors = {}
-  for _, cp in ipairs(couplers()) do doors[doorKey(cp.name)] = couplerOpen(cp.c) end
+  for _, cp in ipairs(couplers()) do doors[doorKey(cp.name)] = couplerOpen(cp.c, cp.name) end
   local ev = isEV()
   local fuel = e.fuel
   return {
@@ -610,6 +614,10 @@ local function engage(mode, opts)
     ap.engaged = true
     ap.engagedAt = now
     takeover.steering, takeover.brake, takeover.throttle = 0, 0, 0
+    -- Brake Confirm: the app engages while the driver is holding the brake; that brake
+    -- only counts as a takeover after it has been let go once
+    takeover.brakeHeld = rawValue('brake') or 0
+    takeover.brakeArmed = takeover.brakeHeld < 0.1
     baseline.steering = rawValue('steering') or 0
     driver.u = electrics.values.steering_input or 0
     driver.speedI, driver.latI = 0, 0
@@ -679,9 +687,18 @@ end
 
 handlers.door = function(cmd)
   local want = cmd.door
+  if cmd.open then
+    -- like a Model X: doors only open in Park; stopped in D/R shifts to P first, moving is refused
+    if abs(electrics.values.wheelspeed or 0) > 0.5 then errorEvent('doors only open when stopped'); return end
+    if gearLetter() ~= 'P' then
+      if ap.engaged then disengage('app') end
+      shiftTo('P')
+    end
+  end
   for _, cp in ipairs(couplers()) do
-    if doorKey(cp.name) == want or cp.name == want then
-      if couplerOpen(cp.c) ~= (cmd.open and true or false) then
+    local k = doorKey(cp.name)
+    if k == want or cp.name == want or (want == 'frunk' and k == 'hood') or (want == 'hood' and k == 'frunk') then
+      if couplerOpen(cp.c, cp.name) ~= (cmd.open and true or false) then
         if cp.c.toggleGroup then pcall(cp.c.toggleGroup) end
       end
       return
@@ -767,6 +784,12 @@ end
 local function checkTakeover(dt)
   local st = rawSinceEngage('steering')
   local br = rawSinceEngage('brake') or 0
+  if not takeover.brakeArmed then
+    local now_ = rawValue('brake') or 0
+    -- armed once released, or right away when pressed clearly harder than the confirm press
+    if now_ < 0.05 or now_ > (takeover.brakeHeld or 0) + 0.25 then takeover.brakeArmed = true end
+    if not takeover.brakeArmed then br = 0 end
+  end
   local steerDev = st and abs(st - baseline.steering) or 0
   local devLimit, holdT = 0.15, 0.15
   if ffb.helper and ap.mode ~= 'tacc' then

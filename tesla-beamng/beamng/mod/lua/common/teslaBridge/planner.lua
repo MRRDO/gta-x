@@ -1275,6 +1275,20 @@ function Planner:finish(out)
   st.activity = self.activity
   st.nag = self.nag:status()
   st.lastDisengage = self.lastDisengage
+  -- what the app shows: "Leaving parking spot", "Parking...", "Parked in ..."
+  local mv = self.maneuver
+  if self.mode == 'off' then
+    local ld = self.lastDisengage
+    st.phase = (ld and ld.reason == 'arrived' and self.t - (ld.time or -1e9) < 600) and 'parked' or nil
+  elseif mv and (mv.kind == 'backOut' or mv.kind == 'kTurn') then
+    st.phase = 'leaving'
+  elseif mv and (mv.kind == 'backIn' or mv.kind == 'autopark') then
+    st.phase = 'parking'
+  elseif self.path and self.path.arrivalKind == 'parking' and st.remaining and st.remaining < 40 then
+    st.phase = 'parking'
+  else
+    st.phase = 'driving'
+  end
   if self.routeDirty then out.route = out.route or self:routeMessage(); self.routeDirty = false end
   out.status = st
   return out

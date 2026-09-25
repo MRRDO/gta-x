@@ -86,6 +86,12 @@ Check the result at any time with `npm run doctor` (read-only). ❌ lines must b
    (and in the app once the UI session adds it). The laptop screen doesn't change.
    Settings has its quality and fps. Note whether the game gets choppy while reversing.
 
+## The Tesla UI app
+
+The relay serves the app itself at `http://<pc>:8765/` (and through the tunnel QR). `setup.ps1`
+builds it from `~/tesla-ui-atv` (`npm run build:beamng`) if that folder exists. The test page is
+at `/test`. `npm run doctor` says whether the build was found.
+
 ## First test (with Quentin driving)
 
 On the test page:

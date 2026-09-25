@@ -59,6 +59,14 @@ const tryWs = (q: string, headers: Record<string, string>) => new Promise<string
 })
 check('WebSocket through the tunnel without token: 401', (await tryWs('', viaTunnel)) === '401')
 check('WebSocket through the tunnel with token: open', (await tryWs(`?token=${token}`, viaTunnel)) === 'open')
+// the QR link (?token=) leaves a cookie; the app's own same-origin WebSocket then gets in with it
+{
+  const r = await fetch(`${base}/?token=${token}`, { headers: viaTunnel })
+  const cookie = r.headers.get('set-cookie') ?? ''
+  check('pairing link sets a secure, http-only cookie', cookie.includes(`tb_token=${token}`) && /Secure/.test(cookie) && /HttpOnly/.test(cookie), cookie)
+  check('WebSocket through the tunnel with only the cookie: open', (await tryWs('', { ...viaTunnel, cookie: `tb_token=${token}` })) === 'open')
+  check('a wrong cookie is refused', (await tryWs('', { ...viaTunnel, cookie: 'tb_token=0123456789abcdef' })) === '401')
+}
 const attacker = { 'cf-connecting-ip': '198.51.100.7' }
 for (let i = 0; i < 10; i++) await tryWs('?token=0000000000000000', attacker)
 check('after 10 wrong tokens the address is blocked', (await tryWs(`?token=${token}`, attacker)) === '401')

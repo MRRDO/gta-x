@@ -257,15 +257,18 @@ G.core_vehicles = { getModel = function(jb) return { model = { Brand = 'Harness'
 -- backup camera: the retail RenderView screenshot API writes a PNG into the user folder
 local CAM_USER = os.getenv('HARNESS_USER_DIR') or '/tmp/tesla-harness-user'
 local CAM_INLINE = os.getenv('HARNESS_CAM_INLINE') == '1' -- no FS:getFileRealPath: the relay can't find the files
-os.execute('mkdir -p "' .. CAM_USER .. '/temp/teslaBridge"')
+os.execute('rm -rf "' .. CAM_USER .. '/temp/teslaBridge" && mkdir -p "' .. CAM_USER .. '/temp/teslaBridge"')
 local FAKE_PNG = "\137\80\78\71\13\10\26\10\0\0\0\13\73\72\68\82\0\0\0\8\0\0\0\4\8\2\0\0\0\60\175\233\167\0\0\0\17\73\68\65\84\120\156\99\208\208\176\193\138\24\168\39\1\0\105\17\17\129\104\135\92\12\0\0\0\0\73\69\78\68\174\66\96\130"
 CAM_SHOTS = 0
+local FAKE_JPG = '\255\216\255\224\0\16JFIF\0' .. string.rep('\0', 40) .. '\255\217'
 G.vec3 = function(x, y, z) return { x = x, y = y, z = z } end
 G.quatFromDir = function(d, u) return { x = 0, y = 0, z = 0, w = 1, d = d, u = u } end
 G.render_renderViews = { takeScreenshot = function(o)
   assert(o.filename and o.resolution and o.pos and o.rot, 'takeScreenshot: missing fields')
+  local jpg = o.filename:match('%.jpg$')
+  if jpg and os.getenv('HARNESS_NO_JPG') == '1' then return end -- a game that silently can't write JPEG
   local f = assert(io.open(CAM_USER .. '/' .. o.filename, 'wb'))
-  f:write(FAKE_PNG); f:close()
+  f:write(jpg and FAKE_JPG or FAKE_PNG); f:close()
   CAM_SHOTS = CAM_SHOTS + 1
 end }
 G.FS = {
@@ -391,8 +394,27 @@ local pressedGas, releasedGas = false, false
 local releaseIn, bumped = nil, nil
 local summonSent = false
 local kbdPressed, kbdReleased, padPressed, padReleased = nil, false, nil, false
+-- HARNESS_CTRL=<file>: the test writes player inputs there ("brake 0.6"), read every 0.2 s
+local CTRL = os.getenv('HARNESS_CTRL')
+local ctrlT, ctrlLast = 0, ''
+local function readCtrl(dt)
+  if not CTRL then return end
+  ctrlT = ctrlT + dt
+  if ctrlT < 0.2 then return end
+  ctrlT = 0
+  local f = io.open(CTRL, 'r')
+  if not f then return end
+  local line = f:read('*l') or ''
+  f:close()
+  if line == ctrlLast then return end
+  ctrlLast = line
+  local what, val = line:match('^(%a+)%s+([%d%.]+)')
+  if what then hlog('player input: ' .. what .. ' ' .. val); V.input.event(what, tonumber(val), 0) end
+end
+
 local SCENARIO = os.getenv('HARNESS_SCENARIO')
 local function scenario(dt)
+  readCtrl(dt)
   if SCENARIO == 'summon' then
     if not summonSent and gameT > 2 then
       summonSent = true
