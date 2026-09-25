@@ -787,8 +787,13 @@ local function engageFromApp(mode, profile)
   planTick()
 end
 
+-- wheel-button actions (mapped in the app's settings, pressed on the wheel; see relay button map)
+local PROFILE_ORDER = { 'sloth', 'chill', 'standard', 'hurry', 'madmax' }
+local runAction
+
 handleCommand = function(msg)
   local t = msg.t
+  if t == 'action' then return runAction(msg.name) end
   local veh = playerVehicle()
   if t == 'gear' or t == 'lights' or t == 'horn' or t == 'door' or t == 'throttleOverride' or t == 'wheel' then
     if not veh then event('error', 'no player vehicle'); return end
@@ -806,6 +811,8 @@ handleCommand = function(msg)
     if msg.mode == 'off' then
       if planner then planner:disengage('app') end
       if veh then syncVehicleMode(veh) end
+    elseif planner and msg.mode == planner.mode and msg.profile then
+      planner:setProfile(msg.profile) -- already on in this mode: just the profile (no re-engage)
     elseif msg.mode == 'fsd' or msg.mode == 'autosteer' or msg.mode == 'tacc' then
       engageFromApp(msg.mode, msg.profile)
     elseif msg.profile and planner then
@@ -879,6 +886,49 @@ function M.toggleAutopilot(mode)
   else
     engageFromApp(mode or 'fsd', planner and planner.profile)
   end
+end
+
+local function stepProfile(dir)
+  if not planner then return end
+  local i = 3
+  for k, p in ipairs(PROFILE_ORDER) do if p == planner.profile then i = k end end
+  local p = PROFILE_ORDER[math.max(1, math.min(#PROFILE_ORDER, i + dir))]
+  planner:setProfile(p)
+  event('settings', 'profile ' .. p)
+end
+
+runAction = function(name)
+  local mode = planner and planner.mode or 'off'
+  if name == 'toggleFSD' then M.toggleAutopilot('fsd')
+  elseif name == 'toggleAutosteer' then M.toggleAutopilot('autosteer')
+  elseif name == 'toggleTACC' then M.toggleAutopilot('tacc')
+  elseif name == 'disengage' then handleCommand({ t = 'autopilot', mode = 'off' })
+  elseif name == 'voiceNote' then M.voiceNote()
+  elseif name == 'nudge' then M.nudge()
+  elseif name == 'laneLeft' or name == 'laneRight' then
+    handleCommand({ t = 'signal', dir = name == 'laneLeft' and 'left' or 'right' })
+  elseif name == 'profileNext' then stepProfile(1)
+  elseif name == 'profilePrev' then stepProfile(-1)
+  elseif name == 'speedUp' or name == 'speedDown' then
+    local d = name == 'speedUp' and 1 or -1
+    if mode == 'fsd' then stepProfile(d) -- FSD: the scroll wheel picks the speed profile
+    else
+      local prof = P.PROFILES[planner and planner.profile or 'standard'] or P.PROFILES.standard
+      local cur = plannerSettings.speedOffsetMph or math.floor(prof.offset / 0.44704 + 0.5)
+      plannerSettings.speedOffsetMph = math.max(-10, math.min(20, cur + d))
+      if planner then planner:configure(plannerSettings) end
+      event('settings', string.format('speed offset %+d mph', plannerSettings.speedOffsetMph))
+    end
+  elseif name == 'followCloser' or name == 'followFarther' then
+    local cur = plannerSettings.followDistance or 4
+    plannerSettings.followDistance = math.max(1, math.min(7, cur + (name == 'followCloser' and -1 or 1)))
+    if planner then planner:configure(plannerSettings) end
+    event('settings', 'follow distance ' .. plannerSettings.followDistance)
+  elseif name == 'autopark' then handleCommand({ t = 'autopark' })
+  elseif name == 'summonForward' then handleCommand({ t = 'summon', dir = 'forward' })
+  elseif name == 'summonReverse' then handleCommand({ t = 'summon', dir = 'reverse' })
+  elseif name == 'summonStop' then handleCommand({ t = 'summon', dir = nil })
+  else event('error', 'unknown action ' .. tostring(name)) end
 end
 
 -- Bound to "Tesla: voice note": the app starts/stops recording a note for later.

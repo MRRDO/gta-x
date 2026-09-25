@@ -163,7 +163,49 @@ export type Pong = { t: 'pong'; time: number }
 /** Answer to `debug`: what this BeamNG version exposes (for fixing API mismatches). */
 export type Debug = { t: 'debug'; ge: Record<string, unknown>; vehicle?: Record<string, unknown> }
 
-export type GameMessage = State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug
+/** Things a wheel button can do (mapped in the app's settings). */
+export type ActionName =
+  | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'disengage' | 'voiceNote' | 'nudge'
+  | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
+  | 'followCloser' | 'followFarther' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop'
+
+export const ACTIONS: { name: ActionName; label: string }[] = [
+  { name: 'toggleFSD', label: 'Start / stop FSD' },
+  { name: 'toggleAutosteer', label: 'Start / stop Autosteer' },
+  { name: 'toggleTACC', label: 'Start / stop cruise (TACC)' },
+  { name: 'disengage', label: 'Turn autopilot off' },
+  { name: 'voiceNote', label: 'Voice note (iPad mic)' },
+  { name: 'nudge', label: 'Hands-on nudge' },
+  { name: 'laneLeft', label: 'Lane change left' },
+  { name: 'laneRight', label: 'Lane change right' },
+  { name: 'speedUp', label: 'Faster (FSD: next profile)' },
+  { name: 'speedDown', label: 'Slower (FSD: previous profile)' },
+  { name: 'profileNext', label: 'Next speed profile' },
+  { name: 'profilePrev', label: 'Previous speed profile' },
+  { name: 'followCloser', label: 'Follow closer' },
+  { name: 'followFarther', label: 'Follow farther' },
+  { name: 'autopark', label: 'Autopark' },
+  { name: 'summonForward', label: 'Summon forward' },
+  { name: 'summonReverse', label: 'Summon reverse' },
+  { name: 'summonStop', label: 'Stop summon' },
+]
+
+/**
+ * Relay -> app: which wheel button does what. Buttons are read by the wheel companion
+ * (bridge/wheel_helper.py), so any button works, bound in BeamNG or not.
+ */
+export type ButtonMap = {
+  t: 'buttonMap'
+  map: Partial<Record<ActionName, number>>
+  /** waiting for a button press to assign to this action */
+  learning: ActionName | null
+  /** the companion that reads the wheel's buttons (null: not running) */
+  companion: { name: string; buttons: number } | null
+}
+/** Relay -> app: a wheel button went down/up (for "press a button" UIs). */
+export type WheelButton = { t: 'wheelButton'; button: number; down: boolean }
+
+export type GameMessage = State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton
 
 // ---------------------------------------------------------------------------
 // App -> game
@@ -187,6 +229,12 @@ export type Command =
   | { t: 'autopark' }
   | { t: 'resetStrikes' }
   | { t: 'voiceNote'; audio: string; mime: string; durationSec?: number; text?: string } // base64 audio; saved by the relay
+  | { t: 'action'; name: ActionName } // do what a wheel button would
+  | { t: 'learnButton'; action: ActionName | null } // the next wheel button pressed gets this action (null cancels)
+  | { t: 'setButton'; action: ActionName; button: number | null } // set / clear directly
+  | { t: 'requestButtonMap' }
+  | { t: 'wheelButton'; button: number; down: boolean } // from the wheel companion
+  | { t: 'companionHello'; name: string; buttons: number } // from the wheel companion
   | { t: 'requestMap' }
   | { t: 'requestMinimap' }
   | { t: 'debug' }
@@ -198,6 +246,7 @@ export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: bo
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
+  'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello',
   'requestMap', 'requestMinimap', 'debug', 'ping',
 ])
 

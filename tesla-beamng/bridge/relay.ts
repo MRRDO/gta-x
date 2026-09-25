@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { randomBytes, createHash } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import qrcode from 'qrcode-terminal'
-import { COMMAND_TYPES, type MapInfo, type Minimap } from './protocol.ts'
+import { ACTIONS, COMMAND_TYPES, type ActionName, type ButtonMap, type MapInfo, type Minimap } from './protocol.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -73,6 +73,76 @@ function saveVoiceNote(msg: any): string {
   }
   writeFileSync(join(feedbackDir, `${base}.json`), JSON.stringify(context, null, 2))
   return base
+}
+
+// ---------------------------------------------------------------------------
+// wheel buttons: the companion (wheel_helper.py) reports presses, the app's settings
+// map them to actions, and a press sends the action to the game. Saved across restarts.
+// ---------------------------------------------------------------------------
+
+const buttonsFile = resolve(arg('buttons-file') ?? join(here, 'buttons.json'))
+const ACTION_NAMES = new Set<string>(ACTIONS.map((a) => a.name))
+let buttonMap: Partial<Record<ActionName, number>> = {}
+try {
+  const saved = JSON.parse(readFileSync(buttonsFile, 'utf8'))
+  for (const [k, v] of Object.entries(saved)) if (ACTION_NAMES.has(k) && Number.isInteger(v)) buttonMap[k as ActionName] = v as number
+} catch { /* first run */ }
+let learning: ActionName | null = null
+let companion: { ws: WebSocket; name: string; buttons: number } | null = null
+
+function buttonMapMsg(): ButtonMap {
+  return { t: 'buttonMap', map: buttonMap, learning, companion: companion ? { name: companion.name, buttons: companion.buttons } : null }
+}
+function saveButtons() {
+  try { writeFileSync(buttonsFile, JSON.stringify(buttonMap, null, 2)) } catch (e) { log('could not save buttons:', e) }
+}
+function assignButton(action: ActionName, button: number | null) {
+  // one action per button: a button taken by another action moves here
+  if (button != null) for (const k of Object.keys(buttonMap) as ActionName[]) if (buttonMap[k] === button) delete buttonMap[k]
+  if (button == null) delete buttonMap[action]
+  else buttonMap[action] = button
+  saveButtons()
+}
+/** Relay-side handling of button messages. Returns true when handled. */
+function handleButtons(ws: WebSocket, msg: any): boolean {
+  switch (msg.t) {
+    case 'companionHello':
+      companion = { ws, name: String(msg.name ?? 'wheel'), buttons: Number(msg.buttons) || 0 }
+      log(`wheel companion: ${companion.name}, ${companion.buttons} buttons`)
+      broadcast(buttonMapMsg())
+      return true
+    case 'requestButtonMap':
+      ws.send(JSON.stringify(buttonMapMsg()))
+      return true
+    case 'learnButton':
+      learning = msg.action && ACTION_NAMES.has(msg.action) ? msg.action : null
+      broadcast(buttonMapMsg())
+      return true
+    case 'setButton':
+      if (!ACTION_NAMES.has(msg.action)) return true
+      assignButton(msg.action, Number.isInteger(msg.button) ? msg.button : null)
+      broadcast(buttonMapMsg())
+      return true
+    case 'wheelButton': {
+      const button = Number(msg.button)
+      if (!Number.isInteger(button)) return true
+      broadcast({ t: 'wheelButton', button, down: !!msg.down }, true)
+      if (!msg.down) return true
+      if (learning) {
+        assignButton(learning, button)
+        log(`button ${button} -> ${learning}`)
+        learning = null
+        broadcast(buttonMapMsg())
+        return true
+      }
+      const action = (Object.keys(buttonMap) as ActionName[]).find((k) => buttonMap[k] === button)
+      if (action) {
+        if (!sendGame({ t: 'action', name: action })) broadcast({ t: 'event', kind: 'error', detail: 'game not connected' })
+      }
+      return true
+    }
+  }
+  return false
 }
 
 function log(...a: unknown[]) {
@@ -316,6 +386,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   if (lastMinimap && lastMap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))
   if (lastRoute) ws.send(JSON.stringify(lastRoute))
   if (lastState) ws.send(JSON.stringify(lastState))
+  ws.send(JSON.stringify(buttonMapMsg()))
   ws.on('message', (data) => {
     let msg: any
     try {
@@ -328,6 +399,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return
     }
     stats.fromApp++
+    if (handleButtons(ws, msg)) return
     if (msg.t === 'requestMap' && lastMap) {
       ws.send(JSON.stringify(lastMap))
       if (lastMinimap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))
@@ -350,6 +422,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (!sendGame(msg)) ws.send(JSON.stringify({ t: 'event', kind: 'error', detail: 'game not connected' }))
   })
   ws.on('close', () => {
+    if (companion?.ws === ws) { companion = null; broadcast(buttonMapMsg()) }
     clients.delete(ws)
     log(`app disconnected (${clients.size} left)`)
   })

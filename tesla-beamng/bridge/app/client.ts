@@ -8,7 +8,7 @@
 // Reconnects by itself. Keeps the latest state/map/traffic/route so late subscribers can read them.
 
 import type {
-  Arrival, AutopilotMode, Command, Event, GameMessage, Gear, MapInfo, Minimap, Profile, Quirks, Route, SafetySettings, SignalDir, State,
+  ActionName, Arrival, AutopilotMode, ButtonMap, Command, Event, GameMessage, Gear, MapInfo, Minimap, Profile, Quirks, Route, SafetySettings, SignalDir, State,
   Traffic, Vec3,
 } from '../protocol.ts'
 
@@ -25,6 +25,10 @@ export type ClientSnapshot = {
   route: Route | null
   minimap: Minimap | null
   lastEvent: Event | null
+  /** wheel button -> action mapping (Settings > Wheel buttons) */
+  buttonMap: ButtonMap | null
+  /** last wheel button pressed, for "press a button" screens */
+  lastButton: { button: number; at: number } | null
 }
 
 type Listener = (msg: GameMessage | { t: 'status'; status: ConnectionStatus }) => void
@@ -62,6 +66,7 @@ export class BeamNGClient {
 
   snapshot: ClientSnapshot = {
     status: 'closed', game: false, state: null, map: null, traffic: [], route: null, minimap: null, lastEvent: null,
+    buttonMap: null, lastButton: null,
   }
 
   constructor(url: string, opts: { autoConnect?: boolean } = {}) {
@@ -186,6 +191,12 @@ export class BeamNGClient {
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
     return this.send({ t: 'voiceNote', audio: btoa(bin), mime: audio.type || 'application/octet-stream', ...opts })
   }
+  /** Do what a wheel button would (e.g. 'toggleFSD', 'speedUp'). */
+  action(name: ActionName) { return this.send({ t: 'action', name }) }
+  /** Settings > Wheel buttons: the next button pressed on the wheel gets `action` (null cancels). */
+  learnButton(action: ActionName | null) { return this.send({ t: 'learnButton', action }) }
+  /** Set or clear (null) the button for an action directly. */
+  setButton(action: ActionName, button: number | null) { return this.send({ t: 'setButton', action, button }) }
   requestMap() { return this.send({ t: 'requestMap' }) }
   debug() { return this.send({ t: 'debug' }) }
 
@@ -218,6 +229,8 @@ export class BeamNGClient {
       case 'route': this.snapshot = { ...s, route: msg.points.length ? msg : null }; break
       case 'minimap': this.snapshot = { ...s, minimap: msg }; break
       case 'event': this.snapshot = { ...s, lastEvent: msg }; break
+      case 'buttonMap': this.snapshot = { ...s, buttonMap: msg }; break
+      case 'wheelButton': if (msg.down) this.snapshot = { ...s, lastButton: { button: msg.button, at: Date.now() } }; break
     }
   }
 

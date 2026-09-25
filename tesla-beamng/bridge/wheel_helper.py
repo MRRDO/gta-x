@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
-"""Backup wheel helper: turns a force-feedback wheel (Logitech G29 etc.) with FSD using SDL
-haptics, for when the mod can't drive the wheel motor from inside BeamNG (the wheel panel on
-the test page says "unavailable", or the wheel doesn't move).
+"""Wheel companion for the Tesla BeamNG bridge. Two jobs:
 
-It connects to the relay, tells the car the helper owns the wheel (the mod then leaves the
-motor alone), and holds a spring effect centred where FSD is steering. Grab the wheel and
-turn it past the spring and FSD hands over, same as always. With FSD off it gives a light
-speed-dependent centring spring so the wheel isn't dead.
+1. **Buttons** (always): reads every button on your wheel and sends presses to the relay,
+   so the app's Settings > Wheel buttons can map any button (start FSD, voice note, lane
+   change, speed...), whether or not BeamNG has it bound.
+2. **Backup force feedback** (unless --buttons): turns the wheel (Logitech G29 etc.) with
+   FSD using an SDL spring, for when the mod can't drive the wheel motor from inside BeamNG
+   (the wheel card on the test page says "unavailable", or the wheel doesn't move). It tells
+   the car the helper owns the wheel, and holds a spring centred where FSD steers. Grab the
+   wheel past the spring and FSD hands over, same as always. With FSD off: a light
+   speed-dependent centring spring so the wheel isn't dead.
 
 Setup (once):
     pip install pysdl2 pysdl2-dll websocket-client
-    In BeamNG: Options > Controls > your wheel > Force feedback: OFF (the helper does it now;
-    two programs fighting over the motor feels awful).
+    For job 2 only: in BeamNG, Options > Controls > your wheel > Force feedback: OFF (two
+    programs fighting over the motor feels awful).
 Run (with the relay running):
-    python bridge/wheel_helper.py                 (or wheel_helper.bat)
-    python bridge/wheel_helper.py --list          (show wheels SDL can see)
-    python bridge/wheel_helper.py --invert        (the wheel turns the wrong way)
-    python bridge/wheel_helper.py --strength 0.8  --url ws://127.0.0.1:8765/
+    python bridge/wheel_helper.py --buttons      buttons only (start.bat runs this for you)
+    python bridge/wheel_helper.py                buttons + backup force feedback
+    python bridge/wheel_helper.py --list         show wheels SDL can see
+    python bridge/wheel_helper.py --invert       the wheel turns the wrong way
+    python bridge/wheel_helper.py --strength 0.8 --url ws://127.0.0.1:8765/
 Ctrl+C stops it and hands the wheel back to the mod.
 """
 
@@ -82,8 +86,11 @@ class Controller:
 # ----------------------------------------------------------------------------- SDL backend
 
 
+WHEEL_WORDS = ('wheel', 'g29', 'g920', 'g923', 'racing', 'fanatec', 'thrustmaster', 'moza', 'simagic', 'logitech')
+
+
 class SDLWheel:
-    def __init__(self, device: str | None):
+    def __init__(self, device: str | None, haptics: bool = True):
         import ctypes
         import sdl2
         self.sdl2, self.ctypes = sdl2, ctypes
@@ -91,11 +98,16 @@ class SDLWheel:
         if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK | sdl2.SDL_INIT_HAPTIC) != 0:
             raise RuntimeError('SDL init failed: ' + sdl2.SDL_GetError().decode())
         self.joy = self.haptic = None
-        idx = self.pick(device)
+        self.spring_id = self.damper_id = -1
+        self.sent: Spring | None = None
+        idx = self.pick(device, haptics)
         if idx is None:
-            raise RuntimeError('no force-feedback wheel found (plugged in? try --list)')
+            raise RuntimeError(('no force-feedback wheel' if haptics else 'no wheel or controller') + ' found (plugged in? try --list)')
         self.joy = sdl2.SDL_JoystickOpen(idx)
         self.name = sdl2.SDL_JoystickName(self.joy).decode(errors='replace')
+        self.nbuttons = max(0, sdl2.SDL_JoystickNumButtons(self.joy))
+        if not haptics:
+            return
         self.haptic = sdl2.SDL_HapticOpenFromJoystick(self.joy)
         if not self.haptic:
             raise RuntimeError(f'{self.name}: cannot open haptics: {sdl2.SDL_GetError().decode()}')
@@ -107,8 +119,6 @@ class SDLWheel:
         if q & sdl2.SDL_HAPTIC_GAIN:
             sdl2.SDL_HapticSetGain(self.haptic, 100)
         self.has_damper = bool(q & sdl2.SDL_HAPTIC_DAMPER)
-        self.spring_id = self.damper_id = -1
-        self.sent: Spring | None = None
 
     @staticmethod
     def list_devices() -> list[tuple[int, str, bool]]:
@@ -123,19 +133,22 @@ class SDLWheel:
                 sdl2.SDL_JoystickClose(j)
         return out
 
-    def pick(self, device: str | None) -> int | None:
+    def pick(self, device: str | None, haptics: bool = True) -> int | None:
         devs = self.list_devices()
         if device is not None:
             for i, name, _ in devs:
                 if device.isdigit() and int(device) == i or device.lower() in name.lower():
                     return i
             return None
-        haptic = [d for d in devs if d[2]]
+        pool = [d for d in devs if d[2]] if haptics else devs
         # prefer something that looks like a wheel
-        for i, name, _ in haptic:
-            if any(k in name.lower() for k in ('wheel', 'g29', 'g920', 'g923', 'racing', 'fanatec', 'thrustmaster', 'moza', 'simagic')):
+        for i, name, _ in pool:
+            if any(k in name.lower() for k in WHEEL_WORDS):
                 return i
-        return haptic[0][0] if haptic else None
+        return pool[0][0] if pool else None
+
+    def buttons(self) -> list[bool]:
+        return [self.sdl2.SDL_JoystickGetButton(self.joy, i) == 1 for i in range(self.nbuttons)]
 
     def _condition(self, kind, center: float, coeff: float, sat: float):
         sdl2 = self.sdl2
@@ -154,6 +167,8 @@ class SDLWheel:
 
     def apply(self, sp: Spring) -> None:
         sdl2, ctypes = self.sdl2, self.ctypes
+        if not self.haptic:
+            return
         if not sp.on:
             self.stop()
             return
@@ -200,12 +215,27 @@ class SDLWheel:
 
 
 class FakeWheel:
-    """--fake: no device, prints what it would do (for testing the connection)."""
+    """--fake: no device, prints what it would do (for testing the connection).
+    --fake-press "3@2.0,3@5.5" presses button 3 at 2.0 s and 5.5 s (0.2 s each)."""
     name = 'fake wheel'
+    nbuttons = 12
 
-    def __init__(self):
+    def __init__(self, presses: str = ''):
         self.sent: Spring | None = None
         self.log: list[Spring] = []
+        self.t0 = time.monotonic()
+        self.presses = []
+        for p in filter(None, presses.split(',')):
+            b, at = p.split('@')
+            self.presses.append((int(b), float(at)))
+
+    def buttons(self) -> list[bool]:
+        t = time.monotonic() - self.t0
+        state = [False] * self.nbuttons
+        for b, at in self.presses:
+            if at <= t < at + 0.2:
+                state[b] = True
+        return state
 
     def apply(self, sp: Spring) -> None:
         if self.sent != sp:
@@ -221,8 +251,9 @@ class FakeWheel:
 
 
 class Link:
-    def __init__(self, url: str, ctl: Controller, quiet: bool = False):
+    def __init__(self, url: str, ctl: Controller, quiet: bool = False, ffb: bool = True, name: str = 'wheel', buttons: int = 0):
         self.url, self.ctl, self.quiet = url, ctl, quiet
+        self.ffb, self.name, self.nbuttons = ffb, name, buttons
         self.ws = None
         self.connected = False
         self.stopping = False
@@ -242,7 +273,8 @@ class Link:
 
     def claim(self) -> None:
         self.last_claim = time.time()
-        self.send({'t': 'wheel', 'helper': True})
+        if self.ffb:
+            self.send({'t': 'wheel', 'helper': True})
 
     def run(self) -> None:
         import websocket
@@ -251,6 +283,7 @@ class Link:
                 self.ws = websocket.create_connection(self.url, timeout=5)
                 self.connected = True
                 self.say('connected to the relay', self.url)
+                self.send({'t': 'companionHello', 'name': self.name, 'buttons': self.nbuttons})
                 self.claim()
                 while not self.stopping:
                     try:
@@ -265,7 +298,7 @@ class Link:
                         self.ctl.on_state(m, time.monotonic())
                         st = (m.get('wheel') or {}).get('status')
                         # a new car (or the mod reloading) forgets the helper: claim the wheel again
-                        if st != 'helper' and time.time() - self.last_claim > 2:
+                        if self.ffb and st != 'helper' and time.time() - self.last_claim > 2:
                             self.claim()
                     elif m.get('t') == 'event' and m.get('kind') in ('disengage', 'engaged', 'reengaged'):
                         self.say('FSD', m.get('kind'), m.get('detail') or '')
@@ -277,7 +310,8 @@ class Link:
                 time.sleep(1.5)
 
     def close(self) -> None:
-        self.send({'t': 'wheel', 'helper': False})  # the mod takes the wheel back
+        if self.ffb:
+            self.send({'t': 'wheel', 'helper': False})  # the mod takes the wheel back
         self.stopping = True
         try:
             if self.ws:
@@ -296,7 +330,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--strength', type=float, default=0.6, help='0..1 spring strength while FSD drives (default 0.6)')
     ap.add_argument('--invert', action='store_true', help='the wheel turns the wrong way')
     ap.add_argument('--list', action='store_true', help='list wheels and exit')
+    ap.add_argument('--buttons', action='store_true', help='buttons only: leave force feedback to the mod')
     ap.add_argument('--fake', action='store_true', help='no wheel: print what it would do')
+    ap.add_argument('--fake-press', default='', help=argparse.SUPPRESS)
     ap.add_argument('--seconds', type=float, default=0, help='stop after this long (testing)')
     ap.add_argument('--quiet', action='store_true')
     a = ap.parse_args(argv)
@@ -310,14 +346,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        wheel = FakeWheel() if a.fake else SDLWheel(a.device)
+        wheel = FakeWheel(a.fake_press) if a.fake else SDLWheel(a.device, haptics=not a.buttons)
     except Exception as e:
         print('wheel helper:', e, file=sys.stderr)
         return 2
     ctl = Controller(a.strength, a.invert)
-    link = Link(a.url, ctl, a.quiet)
+    link = Link(a.url, ctl, a.quiet, ffb=not a.buttons, name=wheel.name, buttons=wheel.nbuttons)
     if not a.quiet:
-        print(f'wheel helper: {wheel.name}, strength {ctl.strength:.2f}{" (inverted)" if a.invert else ""}. Ctrl+C to stop.')
+        what = 'buttons only' if a.buttons else f'buttons + force feedback, strength {ctl.strength:.2f}{" (inverted)" if a.invert else ""}'
+        print(f'wheel companion: {wheel.name} ({wheel.nbuttons} buttons), {what}. Ctrl+C to stop.')
     def on_term(*_):
         raise KeyboardInterrupt  # closing the window / kill: still hand the wheel back
     for sig in ('SIGTERM', 'SIGBREAK'):
@@ -326,10 +363,18 @@ def main(argv: list[str] | None = None) -> int:
     link.thread.start()
     t0 = time.monotonic()
     last_print = 0.0
+    prev_buttons: list[bool] = []
     try:
         while not a.seconds or time.monotonic() - t0 < a.seconds:
             wheel.pump()
-            sp = ctl.spring(time.monotonic())
+            now_buttons = wheel.buttons()
+            for i, down in enumerate(now_buttons):
+                if down != (prev_buttons[i] if i < len(prev_buttons) else False):
+                    link.send({'t': 'wheelButton', 'button': i, 'down': down})
+                    if not a.quiet and down:
+                        print(f'  button {i}', flush=True)
+            prev_buttons = now_buttons
+            sp = ctl.spring(time.monotonic()) if not a.buttons else Spring()
             wheel.apply(sp)
             if a.fake and not a.quiet and time.monotonic() - last_print > 1:
                 last_print = time.monotonic()
@@ -341,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         link.close()
         wheel.close()
         if not a.quiet:
-            print('wheel helper stopped; the mod has the wheel again')
+            print('wheel companion stopped' + ('' if a.buttons else '; the mod has the wheel again'))
     if a.fake:
         # for tests: the spring centres it used while FSD drove
         engaged = [s for s in wheel.log if s.coeff == ctl.strength]

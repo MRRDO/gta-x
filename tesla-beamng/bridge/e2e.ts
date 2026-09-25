@@ -33,7 +33,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 start('luajit', ['beamng/test/harness.lua'], { HARNESS_SPEED: '6', HARNESS_QUIET: process.env.VERBOSE ? '0' : '1' }, !!process.env.VERBOSE)
 await sleep(500)
 const feedbackDir = mkdtempSync(join(tmpdir(), 'tesla-notes-'))
-start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), '--game-port', String(GAME_PORT), '--quiet', '--feedback-dir', feedbackDir])
+const buttonsDir = mkdtempSync(join(tmpdir(), 'tesla-buttons-'))
+const buttonsFile = join(buttonsDir, 'buttons.json')
+start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), '--game-port', String(GAME_PORT), '--quiet', '--feedback-dir', feedbackDir, '--buttons-file', buttonsFile])
 
 let state = null as State | null
 let map = null as MapInfo | null
@@ -41,6 +43,8 @@ const states: State[] = []
 const events: { kind: string; detail?: string }[] = []
 let route: any = null
 let debug: any = null
+let buttonMap: any = null
+const buttonPresses: number[] = []
 
 async function connectApp(): Promise<WebSocket> {
   for (let i = 0; i < 60; i++) {
@@ -61,6 +65,8 @@ ws.on('message', (d) => {
   else if (m.t === 'event') { events.push(m); if (process.env.VERBOSE) console.log('  EVENT', m.kind, m.detail ?? '', JSON.stringify(m.data ?? {}).slice(0, 200)) }
   else if (m.t === 'route') route = m
   else if (m.t === 'debug') debug = m
+  else if (m.t === 'buttonMap') buttonMap = m
+  else if (m.t === 'wheelButton' && m.down) buttonPresses.push(m.button)
 })
 const send = (m: unknown) => ws.send(JSON.stringify(m))
 // the app's cabin camera reports the driver's attention a few times a second
@@ -281,6 +287,28 @@ try {
   }
 
   // --- voice note from the iPad mic: the relay saves it with the car's context
+  // --- wheel buttons: Settings -> "Set" start FSD -> press a wheel button (read by the companion)
+  {
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off', () => !st().autopilot.engaged, 3000)
+    send({ t: 'learnButton', action: 'toggleFSD' })
+    check('settings: waiting for a button', await until('learning', () => buttonMap?.learning === 'toggleFSD', 3000))
+    // the companion (fake wheel): button 4 at 1.5 s (learn), 4.5 s (FSD on), 8 s (FSD off)
+    start('python3', ['bridge/wheel_helper.py', '--fake', '--buttons', '--quiet', '--seconds', '11', '--fake-press', '4@1.5,4@4.5,4@8',
+      '--url', `ws://127.0.0.1:${PORT}/`])
+    check('companion shows up in settings', await until('companion', () => !!buttonMap?.companion, 8000), JSON.stringify(buttonMap?.companion))
+    check('pressed button gets the action', await until('learned', () => buttonMap?.map?.toggleFSD === 4 && !buttonMap.learning, 6000), JSON.stringify(buttonMap?.map))
+    check('mapping saved to disk', (() => { try { return JSON.parse(readFileSync(buttonsFile, 'utf8')).toggleFSD === 4 } catch { return false } })())
+    check('button starts FSD', await until('fsd on', () => st().autopilot.engaged && st().autopilot.mode === 'fsd', 6000))
+    check('same button stops it', await until('fsd off', () => !st().autopilot.engaged, 6000))
+    check('presses reach the app (for the settings screen)', buttonPresses.filter((b) => b === 4).length >= 3, buttonPresses.join(','))
+    const before = st().autopilot.profile
+    send({ t: 'action', name: 'profileNext' })
+    check('action: next profile', await until('profile', () => st().autopilot.profile !== before, 3000), `${before} -> ${st().autopilot.profile}`)
+    send({ t: 'setButton', action: 'toggleFSD', button: null })
+    check('clear a button', await until('cleared', () => buttonMap?.map?.toggleFSD === undefined, 3000))
+  }
+
   {
     const audio = Buffer.from('RIFF....WAVEfmt fake audio').toString('base64')
     send({ t: 'voiceNote', audio, mime: 'audio/wav', durationSec: 2.5, text: 'it braked for a shadow' })
@@ -301,6 +329,7 @@ try {
 
 clearInterval(attnTimer)
 rmSync(feedbackDir, { recursive: true, force: true })
+rmSync(buttonsDir, { recursive: true, force: true })
 const failed = results.filter((r) => !r[1]).length
 console.log(`\n${results.length - failed} passed, ${failed} failed`)
 cleanup()

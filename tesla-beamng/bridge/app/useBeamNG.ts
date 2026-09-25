@@ -23,6 +23,7 @@ export type BeamNGStore = ClientSnapshot & {
 
 export const useBeamNG = create<BeamNGStore>(() => ({
   status: 'closed', game: false, state: null, map: null, traffic: [], route: null, minimap: null, lastEvent: null,
+  buttonMap: null, lastButton: null,
   client: null, url: null, events: [],
 }))
 

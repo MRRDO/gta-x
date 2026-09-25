@@ -142,6 +142,12 @@
     </section>
 
     <section>
+      <h2>Wheel buttons</h2>
+      <div class="row" style="color:var(--dim)" id="companionOut">wheel companion not running (start.bat starts it)</div>
+      <div class="kv" id="buttonsKv"></div>
+    </section>
+
+    <section>
       <h2>Steering wheel (force feedback)</h2>
       <div class="row">
         <button id="springBtn" class="active">Wheel follows autopilot</button>
@@ -242,6 +248,8 @@ function onMsg(m) {
       if (m.kind === 'voiceNote') toggleVoice() // the wheel button
       if (m.kind === 'voiceNoteSaved') $('voiceOut').innerHTML = `saved <a href="/feedback" target="_blank">${m.detail}</a>`
       break
+    case 'buttonMap': buttonMap = m; renderButtons(); break
+    case 'wheelButton': if (m.down) { lastButton = m.button; renderButtons() } break
     case 'debug': $('debugOut').textContent = JSON.stringify(m, null, 2); break
     case 'pong': $('pingOut').textContent = `${(performance.now() - pingAt).toFixed(0)} ms round trip`; break
   }
@@ -322,6 +330,37 @@ function renderState() {
   }
   wrap.querySelectorAll('[data-door]').forEach((b) => b.classList.toggle('active', !!s.doors[b.dataset.door]))
 }
+
+// ------------------------------------------------------------------ wheel buttons
+// (same list as ACTIONS in protocol.ts)
+const ACTIONS = [
+  ['toggleFSD', 'Start / stop FSD'], ['toggleAutosteer', 'Start / stop Autosteer'], ['toggleTACC', 'Start / stop cruise (TACC)'],
+  ['disengage', 'Turn autopilot off'], ['voiceNote', 'Voice note (iPad mic)'], ['nudge', 'Hands-on nudge'],
+  ['laneLeft', 'Lane change left'], ['laneRight', 'Lane change right'], ['speedUp', 'Faster (FSD: next profile)'],
+  ['speedDown', 'Slower (FSD: previous profile)'], ['profileNext', 'Next speed profile'], ['profilePrev', 'Previous speed profile'],
+  ['followCloser', 'Follow closer'], ['followFarther', 'Follow farther'], ['autopark', 'Autopark'],
+  ['summonForward', 'Summon forward'], ['summonReverse', 'Summon reverse'], ['summonStop', 'Stop summon'],
+]
+let buttonMap = null, lastButton = null
+function renderButtons() {
+  const m = buttonMap || { map: {}, learning: null, companion: null }
+  $('companionOut').textContent = m.companion
+    ? `${m.companion.name} (${m.companion.buttons} buttons)${lastButton != null ? ' · last pressed: button ' + lastButton : ''}`
+    : 'wheel companion not running (start.bat starts it) — buttons bound in BeamNG still work'
+  $('buttonsKv').innerHTML = ACTIONS.map(([name, label]) => {
+    const b = m.map[name], learning = m.learning === name
+    return `<span>${label}</span><span style="display:flex;gap:6px;align-items:center">
+      <b style="min-width:70px">${learning ? 'press a button…' : b != null ? 'button ' + b : '—'}</b>
+      <button data-learn="${name}" class="${learning ? 'active' : ''}">${learning ? 'Cancel' : 'Set'}</button>
+      ${b != null ? `<button data-clear="${name}">Clear</button>` : ''}
+      <button data-try="${name}" title="do it now">▶</button></span>`
+  }).join('')
+  $('buttonsKv').querySelectorAll('[data-learn]').forEach((el) => (el.onclick = () =>
+    send({ t: 'learnButton', action: buttonMap?.learning === el.dataset.learn ? null : el.dataset.learn })))
+  $('buttonsKv').querySelectorAll('[data-clear]').forEach((el) => (el.onclick = () => send({ t: 'setButton', action: el.dataset.clear, button: null })))
+  $('buttonsKv').querySelectorAll('[data-try]').forEach((el) => (el.onclick = () => send({ t: 'action', name: el.dataset.try })))
+}
+renderButtons()
 
 // ------------------------------------------------------------------ controls
 document.querySelectorAll('[data-gear]').forEach((b) => (b.onclick = () => send({ t: 'gear', gear: b.dataset.gear })))
