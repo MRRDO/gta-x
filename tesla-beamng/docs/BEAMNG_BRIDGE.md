@@ -29,9 +29,10 @@ gear friction, the game's own centering force) and the real relay.
 | Suite | Checks |
 |---|---|
 | `npm test` (pure Lua) | driving 29, wheel 14, maneuvers 12, **FSD behaviors 80** |
-| `npm run e2e` (harness + relay + fake app) | 57, also with a backwards motor, backwards car steering, config-only FFB (all 57) and no wheel (46) |
+| `npm run e2e` (harness + relay + fake app) | 66 (incl. wheel-button mapping), also with a backwards motor, backwards car steering, config-only FFB (all 66) and no wheel (55) |
 | app connector self-test | 27 |
 | `npm run test:helper` (backup wheel helper) | 11 |
+| `npm run doctor` | setup check (installed? running? mapped?) |
 
 API names come from the game's docs, BeamMP's source (a multiplayer mod for
 BeamNG 0.39) and the Advanced Steering mod. Anything unsure is wrapped so a
@@ -41,30 +42,43 @@ two of fixes after the first real run.
 
 ## Setup (Quentin)
 
-You need Node 20+ on the PC. The PC and the iPad must be on the same Wi-Fi.
+**Easiest:** have Cowork do it with [`COWORK_HANDOFF.md`](COWORK_HANDOFF.md), or run it yourself:
 
-1. **Install:** in this folder, run `npm install`.
-2. **Build the mod:** `npm run mod` writes `beamng/dist/tesla_bridge.zip`.
-3. **Install the mod:** copy the zip (don't unzip it) into the BeamNG user
-   folder's `mods/` (launcher → *Manage User Folder* → *Open in Explorer*;
-   usually `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods`).
-4. **Start the game:** load **West Coast USA**, spawn any car. In the `~`
-   console you should see `teslaBridge: listening on 127.0.0.1:8766`, then
-   `map west_coast_usa: … nodes`.
-5. **Start the relay:** `npm run bridge`. It prints addresses, a pairing token
-   and a QR code. If Windows Firewall asks, allow Node on **private** networks.
-6. **Test page:** `http://localhost:8765/` on the PC, or scan the QR code with
-   the iPad (the link carries the `?token=`; it's saved in `bridge/.token`).
-7. **First thing:** **Run diagnostics** → **Copy**, and send me the output.
+1. In this folder, in PowerShell: `powershell -ExecutionPolicy Bypass -File .\setup.ps1`.
+   It installs Node/Python if missing, builds the mod, and copies it into BeamNG's mods
+   folder. It also adds the firewall rule and puts a **Tesla Bridge** shortcut on the
+   desktop. Run it again after updates.
+2. Start BeamNG (**West Coast USA**, any car), then double-click **Tesla Bridge**. That
+   starts the relay (QR code for the iPad), the wheel-buttons companion, and the test page.
+3. `npm run doctor` checks everything and says how to fix what's missing.
+4. First thing: test page → **Run diagnostics** → **Copy**, and send it over.
 
-### Wheel buttons (Options → Controls → Bindings → *Tesla UI Bridge*)
+The PC and the iPad must be on the same Wi-Fi, set to *Private* in Windows.
 
-| Action | What it does |
-|---|---|
-| Toggle FSD | engage / disengage FSD (like the stalk) |
-| Toggle Autosteer | steering + cruise only |
-| Voice note (iPad mic) | starts recording on the iPad; press again to save (or it stops after 60 s) |
-| Hands-on nudge | counts as a wheel nudge for the attention monitor |
+Manual route: `npm install` → `npm run mod` → copy `beamng/dist/tesla_bridge.zip`
+(don't unzip it) into `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods` (launcher →
+*Manage User Folder*) → `npm run bridge` → `http://localhost:8765/`.
+
+### Wheel buttons (Settings)
+
+Map **any** button on the wheel in the test page's **Wheel buttons** card (or the app's
+settings, via `learnButton`): click **Set** next to an action, then press the button.
+The mapping is saved in `bridge/buttons.json`, and ▶ tries an action.
+
+The buttons are read by the wheel companion (`wheel_helper.py --buttons`, started by
+`start.bat`), so they don't need to be bound in BeamNG. Don't pick buttons BeamNG already
+uses for something else, or both will happen.
+
+Actions:
+- start/stop **FSD**, **Autosteer** or **TACC**, and autopilot off
+- **voice note** (iPad mic) and hands-on **nudge**
+- lane change left/right
+- faster/slower (in FSD this picks the speed profile, like v14), next/previous profile
+- follow closer/farther
+- autopark, and summon forward/reverse/stop
+
+Without the companion, BeamNG's own bindings still work: Options → Controls → Bindings →
+*Tesla UI Bridge* has Toggle FSD, Toggle Autosteer, Voice note and Hands-on nudge.
 
 ### Logitech G29 (or any force-feedback wheel)
 
@@ -170,6 +184,8 @@ stopSync(); stopNotes(); disconnectBeamNG()
 | FSD settings | `settings({ quirks, safety, speedOffsetMph, followDistance, laneChanges, nags })` |
 | Voice note | `voiceNote(blob)` (done for you by `startVoiceNotes`; `useVoiceNote` has `recording` for a mic badge) |
 | Wheel spring | `wheel({ strength: 0.6 })` |
+| Settings → Wheel buttons | `learnButton(action)` then the user presses a button; `setButton(action, null)` clears; the map is in `useBeamNG(s => s.buttonMap)`, the last press in `s.lastButton`; `ACTIONS` (protocol) has the labels |
+| Any wheel action from the UI | `action('toggleFSD' \| 'speedUp' \| ...)` |
 
 **Map helpers** (`geo.ts`): `roadsGeoJSON`, `routeGeoJSON`, `trafficGeoJSON`,
 `worldToLatLon` / `worldToLngLat` / `lngLatToWorld`, `worldToDriveView`. The

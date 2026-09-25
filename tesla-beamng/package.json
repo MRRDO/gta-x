@@ -11,7 +11,8 @@
     "harness": "luajit beamng/test/harness.lua",
     "typecheck": "tsc --noEmit",
     "helper": "python3 bridge/wheel_helper.py",
-    "test:helper": "python3 beamng/test/test_wheel_helper.py"
+    "test:helper": "python3 beamng/test/test_wheel_helper.py",
+    "doctor": "tsx bridge/doctor.ts"
   },
   "dependencies": {
     "qrcode-terminal": "^0.12.0",
