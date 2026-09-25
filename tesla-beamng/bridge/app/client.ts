@@ -3,11 +3,13 @@
 //   const bridge = new BeamNGClient(bridgeUrl())   // or new BeamNGClient('ws://192.168.1.20:8765/?token=ab12cd34')
 //   bridge.subscribe((msg) => { if (msg.t === 'state') ... })
 //   bridge.setGear('D'); bridge.autopilot('fsd', 'standard'); bridge.navigate([x, y, z])
+//   bridge.autopilot('tacc')  (cruise only)  bridge.autopilot('autosteer')  bridge.autopilot('off')
 //
 // Reconnects by itself. Keeps the latest state/map/traffic/route so late subscribers can read them.
 
 import type {
-  Arrival, AutopilotMode, Command, Event, GameMessage, Gear, MapInfo, Minimap, Profile, Route, SignalDir, State, Traffic, Vec3,
+  Arrival, AutopilotMode, Command, Event, GameMessage, Gear, MapInfo, Minimap, Profile, Quirks, Route, SafetySettings, SignalDir, State,
+  Traffic, Vec3,
 } from '../protocol.ts'
 
 export type ConnectionStatus = 'connecting' | 'open' | 'closed'
@@ -163,6 +165,27 @@ export class BeamNGClient {
   cancelRoute() { return this.send({ t: 'cancelRoute' }) }
   /** Force-feedback wheel spring (G29): on/off and strength 0..1. */
   wheel(opts: { spring?: boolean; strength?: number }) { return this.send({ t: 'wheel', ...opts }) }
+  /** FSD settings: quirks, active safety, speed offset (mph over the limit), TACC set speed (m/s), follow distance 1..7, auto lane changes, nags. */
+  settings(opts: {
+    quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null
+    followDistance?: number | null; laneChanges?: boolean; nags?: boolean
+  }) { return this.send({ t: 'settings', ...opts }) }
+  /** The cabin camera's read on the driver. Send it 2-5 times a second while FSD is on; stale after 3 s. */
+  attention(state: 'ok' | 'phone' | 'eyesOff' | 'unknown') { return this.send({ t: 'attention', state }) }
+  /** "Hands on the wheel" for the nag (a button, for players without a wheel). */
+  nudge() { return this.send({ t: 'nudge' }) }
+  /** Dumb Summon: creep ~12 m forward/back at walking pace and stop. null stops it. */
+  summon(dir: 'forward' | 'reverse' | null) { return this.send({ t: 'summon', dir }) }
+  /** Back into the nearest free parking spot beside the car. */
+  autopark() { return this.send({ t: 'autopark' }) }
+  resetStrikes() { return this.send({ t: 'resetStrikes' }) }
+  /** Upload a voice note (e.g. from MediaRecorder). The relay saves it with the car's state for later. */
+  async voiceNote(audio: Blob, opts: { durationSec?: number; text?: string } = {}) {
+    const bytes = new Uint8Array(await audio.arrayBuffer())
+    let bin = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    return this.send({ t: 'voiceNote', audio: btoa(bin), mime: audio.type || 'application/octet-stream', ...opts })
+  }
   requestMap() { return this.send({ t: 'requestMap' }) }
   debug() { return this.send({ t: 'debug' }) }
 

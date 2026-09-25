@@ -3,8 +3,11 @@
 //   npx tsx bridge/app/selftest.ts      (needs luajit + lua-socket + lua-dkjson)
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { create } from 'zustand'
-import { connectBeamNG, useBeamNG, syncBeamNGToApp, lngLatToWorld, worldToLngLat, headingDeg, type StoreLike } from './index.ts'
+import { connectBeamNG, useBeamNG, syncBeamNGToApp, lngLatToWorld, worldToLngLat, headingDeg, originFor, type StoreLike } from './index.ts'
 
 const PORT = 18767
 const procs: ChildProcess[] = []
@@ -38,15 +41,17 @@ async function until(fn: () => boolean, ms: number) {
 
 start('luajit', ['beamng/test/harness.lua'], { HARNESS_SPEED: '4', HARNESS_QUIET: '1' })
 await sleep(500)
-start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), ...(process.env.VERBOSE ? [] : ['--quiet'])])
+const notes = mkdtempSync(join(tmpdir(), 'tesla-notes-'))
+process.on('exit', () => rmSync(notes, { recursive: true, force: true }))
+start(process.execPath, ['--import', 'tsx', 'bridge/relay.ts', '--port', String(PORT), '--feedback-dir', notes, ...(process.env.VERBOSE ? [] : ['--quiet'])])
 
 // stand-ins for src/store.ts, src/sim/drive.ts, src/nav/store.ts (fields per the handoff)
 const vehicle = create<any>(() => ({
   gear: 'P', speedMph: 0, locked: true, doors: { FL: false, FR: false, RL: false, RR: false }, frunkOpen: false, trunkOpen: false,
   chargePercent: 50, driverTempF: 70, toggles: { headlightsOn: false, fogLights: false, seatHeat: true },
 }))
-const sim = create<any>(() => ({ heading: 0, signal: null, control: null, lead: null, fsd: false, streakMi: 3 }))
-const nav = create<any>(() => ({ position: [0, 0], heading: 0, destination: null, route: null }))
+const sim = create<any>(() => ({ heading: 0, signal: null, control: null, lead: null, fsd: false, profile: 'Standard', arrivalPark: 'Curbside', streakMi: 3 }))
+const nav = create<any>(() => ({ position: [0, 0], heading: 0, destination: null, stops: [], route: null }))
 const stop = syncBeamNGToApp({ vehicle: vehicle as unknown as StoreLike, sim: sim as unknown as StoreLike, nav: nav as unknown as StoreLike })
 
 connectBeamNG(`ws://127.0.0.1:${PORT}/`)
@@ -73,19 +78,45 @@ await sleep(1500)
 check('stores still agree with the game after the hold', vehicle.getState().doors.FL === true && vehicle.getState().trunkOpen === true && vehicle.getState().toggles.headlightsOn === true)
 vehicle.setState({ doors: { ...vehicle.getState().doors, FL: false }, trunkOpen: false })
 
-// client commands
+// the cabin camera says the driver is watching the road (else FSD nags, like the real thing)
 const c = useBeamNG.getState().client!
-c.navigate([450, 0, 0], { arrival: 'Curbside' })
+const attn = setInterval(() => c.attention('ok'), 200)
+
+// picking a destination on the app's map routes the game car (nav store -> navigate)
+{
+  const [lon, lat] = worldToLngLat(450, 0, originFor(useBeamNG.getState().map?.level))
+  nav.setState({ destination: { name: 'Harness Ave', lat, lon } })
+}
+check('UI destination routes the game car', await until(() => (useBeamNG.getState().route?.points.length ?? 0) > 5, 5000))
 check('route lands in the nav store as [lon, lat]', await until(() => (nav.getState().route?.coords?.length ?? 0) > 5, 5000))
-c.autopilot('fsd', 'standard')
+{
+  const r = useBeamNG.getState().route!
+  const end = r.points[r.points.length - 1]
+  check('route ends at the picked place', Math.hypot(end[0] - 450, end[1]) < 15, JSON.stringify(end))
+}
+// the app's FSD switch engages the game's FSD, with the app's profile
+sim.setState({ profile: 'Hurry' })
+sim.setState({ fsd: true })
+check('UI FSD switch engages FSD in the game', await until(() => !!useBeamNG.getState().state?.autopilot.engaged, 5000))
+check('...with the app\'s profile', useBeamNG.getState().state?.autopilot.profile === 'hurry', useBeamNG.getState().state?.autopilot.profile)
 check('FSD state lands in the sim store', await until(() => sim.getState().fsd === true, 5000))
+check('profile written back in the app\'s format', sim.getState().profile === 'Hurry', sim.getState().profile)
 check('speed lands in the vehicle store', await until(() => vehicle.getState().speedMph > 5, 15000), vehicle.getState().speedMph.toFixed(1) + ' mph')
 c.holdThrottle(0.9)
 check('accelerator strip overrides FSD', await until(() => !!useBeamNG.getState().state?.autopilot.accelOverride, 3000))
 c.releaseThrottle()
 check('releasing it hands speed back to FSD', await until(() => useBeamNG.getState().state?.autopilot.accelOverride === false && !!useBeamNG.getState().state?.autopilot.engaged, 3000))
-c.autopilot('off')
-check('FSD off from the app', await until(() => sim.getState().fsd === false, 3000))
+sim.setState({ fsd: false })
+check('UI FSD switch off disengages in the game', await until(() => useBeamNG.getState().state?.autopilot.engaged === false, 3000))
+await sleep(1500)
+check('sim store agrees after the hold', sim.getState().fsd === false)
+nav.setState({ destination: null })
+check('clearing the destination cancels the route', await until(() => !useBeamNG.getState().route, 3000))
+
+// a voice note from the iPad mic (a Blob, as MediaRecorder makes)
+c.voiceNote(new Blob([new Uint8Array([82, 73, 70, 70, 1, 2, 3])], { type: 'audio/webm' }), { durationSec: 1 })
+check('voice note upload acknowledged', await until(() => useBeamNG.getState().events.some((e) => e.kind === 'voiceNoteSaved'), 3000))
+clearInterval(attn)
 
 stop()
 useBeamNG.getState().client?.close()

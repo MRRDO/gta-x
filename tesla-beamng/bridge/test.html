@@ -24,7 +24,7 @@
   .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0; }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-variant-numeric: tabular-nums; }
   .kv span:nth-child(odd) { color: var(--dim); }
-  button, select, input[type=text] {
+  button, select, input[type=text], input[type=number] {
     background: #23262b; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 12px; font: inherit; cursor: pointer; min-height: 38px;
   }
@@ -93,6 +93,7 @@
       <h2>Autopilot</h2>
       <div class="row">
         <button data-ap="off" class="danger">Off</button>
+        <button data-ap="tacc">TACC</button>
         <button data-ap="autosteer">Autosteer</button>
         <button data-ap="fsd">FSD</button>
         <select id="profile">
@@ -100,7 +101,44 @@
           <option value="standard" selected>Standard</option><option value="hurry">Hurry</option><option value="madmax">Mad Max</option>
         </select>
       </div>
+      <div class="row">
+        <button data-lc="left">◀ Lane change</button><button data-lc="right">Lane change ▶</button>
+        <button id="nudgeBtn">Hands-on nudge</button>
+        <button id="resetStrikes">Reset strikes</button>
+      </div>
+      <div class="row">
+        <button data-summon="forward">Summon ▲</button><button data-summon="reverse">Summon ▼</button>
+        <button data-summon="stop">Stop summon</button><button id="autopark">Autopark</button>
+      </div>
+      <div class="row" id="nagBanner" style="display:none;padding:6px 10px;border-radius:8px;font-weight:600"></div>
       <div class="kv" id="apKv"></div>
+    </section>
+
+    <section>
+      <h2>Driver camera (simulated) &amp; safety</h2>
+      <div class="row">
+        <span style="color:var(--dim)">camera says</span>
+        <select id="attn">
+          <option value="">off (wheel nags)</option><option value="ok" selected>eyes on road</option>
+          <option value="phone">on phone</option><option value="eyesOff">eyes off road</option>
+        </select>
+        <button id="voiceBtn">🎙 Voice note</button>
+        <span id="voiceOut" style="color:var(--dim)"></span>
+      </div>
+      <div class="row" id="safetyRow"></div>
+    </section>
+
+    <section>
+      <h2>FSD settings</h2>
+      <div class="row" id="quirks"></div>
+      <div class="row" id="safetyToggles"></div>
+      <div class="row">
+        <span style="color:var(--dim)">FCW</span>
+        <select id="fcw"><option>early</option><option selected>medium</option><option>late</option><option>off</option></select>
+        <span style="color:var(--dim)">offset mph</span><input id="offset" type="number" min="-10" max="20" step="1" style="width:56px" placeholder="auto">
+        <span style="color:var(--dim)">follow</span><input id="followDist" type="number" min="1" max="7" step="1" style="width:48px" placeholder="auto">
+        <button id="applySettings">Apply</button>
+      </div>
     </section>
 
     <section>
@@ -171,7 +209,7 @@ const $ = (id) => document.getElementById(id)
 const MPH = 0.44704
 const token = new URLSearchParams(location.search).get('token') || ''
 let ws = null
-let state = null, map = null, traffic = [], route = [], dest = null, minimap = null, minimapImg = null, showMini = true
+let state = null, map = null, traffic = [], route = [], dest = null, minimap = null, minimapImg = null, showMini = true, parkingPin = null
 let stateCount = 0
 
 // ------------------------------------------------------------------ socket
@@ -198,8 +236,12 @@ function onMsg(m) {
     case 'traffic': traffic = m.cars; break
     case 'map': setMap(m); logLine(`map ${m.level}: ${m.nodes.length} nodes, ${m.links.length} links, ${m.signals.length} signals, ${m.parking.length} parking`); break
     case 'minimap': loadMinimap(m); break
-    case 'route': route = m.points || []; logLine(route.length ? `route ${(m.length / 1609.34).toFixed(2)} mi${m.openEnded ? ' (following road)' : ''}${m.arrival ? ', arrival: ' + m.arrival : ''}` : 'route cleared'); break
-    case 'event': logLine(`${m.kind}${m.detail ? ': ' + m.detail : ''}`, m.kind === 'error' ? 'err' : 'ev'); break
+    case 'route': route = m.points || []; parkingPin = m.parkingPin ? m.parkingPin.pos : null; logLine(route.length ? `route ${(m.length / 1609.34).toFixed(2)} mi${m.openEnded ? ' (following road)' : ''}${m.arrival ? ', arrival: ' + m.arrival : ''}` : 'route cleared'); break
+    case 'event':
+      logLine(`${m.kind}${m.detail ? ': ' + m.detail : ''}`, m.kind === 'error' ? 'err' : 'ev')
+      if (m.kind === 'voiceNote') toggleVoice() // the wheel button
+      if (m.kind === 'voiceNoteSaved') $('voiceOut').innerHTML = `saved <a href="/feedback" target="_blank">${m.detail}</a>`
+      break
     case 'debug': $('debugOut').textContent = JSON.stringify(m, null, 2); break
     case 'pong': $('pingOut').textContent = `${(performance.now() - pingAt).toFixed(0)} ms round trip`; break
   }
@@ -237,7 +279,22 @@ function renderState() {
     ['remaining', a.remaining == null ? '--' : (a.remaining / 1609.34).toFixed(2) + ' mi'],
     ['last disengage', a.lastDisengage ? `${a.lastDisengage.reason} @ ${a.lastDisengage.time.toFixed(0)}s` : '--'],
     ['steer calib', a.steerSign != null ? `sign ${a.steerSign}, gain ${(a.steerGain || 0).toFixed(3)}` : '--'],
+    ['activity', (a.activity || 'drive') + (a.maneuver ? ` · ${a.maneuver.kind} ${a.maneuver.step}/${a.maneuver.total} ${a.maneuver.dir < 0 ? 'R' : 'D'}` : '')],
+    ['lane', a.lane ? `${a.lane.index + 1} of ${a.lane.count}${a.lane.changing ? ` → ${a.lane.changing.dir} (${a.lane.changing.reason}, ${a.lane.changing.phase})` : ''}` : '--'],
+    ['set speed', mph(a.setSpeed)],
+    ['doing', [a.creeping && 'creeping for visibility', a.waitingFor && 'waiting for ' + a.waitingFor, a.goAround && 'going around',
+      a.emergencyVehicle && 'emergency vehicle: ' + a.emergencyVehicle, a.schoolBus && 'school bus', a.phantomBrake && 'phantom brake 👻',
+      a.weather && (a.weather.rain > 0.1 || a.weather.fog > 0.1) && `weather (rain ${a.weather.rain.toFixed(1)}, fog ${a.weather.fog.toFixed(1)})`].filter(Boolean).join(' · ') || '--'],
+    ['nag', a.nag ? `level ${a.nag.level}${a.nag.reason ? ' (' + a.nag.reason + ')' : ''} · strikes ${a.nag.strikes}/${a.nag.maxStrikes}${a.nag.lockedOut ? ' · LOCKED OUT' : ''}` : '--'],
   ]
+  const nb = $('nagBanner'), lvl = a.nag?.level || 0
+  nb.style.display = lvl || a.nag?.lockedOut ? '' : 'none'
+  nb.style.background = lvl >= 3 || a.nag?.lockedOut ? '#7f1d1d' : lvl === 2 ? '#78350f' : '#1e3a8a'
+  nb.textContent = a.nag?.lockedOut ? 'FSD unavailable for the rest of this drive' : lvl >= 3 ? 'TAKE OVER IMMEDIATELY' : lvl === 2 ? 'Pay attention to the road 🔔' : 'Pay attention to the road'
+  const sf = s.safety
+  $('safetyRow').innerHTML = sf ? [
+    ['FCW', sf.fcw], ['AEB', sf.aeb], ['blind L', sf.blindLeft], ['blind R', sf.blindRight], ['lane departure', sf.laneDeparture],
+  ].map(([k, on]) => `<span class="pill${on ? ' off' : ''}">${k}</span>`).join('') + `<span style="color:var(--dim)">TTC ${sf.ttc == null ? '--' : sf.ttc.toFixed(1) + ' s'}</span>` : ''
   $('apKv').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('')
   const w = s.wheel
   if (w) {
@@ -291,6 +348,51 @@ accel.addEventListener('pointerdown', () => {
 })
 const accelUp = () => { clearInterval(accelTimer); accel.value = 0; send({ t: 'throttleOverride', value: 0 }) }
 accel.addEventListener('pointerup', accelUp); accel.addEventListener('pointercancel', accelUp)
+
+document.querySelectorAll('[data-lc]').forEach((b) => (b.onclick = () => send({ t: 'signal', dir: b.dataset.lc })))
+document.querySelectorAll('[data-summon]').forEach((b) => (b.onclick = () => send({ t: 'summon', dir: b.dataset.summon === 'stop' ? null : b.dataset.summon })))
+$('autopark').onclick = () => send({ t: 'autopark' })
+$('nudgeBtn').onclick = () => send({ t: 'nudge' })
+$('resetStrikes').onclick = () => send({ t: 'resetStrikes' })
+// the app's cabin camera, simulated: report attention 4x a second
+setInterval(() => { const v = $('attn').value; if (v) send({ t: 'attention', state: v }) }, 250)
+
+const QUIRKS = { phantomBraking: 'phantom braking', yellowHesitation: 'yellow hesitation', wiggle: 'wheel wiggle', weather: 'weather slowdown', creep: 'creep at stops' }
+const SAFETY = { aeb: 'AEB', evasion: 'collision evasion', lda: 'lane departure', blindSpot: 'blind spot', obstacleAware: 'obstacle-aware accel' }
+const checkbox = (wrap, key, label) => {
+  const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:4px;align-items:center'
+  l.innerHTML = `<input type="checkbox" data-key="${key}" checked> ${label}`; wrap.append(l)
+}
+for (const [k, v] of Object.entries(QUIRKS)) checkbox($('quirks'), k, v)
+for (const [k, v] of Object.entries(SAFETY)) checkbox($('safetyToggles'), k, v)
+$('applySettings').onclick = () => {
+  const quirks = {}, safety = { fcw: $('fcw').value }
+  $('quirks').querySelectorAll('input').forEach((i) => (quirks[i.dataset.key] = i.checked))
+  $('safetyToggles').querySelectorAll('input').forEach((i) => (safety[i.dataset.key] = i.checked))
+  const num = (id) => ($(id).value === '' ? null : Number($(id).value))
+  send({ t: 'settings', quirks, safety, speedOffsetMph: num('offset'), followDistance: num('followDist') })
+}
+
+// voice note from this device's mic (the wheel button does the same through the game)
+let rec = null, recChunks = [], recAt = 0
+async function toggleVoice() {
+  if (rec) { rec.stop(); return }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    rec = new MediaRecorder(stream); recChunks = []; recAt = Date.now()
+    rec.ondataavailable = (e) => e.data.size && recChunks.push(e.data)
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      const blob = new Blob(recChunks, { type: rec.mimeType }); rec = null
+      $('voiceBtn').classList.remove('active'); $('voiceOut').textContent = 'uploading…'
+      const b = new Uint8Array(await blob.arrayBuffer()); let bin = ''
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...b.subarray(i, i + 0x8000))
+      send({ t: 'voiceNote', audio: btoa(bin), mime: blob.type, durationSec: (Date.now() - recAt) / 1000 })
+    }
+    rec.start(); $('voiceBtn').classList.add('active'); $('voiceOut').textContent = 'recording… press again to save'
+  } catch (e) { $('voiceOut').textContent = 'mic: ' + e.message }
+}
+$('voiceBtn').onclick = toggleVoice
 
 $('springBtn').onclick = () => send({ t: 'wheel', spring: !$('springBtn').classList.contains('active') })
 $('springStrength').onchange = () => send({ t: 'wheel', strength: Number($('springStrength').value) })
@@ -389,8 +491,9 @@ function draw() {
     ctx.fillStyle = '#fff'; ctx.fillRect(L / 2 - L * 0.2, -Wd / 2, L * 0.2, Wd)
     ctx.restore()
   }
-  for (const c of traffic) car(c.pos[0], c.pos[1], c.dir[0], c.dir[1], c.w, c.l, '#8b9097')
+  for (const c of traffic) car(c.pos[0], c.pos[1], c.dir[0], c.dir[1], c.w, c.l, c.emergency ? '#ef4444' : c.schoolBus ? '#f0b429' : '#8b9097')
   if (dest) dot(dest[0], dest[1], Math.max(2, 6 * px), '#ef4444')
+  if (parkingPin) { dot(parkingPin[0], parkingPin[1], Math.max(2.5, 8 * px), '#3e8bff'); ctx.save(); ctx.translate(parkingPin[0], parkingPin[1]); ctx.scale(px, -px); ctx.fillStyle = '#fff'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('P', 0, 0); ctx.restore() }
   if (state) car(state.pos[0], state.pos[1], state.dir[0], state.dir[1], 1.9, 4.8, state.autopilot.engaged ? '#3e8bff' : '#e8e9eb')
 }
 requestAnimationFrame(draw)

@@ -16,11 +16,12 @@
 // runs, so it doesn't fight over the same fields.
 // App -> game: when the UI changes gear, doors, frunk/trunk, headlights or fog lights in the
 // store, the matching command goes to the game. The game's reply then confirms it (or puts
-// it back if the car can't).
+// it back if the car can't). The same goes for the FSD switch and speed profile (sim store)
+// and the destination / stops (nav store): picking a place on the map routes the game car there.
 
 import { useBeamNG } from './useBeamNG.ts'
-import { MPS_TO_MPH, headingDeg, originFor, routeCoords, worldToLatLon } from './geo.ts'
-import type { State } from '../protocol.ts'
+import { MPS_TO_MPH, headingDeg, lngLatToWorld, originFor, routeCoords, worldToLatLon } from './geo.ts'
+import type { Arrival, Profile, State, Vec3 } from '../protocol.ts'
 
 type AnyState = Record<string, any>
 export type StoreLike = {
@@ -47,16 +48,59 @@ function vehiclePatch(s: State, prev: AnyState): AnyState {
   return patch
 }
 
-function simPatch(s: State): AnyState {
+// the sim store's FSD switch / profile / arrival choice, whichever of these names it uses
+const FSD_KEYS = ['fsd', 'fsdEngaged', 'fsdOn', 'fsdActive', 'autopilotEngaged']
+const PROFILE_KEYS = ['profile', 'fsdProfile', 'speedProfile']
+const ARRIVAL_KEYS = ['arrivalPark', 'arrival']
+const PROFILE_LABEL: Record<Profile, string> = { sloth: 'Sloth', chill: 'Chill', standard: 'Standard', hurry: 'Hurry', madmax: 'Mad Max' }
+const ARRIVALS: Arrival[] = ['Parking Lot', 'Street', 'Driveway', 'Parking Garage', 'Curbside']
+
+/** 'Mad Max' / 'madMax' / 'MADMAX' -> 'madmax' (null if it isn't a profile) */
+export function toProfile(v: unknown): Profile | null {
+  if (typeof v !== 'string') return null
+  const k = v.toLowerCase().replace(/[\s_-]/g, '')
+  return k in PROFILE_LABEL ? (k as Profile) : null
+}
+/** Write a profile back in the format the store already uses ('Standard' vs 'standard'). */
+function profileLike(cur: unknown, p: Profile): string {
+  return typeof cur === 'string' && Object.values(PROFILE_LABEL).includes(cur) ? PROFILE_LABEL[p] : p
+}
+function toArrival(v: unknown): Arrival | undefined {
+  if (typeof v !== 'string') return undefined
+  const k = v.toLowerCase().replace(/[\s_-]/g, '')
+  return ARRIVALS.find((a) => a.toLowerCase().replace(/\s/g, '') === k)
+}
+
+/**
+ * A place from the nav store as [lon, lat]. Accepts [lat, lon] (like `position`),
+ * { lat, lon|lng }, { coords|lngLat|center: [lon, lat] }, { position: [lat, lon] }.
+ */
+export function placeLngLat(p: unknown): [number, number] | null {
+  if (!p) return null
+  const num = (a: unknown): a is [number, number] => Array.isArray(a) && a.length >= 2 && typeof a[0] === 'number' && typeof a[1] === 'number'
+  if (num(p)) return [p[1], p[0]]
+  if (typeof p !== 'object') return null
+  const o = p as AnyState
+  if (typeof o.lat === 'number' && typeof (o.lon ?? o.lng) === 'number') return [o.lon ?? o.lng, o.lat]
+  for (const k of ['coords', 'lngLat', 'center', 'coordinates']) if (num(o[k])) return [o[k][0], o[k][1]]
+  if (num(o.position)) return [o.position[1], o.position[0]]
+  if (o.geometry && num(o.geometry.coordinates)) return [o.geometry.coordinates[0], o.geometry.coordinates[1]]
+  return null
+}
+
+function simPatch(s: State, cur: AnyState): AnyState {
   const a = s.autopilot
-  return {
+  const patch: AnyState = {
     heading: headingDeg(s.dir),
     signal: s.signal === 'hazard' ? null : s.signal,
     control: a.control,
     lead: a.leadGap,
-    fsd: a.engaged && a.mode === 'fsd',
     autopilot: a,
   }
+  const on = a.engaged && a.mode !== 'tacc'
+  for (const k of FSD_KEYS) if (typeof cur[k] === 'boolean') patch[k] = on // never clobber a field that isn't the switch
+  for (const k of PROFILE_KEYS) if (toProfile(cur[k])) patch[k] = profileLike(cur[k], a.profile)
+  return patch
 }
 
 function navPatch(s: State, level?: string | null): AnyState {
@@ -92,7 +136,7 @@ export function syncBeamNGToApp(stores: { vehicle?: StoreLike; sim?: StoreLike; 
       applying = true
       try {
         if (stores.vehicle) stores.vehicle.setState(only(stores.vehicle, vehiclePatch(s, stores.vehicle.getState())))
-        if (stores.sim) stores.sim.setState(only(stores.sim, simPatch(s)))
+        if (stores.sim) stores.sim.setState(only(stores.sim, simPatch(s, stores.sim.getState())))
         if (stores.nav) stores.nav.setState(only(stores.nav, navPatch(s, b.map?.level)))
       } finally {
         applying = false
@@ -124,6 +168,50 @@ export function syncBeamNGToApp(stores: { vehicle?: StoreLike; sim?: StoreLike; 
       const t = st.toggles ?? {}, pt = prev.toggles ?? {}
       if (t.headlightsOn !== pt.headlightsOn) { hold('toggles'); c.setLights({ low: !!t.headlightsOn, high: false }) }
       if (t.fogLights !== pt.fogLights) { hold('toggles'); c.setLights({ fog: !!t.fogLights }) }
+    }))
+  }
+
+  if (stores.sim) {
+    unsubs.push(stores.sim.subscribe((st, prev) => {
+      if (applying) return
+      const c = client()
+      if (!c) return
+      const hold = (k: string) => pending.set(k, { value: st[k], until: Date.now() + HOLD_MS })
+      const profileKey = PROFILE_KEYS.find((k) => toProfile(st[k]))
+      const profile = profileKey ? toProfile(st[profileKey]) ?? undefined : undefined
+      const fsdKey = FSD_KEYS.find((k) => k in st && typeof st[k] === 'boolean' && st[k] !== prev[k])
+      if (fsdKey) {
+        hold(fsdKey)
+        c.autopilot(st[fsdKey] ? 'fsd' : 'off', profile)
+      } else if (profileKey && st[profileKey] !== prev[profileKey] && profile) {
+        hold(profileKey)
+        c.setProfile(profile)
+      }
+    }))
+  }
+
+  if (stores.nav) {
+    const arrival = () => {
+      const sim = stores.sim?.getState() ?? {}
+      const k = ARRIVAL_KEYS.find((key) => toArrival(sim[key]))
+      return k ? toArrival(sim[k]) : undefined
+    }
+    const world = (p: unknown): Vec3 | null => {
+      const ll = placeLngLat(p)
+      if (!ll) return null
+      const b = useBeamNG.getState()
+      return lngLatToWorld(ll[0], ll[1], originFor(b.map?.level), b.map)
+    }
+    unsubs.push(stores.nav.subscribe((st, prev) => {
+      if (applying) return
+      const c = client()
+      if (!c) return
+      if (st.destination === prev.destination && st.stops === prev.stops) return
+      if (!st.destination) { if (prev.destination) c.cancelRoute(); return }
+      const to = world(st.destination)
+      if (!to) return
+      const stops = (Array.isArray(st.stops) ? st.stops : []).map(world).filter((p: Vec3 | null): p is Vec3 => !!p)
+      c.navigate(to, { stops, arrival: arrival() })
     }))
   }
 
