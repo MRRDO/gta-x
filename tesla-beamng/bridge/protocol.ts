@@ -205,7 +205,16 @@ export type ButtonMap = {
 /** Relay -> app: a wheel button went down/up (for "press a button" UIs). */
 export type WheelButton = { t: 'wheelButton'; button: number; down: boolean }
 
-export type GameMessage = State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton
+/**
+ * Relay -> app: a backup-camera frame (while in R, or a preview). `data` is base64 PNG.
+ * Real backup cameras show a mirror image: draw it flipped when `mirrored`. `off` = hide the view.
+ */
+export type CameraFrame = {
+  t: 'camera'; view: 'rear'; off?: boolean
+  seq?: number; mime?: string; data?: string; width?: number; height?: number; mirrored?: boolean
+}
+
+export type GameMessage = State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame
 
 // ---------------------------------------------------------------------------
 // App -> game
@@ -222,7 +231,7 @@ export type Command =
   | { t: 'cancelRoute' }
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
   | { t: 'wheel'; spring?: boolean; strength?: number; helper?: boolean } // FFB wheel spring on/off, strength 0..1 (default on, 0.6); helper: the SDL wheel helper drives the wheel
-  | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean }
+  | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean; camera?: CameraSettings }
   | { t: 'attention'; state: 'ok' | 'phone' | 'eyesOff' | 'unknown' } // from the app's cabin camera, ~2-5 Hz
   | { t: 'nudge' } // "hands on wheel" (e.g. a button for keyboard players)
   | { t: 'summon'; dir: 'forward' | 'reverse' | null } // Dumb Summon (null stops)
@@ -233,6 +242,7 @@ export type Command =
   | { t: 'learnButton'; action: ActionName | null } // the next wheel button pressed gets this action (null cancels)
   | { t: 'setButton'; action: ActionName; button: number | null } // set / clear directly
   | { t: 'requestButtonMap' }
+  | { t: 'camera'; on?: boolean } // show the backup camera for 15 s without shifting to R (a preview button); false hides it
   | { t: 'wheelButton'; button: number; down: boolean } // from the wheel companion
   | { t: 'companionHello'; name: string; buttons: number } // from the wheel companion
   | { t: 'requestMap' }
@@ -240,13 +250,15 @@ export type Command =
   | { t: 'debug' }
   | { t: 'ping' }
 
+/** Backup camera: on in R (default on), frames per second 1..10 (default 5), quality low 320x180 (default) / medium 480x270 / high 640x360. Higher costs more fps in the game. */
+export type CameraSettings = { backup?: boolean; fps?: number; quality?: 'low' | 'medium' | 'high' }
 export type Quirks = { phantomBraking: boolean; yellowHesitation: boolean; wiggle: boolean; weather: boolean; creep: boolean }
 export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: boolean; evasion: boolean; lda: boolean; blindSpot: boolean; obstacleAware: boolean }
 
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
-  'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello',
+  'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera',
   'requestMap', 'requestMinimap', 'debug', 'ping',
 ])
 

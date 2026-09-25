@@ -89,6 +89,15 @@
       </div>
     </section>
 
+    <section id="camSection" style="display:none">
+      <h2>Backup camera</h2>
+      <div style="position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">
+        <img id="camImg" alt="backup camera" style="width:100%;height:100%;object-fit:cover;transform:scaleX(-1);image-rendering:auto">
+        <canvas id="camGuides" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+      </div>
+      <div class="row" style="color:var(--dim)" id="camInfo"></div>
+    </section>
+
     <section>
       <h2>Autopilot</h2>
       <div class="row">
@@ -138,6 +147,13 @@
         <span style="color:var(--dim)">offset mph</span><input id="offset" type="number" min="-10" max="20" step="1" style="width:56px" placeholder="auto">
         <span style="color:var(--dim)">follow</span><input id="followDist" type="number" min="1" max="7" step="1" style="width:48px" placeholder="auto">
         <button id="applySettings">Apply</button>
+      </div>
+      <div class="row">
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="camBackup" checked> backup camera in R</label>
+        <span style="color:var(--dim)">quality</span>
+        <select id="camQuality"><option value="low" selected>low 320×180</option><option value="medium">medium 480×270</option><option value="high">high 640×360</option></select>
+        <span style="color:var(--dim)">fps</span><input id="camFps" type="number" min="1" max="10" value="5" style="width:48px">
+        <button id="camPreview">Preview camera</button>
       </div>
     </section>
 
@@ -246,9 +262,10 @@ function onMsg(m) {
     case 'event':
       logLine(`${m.kind}${m.detail ? ': ' + m.detail : ''}`, m.kind === 'error' ? 'err' : 'ev')
       if (m.kind === 'voiceNote') toggleVoice() // the wheel button
-      if (m.kind === 'voiceNoteSaved') $('voiceOut').innerHTML = `saved <a href="/feedback" target="_blank">${m.detail}</a>`
+      if (m.kind === 'voiceNoteSaved') $('voiceOut').innerHTML = `saved <a href="/feedback${location.search}" target="_blank">${m.detail}</a>`
       break
     case 'buttonMap': buttonMap = m; renderButtons(); break
+    case 'camera': showCam(m); break
     case 'wheelButton': if (m.down) { lastButton = m.button; renderButtons() } break
     case 'debug': $('debugOut').textContent = JSON.stringify(m, null, 2); break
     case 'pong': $('pingOut').textContent = `${(performance.now() - pingAt).toFixed(0)} ms round trip`; break
@@ -331,6 +348,35 @@ function renderState() {
   wrap.querySelectorAll('[data-door]').forEach((b) => b.classList.toggle('active', !!s.doors[b.dataset.door]))
 }
 
+// ------------------------------------------------------------------ backup camera
+let camFrames = 0, camFps = 0
+setInterval(() => { camFps = camFrames; camFrames = 0 }, 1000)
+function showCam(m) {
+  $('camSection').style.display = m.off ? 'none' : ''
+  if (m.off || !m.data) return
+  camFrames++
+  $('camImg').src = `data:${m.mime || 'image/png'};base64,${m.data}`
+  $('camImg').style.transform = m.mirrored === false ? 'none' : 'scaleX(-1)'
+  $('camInfo').textContent = `${m.width}×${m.height} · ${camFps} fps · frame ${m.seq}`
+  drawGuides()
+}
+// guide lines that bend with the steering, like the real backup camera
+function drawGuides() {
+  const c = $('camGuides'), W = (c.width = c.clientWidth * 2), H = (c.height = c.clientHeight * 2), g = c.getContext('2d')
+  const steer = state ? Math.max(-1, Math.min(1, state.steering)) : 0
+  g.lineWidth = 5; g.lineCap = 'round'
+  for (const side of [-1, 1]) {
+    g.beginPath()
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20, y = H * (0.95 - 0.5 * t), half = W * (0.3 - 0.17 * t)
+      const x = W / 2 + side * half - steer * W * 0.25 * t * t // mirrored view: steering right bends left
+      i ? g.lineTo(x, y) : g.moveTo(x, y)
+    }
+    g.strokeStyle = '#f0b429'; g.stroke()
+  }
+  g.beginPath(); g.moveTo(W * 0.24, H * 0.86); g.lineTo(W * 0.76, H * 0.86); g.strokeStyle = '#ef4444'; g.stroke()
+}
+
 // ------------------------------------------------------------------ wheel buttons
 // (same list as ACTIONS in protocol.ts)
 const ACTIONS = [
@@ -391,6 +437,7 @@ accel.addEventListener('pointerup', accelUp); accel.addEventListener('pointercan
 document.querySelectorAll('[data-lc]').forEach((b) => (b.onclick = () => send({ t: 'signal', dir: b.dataset.lc })))
 document.querySelectorAll('[data-summon]').forEach((b) => (b.onclick = () => send({ t: 'summon', dir: b.dataset.summon === 'stop' ? null : b.dataset.summon })))
 $('autopark').onclick = () => send({ t: 'autopark' })
+$('camPreview').onclick = () => send({ t: 'camera', on: true })
 $('nudgeBtn').onclick = () => send({ t: 'nudge' })
 $('resetStrikes').onclick = () => send({ t: 'resetStrikes' })
 // the app's cabin camera, simulated: report attention 4x a second
@@ -409,7 +456,8 @@ $('applySettings').onclick = () => {
   $('quirks').querySelectorAll('input').forEach((i) => (quirks[i.dataset.key] = i.checked))
   $('safetyToggles').querySelectorAll('input').forEach((i) => (safety[i.dataset.key] = i.checked))
   const num = (id) => ($(id).value === '' ? null : Number($(id).value))
-  send({ t: 'settings', quirks, safety, speedOffsetMph: num('offset'), followDistance: num('followDist') })
+  send({ t: 'settings', quirks, safety, speedOffsetMph: num('offset'), followDistance: num('followDist'),
+    camera: { backup: $('camBackup').checked, quality: $('camQuality').value, fps: num('camFps') ?? 5 } })
 }
 
 // voice note from this device's mic (the wheel button does the same through the game)

@@ -9,7 +9,7 @@
       -NoShortcut                      don't put "Tesla Bridge" on the desktop
 
   What it does (each step says OK / what to do):
-    1. Node.js LTS (and Python 3.12 for the wheel companion) via winget if missing
+    1. Node.js LTS, Python 3.12 (wheel companion) and cloudflared (https tunnel for the iPad app) via winget if missing
     2. npm install
     3. builds the mod and copies tesla_bridge.zip into BeamNG's mods folder
     4. pip installs the wheel companion's packages
@@ -74,6 +74,15 @@ if (-not $SkipPython) {
   }
   if ($py) { Ok "$(& $py --version)" } else { Warn 'no Python: wheel buttons and the backup wheel helper will not run (everything else works)' }
 }
+
+Step 'Cloudflare tunnel (cloudflared)'
+$cf = Get-Command cloudflared -ErrorAction SilentlyContinue
+if (-not $cf) {
+  foreach ($p in @("${env:ProgramFiles(x86)}\cloudflared\cloudflared.exe", "$env:ProgramFiles\cloudflared\cloudflared.exe")) { if (Test-Path $p) { $cf = $p } }
+}
+if (-not $cf) { Winget-Install 'Cloudflare.cloudflared' 'cloudflared' | Out-Null; $cf = Get-Command cloudflared -ErrorAction SilentlyContinue }
+if ($cf) { Ok 'cloudflared installed (start.bat gives the relay an https address for the iPad app)' }
+else { Warn 'no cloudflared: the iPad connects over Wi-Fi instead (no mic/camera in Safari)' }
 
 # ---------------------------------------------------------------- 2. npm install
 Step 'npm packages'

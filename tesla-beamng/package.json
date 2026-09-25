@@ -7,12 +7,14 @@
     "bridge": "tsx bridge/relay.ts",
     "mod": "tsx bridge/buildMod.ts",
     "test": "luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua && luajit beamng/test/test_maneuver.lua && luajit beamng/test/test_behaviors.lua",
-    "e2e": "tsx bridge/e2e.ts && tsx bridge/app/selftest.ts",
+    "e2e": "tsx bridge/e2e.ts && tsx bridge/app/selftest.ts && tsx bridge/tunnel_test.ts",
     "harness": "luajit beamng/test/harness.lua",
     "typecheck": "tsc --noEmit",
     "helper": "python3 bridge/wheel_helper.py",
     "test:helper": "python3 beamng/test/test_wheel_helper.py",
-    "doctor": "tsx bridge/doctor.ts"
+    "doctor": "tsx bridge/doctor.ts",
+    "bridge:tunnel": "tsx bridge/relay.ts --tunnel",
+    "test:tunnel": "tsx bridge/tunnel_test.ts"
   },
   "dependencies": {
     "qrcode-terminal": "^0.12.0",

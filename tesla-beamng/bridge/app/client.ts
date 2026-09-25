@@ -29,6 +29,11 @@ export type ClientSnapshot = {
   buttonMap: ButtonMap | null
   /** last wheel button pressed, for "press a button" screens */
   lastButton: { button: number; at: number } | null
+  /**
+   * Backup camera while in R (null = hide it). `src` works as an <img src>; draw it flipped
+   * horizontally when `mirrored` (backup cameras show a mirror image).
+   */
+  camera: { src: string; seq: number; width: number; height: number; mirrored: boolean; at: number } | null
 }
 
 type Listener = (msg: GameMessage | { t: 'status'; status: ConnectionStatus }) => void
@@ -66,7 +71,7 @@ export class BeamNGClient {
 
   snapshot: ClientSnapshot = {
     status: 'closed', game: false, state: null, map: null, traffic: [], route: null, minimap: null, lastEvent: null,
-    buttonMap: null, lastButton: null,
+    buttonMap: null, lastButton: null, camera: null,
   }
 
   constructor(url: string, opts: { autoConnect?: boolean } = {}) {
@@ -191,6 +196,8 @@ export class BeamNGClient {
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
     return this.send({ t: 'voiceNote', audio: btoa(bin), mime: audio.type || 'application/octet-stream', ...opts })
   }
+  /** Show the backup camera for 15 s without shifting to R (a preview button); false hides it. */
+  showCamera(on: boolean) { return this.send({ t: 'camera', on }) }
   /** Do what a wheel button would (e.g. 'toggleFSD', 'speedUp'). */
   action(name: ActionName) { return this.send({ t: 'action', name }) }
   /** Settings > Wheel buttons: the next button pressed on the wheel gets `action` (null cancels). */
@@ -230,6 +237,15 @@ export class BeamNGClient {
       case 'minimap': this.snapshot = { ...s, minimap: msg }; break
       case 'event': this.snapshot = { ...s, lastEvent: msg }; break
       case 'buttonMap': this.snapshot = { ...s, buttonMap: msg }; break
+      case 'camera':
+        this.snapshot = {
+          ...s,
+          camera: msg.off || !msg.data ? null : {
+            src: `data:${msg.mime ?? 'image/png'};base64,${msg.data}`, seq: msg.seq ?? 0, width: msg.width ?? 320,
+            height: msg.height ?? 180, mirrored: msg.mirrored !== false, at: Date.now(),
+          },
+        }
+        break
       case 'wheelButton': if (msg.down) this.snapshot = { ...s, lastButton: { button: msg.button, at: Date.now() } }; break
     }
   }

@@ -6,6 +6,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { connect } from 'node:net'
+import { beamngModsDirs } from './beamngPaths.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (name: string) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : undefined }
@@ -17,23 +18,6 @@ const ok = (msg: string) => console.log(`  ✅ ${msg}`)
 const warn = (msg: string, fix?: string) => console.log(`  ⚠️  ${msg}${fix ? `\n      → ${fix}` : ''}`)
 const fail = (msg: string, fix: string) => { bad++; console.log(`  ❌ ${msg}\n      → ${fix}`) }
 const head = (t: string) => console.log(`\n${t}`)
-
-/** BeamNG user folders' mods/, newest layout first (docs.beamng.com/support/userfolder). */
-export function beamngModsDirs(env = process.env): string[] {
-  const out: string[] = []
-  if (env.BEAMNG_USER) out.push(join(env.BEAMNG_USER, 'mods'))
-  const local = env.LOCALAPPDATA
-  if (local) {
-    out.push(join(local, 'BeamNG', 'BeamNG.drive', 'current', 'mods'))
-    const old = join(local, 'BeamNG.drive')
-    if (existsSync(old)) {
-      for (const v of readdirSync(old).filter((d) => /^\d+\.\d+/.test(d)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
-        out.push(join(old, v, 'mods'))
-      }
-    }
-  }
-  return out
-}
 
 function tcpOpen(port: number): Promise<boolean> {
   return new Promise((res) => {
@@ -77,6 +61,12 @@ async function main() {
     }
   }
 
+  const cfNames = process.platform === 'win32'
+    ? [...(process.env.PATH ?? '').split(';').map((d) => join(d, 'cloudflared.exe')), 'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe', 'C:\\Program Files\\cloudflared\\cloudflared.exe']
+    : (process.env.PATH ?? '').split(':').map((d) => join(d, 'cloudflared'))
+  if (cfNames.some((f) => existsSync(f))) ok('cloudflared installed (https tunnel for the iPad app)')
+  else warn('cloudflared not installed: the iPad app connects over Wi-Fi only (no mic/camera in Safari)', 'winget install Cloudflare.cloudflared')
+
   head('Mod')
   const zip = join(root, 'beamng', 'dist', 'tesla_bridge.zip')
   if (existsSync(zip)) ok(`mod built (${(statSync(zip).size / 1024).toFixed(0)} KB)`)
@@ -93,6 +83,8 @@ async function main() {
   const relay = await fetch(`http://127.0.0.1:${PORT}/health`).then((r) => r.json()).catch(() => null) as any
   if (relay) {
     ok(`relay running on :${PORT} (${relay.clients} app${relay.clients === 1 ? '' : 's'} connected)`)
+    if (relay.tunnel) ok(`tunnel up: ${relay.tunnel} (scan the QR in the relay window on the iPad)`)
+    else warn('no https tunnel right now', 'start.bat starts one (needs cloudflared)')
     if (relay.game) ok(`BeamNG connected${relay.version ? ` (${relay.version})` : ''}${relay.level ? `, level ${relay.level}` : ''}`)
     else warn('BeamNG not connected to the relay', 'start BeamNG, load a level and spawn a car (the console should say "teslaBridge: listening")')
   } else {
@@ -109,4 +101,4 @@ async function main() {
   process.exit(bad ? 1 : 0)
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main()
+main()

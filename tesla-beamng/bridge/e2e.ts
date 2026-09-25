@@ -44,6 +44,8 @@ const events: { kind: string; detail?: string }[] = []
 let route: any = null
 let debug: any = null
 let buttonMap: any = null
+const camFrames: any[] = []
+let camOff = 0
 const buttonPresses: number[] = []
 
 async function connectApp(): Promise<WebSocket> {
@@ -66,6 +68,7 @@ ws.on('message', (d) => {
   else if (m.t === 'route') route = m
   else if (m.t === 'debug') debug = m
   else if (m.t === 'buttonMap') buttonMap = m
+  else if (m.t === 'camera') { if (m.off) camOff++; else camFrames.push(m) }
   else if (m.t === 'wheelButton' && m.down) buttonPresses.push(m.button)
 })
 const send = (m: unknown) => ws.send(JSON.stringify(m))
@@ -118,6 +121,29 @@ try {
   check('gear D', await until('D', () => st().gear === 'D', 3000))
   send({ t: 'gear', gear: 'P' })
   check('gear P', await until('P', () => st().gear === 'P', 3000))
+  // --- backup camera: shift to R -> small off-screen frames stream to the app; out of R -> off
+  send({ t: 'gear', gear: 'R' })
+  check('backup camera streams in R', await until('cam', () => camFrames.length >= 3, 6000), `${camFrames.length} frames`)
+  {
+    const f = camFrames[camFrames.length - 1]
+    const png = f ? Buffer.from(f.data, 'base64') : Buffer.alloc(0)
+    check('camera frames are PNGs, mirrored, low-res', png.readUInt32BE(0) === 0x89504e47 && f.mirrored === true && f.width === 320 && f.height === 180,
+      f ? `${png.length} B ${f.width}x${f.height}` : 'none')
+    const seqs = camFrames.map((x) => x.seq)
+    check('camera frames keep coming (seq increases)', seqs.every((v, i) => i === 0 || v > seqs[i - 1]), seqs.join(','))
+  }
+  const cam0 = await fetch(`http://127.0.0.1:${PORT}/camera.png`).then((r) => r.status).catch(() => 0)
+  check('latest frame at /camera.png (from this PC)', cam0 === 200, String(cam0))
+  send({ t: 'gear', gear: 'P' })
+  check('camera turns off after leaving R', await until('cam off', () => camOff > 0, 6000))
+  const nFrames = camFrames.length
+  await sleep(1500)
+  check('no frames rendered while not in R', camFrames.length === nFrames, `${camFrames.length - nFrames} extra`)
+  send({ t: 'camera', on: true })
+  check('camera preview without R', await until('preview', () => camFrames.length > nFrames + 1, 5000))
+  send({ t: 'camera', on: false })
+  check('preview off', await until('cam off 2', () => camOff > 1, 5000))
+
   send({ t: 'horn', on: true })
   await sleep(200)
   send({ t: 'horn', on: false })

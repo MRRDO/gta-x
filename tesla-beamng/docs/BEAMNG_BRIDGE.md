@@ -29,7 +29,7 @@ gear friction, the game's own centering force) and the real relay.
 | Suite | Checks |
 |---|---|
 | `npm test` (pure Lua) | driving 29, wheel 14, maneuvers 12, **FSD behaviors 80** |
-| `npm run e2e` (harness + relay + fake app) | 66 (incl. wheel-button mapping), also with a backwards motor, backwards car steering, config-only FFB (all 66) and no wheel (55) |
+| `npm run e2e` (harness + relay + fake app) | 74 (incl. wheel buttons, backup camera), also with a backwards motor, backwards car steering, config-only FFB, inline camera frames (all 74) and no wheel (63); + tunnel/security 13 |
 | app connector self-test | 27 |
 | `npm run test:helper` (backup wheel helper) | 11 |
 | `npm run doctor` | setup check (installed? running? mapped?) |
@@ -200,15 +200,51 @@ short string, `data` has the fields): `engaged`, `disengage` (detail = reason),
 `voiceNote`, `voiceNoteSaved`, `settings`, `vehicleChanged`, `levelLoaded`,
 `error`.
 
-### Connecting the real app (for the UI session)
+### Connecting the real app (for the UI session): Cloudflare tunnel
 
-- WebSocket `ws://<pc-ip>:8765/?token=<token>`; types in `bridge/protocol.ts`.
-- **Mixed content:** Safari blocks `ws://` from the https live app. Serve the
-  built app from the relay: `npm run bridge -- --app ../dist`, then open
-  `http://<pc-ip>:8765/app/?token=…`. The iPad mic (voice notes) and camera
-  need a secure page on Safari, so for those use the PC's `localhost` page or
-  an https tunnel to the relay.
-- `--no-auth` turns the token off; the PC itself never needs it.
+The live app is https (`tesla-ui-atv…workers.dev`). Safari blocks `ws://` from an https
+page, and only gives the iPad's mic and camera to secure pages. So the relay gets an https
+address through a **Cloudflare quick tunnel**:
+
+- `start.bat` runs `npm run bridge -- --tunnel`. `setup.ps1` installs `cloudflared`
+  (`winget install Cloudflare.cloudflared`); no Cloudflare account is needed.
+- The relay prints a random `https://…trycloudflare.com` address and a **QR code**
+  that opens the live app with the bridge filled in:
+  `https://tesla-ui-atv.tesla-ui-atv.workers.dev/?bridge=wss%3A%2F%2F…trycloudflare.com%2F%3Ftoken%3D…`.
+  The connector's `connectBeamNG()` / `bridgeUrl()` reads `?bridge=` and remembers it.
+  The address **changes every start**, so scan the new code each time.
+  `--app-url <url>` points it at another app build.
+- Traffic goes iPad → Cloudflare → laptop, about 30–80 ms. That's fine for the screen
+  and buttons; the wheel and FSD run on the laptop.
+- **Security:** the tunnel is on the internet, so everything through it needs the token.
+  - The token is 16 hex characters; older 8-character ones are replaced.
+  - Proxied requests never get the "this PC" exemption.
+  - An address that sends 10 wrong tokens in a minute is blocked for 5 minutes.
+  - `--tunnel` refuses to run with `--no-auth`.
+  - Voice notes (`/feedback`) and `/camera.png` need the token from anything but the PC.
+- Without cloudflared it falls back to the Wi-Fi address: `ws://<pc-ip>:8765/?token=…`,
+  or `--app ../dist` to serve the app over plain http (no mic/camera in Safari).
+
+### Cameras
+
+- **Front / cabin camera (attention):** the app's own iPad camera. It decides "eyes on
+  road / on phone / eyes off" and sends `attention(...)` a few times a second. It works
+  over the tunnel (https).
+- **Backup camera (car):**
+  - **When it's on:** in **R** (and for 2 s after), BeamNG renders a small view from the
+    rear bumper **off-screen**. It uses the retail RenderView screenshot API
+    (`render_renderViews.takeScreenshot`; camera sensors are BeamNG.tech-only), the same
+    way the beamng-360 mod does it.
+  - **Size and cost:** 320×180 at 5 fps by default (settings: quality low / medium / high,
+    1–10 fps). **The laptop screen doesn't change.** The extra render only happens while
+    reversing, and the frames are tiny.
+  - **How it gets to the iPad:** the relay reads each frame from BeamNG's user folder and
+    sends it to the app. If it can't find the files, it asks the game to send them inline.
+  - **In the app:**
+    - `useBeamNG(s => s.camera)` gives `{ src, mirrored, ... }` for an `<img>`; flip it
+      horizontally when `mirrored`, like a real backup camera.
+    - `showCamera(true)` previews it for 15 s without shifting.
+    - The test page draws Tesla-style guide lines that bend with the steering.
 
 ## FSD features
 
@@ -348,8 +384,12 @@ console lines starting with `teslaBridge` / `teslaAutopilot`.
    is best effort.
 7. **Manual cars:** P = neutral + parking brake; they drive in arcade
    (auto-clutch).
-8. **iPad mic/camera** need a secure page in Safari (see *Connecting the real
-   app*).
+8. **Backup camera:** the RenderView screenshot API is from a community mod's
+   notes (tested on retail 0.3x), not official docs. If it's missing, the diagnostics'
+   `camera` block says so. The fps cost on the 4700U is unknown until the first test.
+   Drop the quality or fps in settings if reversing gets choppy.
+9. **Tunnel address** changes on every start (a free quick tunnel). A fixed address
+   needs a free Cloudflare account + a named tunnel. Say if you want it.
 
 ## Protocol additions vs. the handoff
 
@@ -360,9 +400,11 @@ All in `bridge/protocol.ts`:
   `emergencyVehicle`, `schoolBus`, `phantomBrake`, `weather`, `maneuver`, `nag`
 - traffic `emergency` / `schoolBus`; `route` (+ `parkingPin`), `minimap`,
   `bridge`, `hello`, `debug`, `pong`; events with `data`
-- commands `wheel` (spring, strength, helper), `settings`, `attention`,
-  `nudge`, `summon`, `autopark`, `resetStrikes`, `voiceNote`,
+- commands `wheel` (spring, strength, helper), `settings` (+ `camera`), `attention`,
+  `nudge`, `summon`, `autopark`, `resetStrikes`, `voiceNote`, `action`,
+  `learnButton`, `setButton`, `requestButtonMap`, `camera`,
   `requestMinimap`, `debug`, `ping`
+- relay → app: `buttonMap`, `wheelButton`, `camera` (backup camera frames)
 
 `steeringWheelDeg` is positive when turned right. `PROTOCOL = 2`.
 

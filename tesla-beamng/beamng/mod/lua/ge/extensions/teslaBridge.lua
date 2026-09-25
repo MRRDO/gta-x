@@ -47,6 +47,14 @@ local lastLoadTry = {}
 local vehSize = {}       -- [vid] = { w, l }
 local vehDiag = nil
 
+-- backup camera state (see the backup camera section)
+local cam = {
+  settings = { backup = true, fps = 5, width = 320, height = 180, fov = 100 },
+  on = false, previewUntil = -1, nextT = 0, seq = 0, pending = nil, inline = false,
+  reverseUntil = -1, failed = nil, buf = 0,
+}
+local CAM_DIR = 'temp/teslaBridge'
+
 -- FSD brain, safety, and what we last told the car
 local planner = nil
 local plannerSettings = {}   -- kept across level loads
@@ -691,6 +699,8 @@ function M.onVehicleState(vid, json)
   local ok, st = pcall(jsonDecode, json)
   if not ok or type(st) ~= 'table' then return end
   lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil }
+  -- backup camera: on in R, and for 2 s after leaving it (like the real thing)
+  if st.gear == 'R' then cam.reverseUntil = realTime + 2 end
   if (st.handsNudges or 0) > nudgeCount then nudgeCount = st.handsNudges; nudgeT = gameTime end
   st.handsNudges, st.rawThrottle = nil, nil
   st.t = 'state'
@@ -787,6 +797,94 @@ local function engageFromApp(mode, profile)
   planTick()
 end
 
+---------------------------------------------------------------------------
+-- backup camera: while in R, render a small off-screen view from the rear bumper with
+-- render_renderViews.takeScreenshot (the retail RenderView path; camera sensors are
+-- BeamNG.tech-only) and hand the frames to the relay, which streams them to the iPad.
+-- Nothing changes on the game screen, and it only renders while reversing (or while the
+-- app asks for a preview), at low resolution and a few frames a second.
+---------------------------------------------------------------------------
+
+
+local function camSupported()
+  return type(render_renderViews) == 'table' and type(render_renderViews.takeScreenshot) == 'function'
+end
+
+-- bumper camera pose: behind the car, ~0.95 m up, looking back and 20 deg down
+local function camPose(veh)
+  local p, d = veh:getPosition(), veh:getDirectionVector()
+  local u = try(function() return veh:getDirectionVectorUp() end)
+  local ux, uy, uz = 0, 0, 1
+  if u and u.z then ux, uy, uz = u.x, u.y, u.z end
+  local back = sizeOf(veh).l * 0.5 + 0.12
+  local px, py, pz = p.x - d.x * back + ux * 0.95, p.y - d.y * back + uy * 0.95, p.z - d.z * back + uz * 0.95
+  local k = math.tan(math.rad(20))
+  local lx, ly, lz = -d.x - ux * k, -d.y - uy * k, -d.z - uz * k
+  return vec3(px, py, pz), quatFromDir(vec3(lx, ly, lz), vec3(ux, uy, uz))
+end
+
+local function camRealPath(rel)
+  if FS and FS.getFileRealPath then
+    local p = try(function() return FS:getFileRealPath(rel) end)
+    if type(p) == 'string' and p ~= '' then return p end
+  end
+end
+
+-- the frame asked for last time is on disk by now: tell the relay where (or send it)
+local function camAnnounce()
+  local rel = cam.pending
+  cam.pending = nil
+  if not rel then return end
+  local msg = { t = 'camFrame', view = 'rear', seq = cam.seq, rel = rel, path = camRealPath(rel),
+    width = cam.settings.width, height = cam.settings.height, mirrored = true }
+  if cam.inline and readFile and mime then
+    local data = try(readFile, rel)
+    if not data then return end
+    msg.data = mime.b64(data)
+  end
+  send(msg)
+end
+
+local function camTick(veh)
+  if not cam.settings.backup and realTime > cam.previewUntil then cam.on = false end
+  local want = veh and ((cam.settings.backup and realTime < cam.reverseUntil) or realTime < cam.previewUntil)
+  if not want then
+    if cam.on then
+      cam.on = false
+      cam.pending = nil
+      send({ t = 'camFrame', view = 'rear', off = true })
+    end
+    return
+  end
+  if not camSupported() then
+    if not cam.failed then cam.failed = 'render_renderViews.takeScreenshot missing'; event('error', 'backup camera: ' .. cam.failed) end
+    return
+  end
+  if realTime < cam.nextT then return end
+  cam.nextT = realTime + 1 / math.max(1, math.min(10, cam.settings.fps))
+  cam.on = true
+  camAnnounce()
+  cam.buf = 1 - cam.buf
+  local rel = CAM_DIR .. '/rear_' .. (cam.buf == 0 and 'a' or 'b') .. '.png'
+  local ok, err = pcall(function()
+    if FS and FS.directoryExists and not FS:directoryExists(CAM_DIR) then FS:directoryCreate(CAM_DIR, true) end
+    local pos, rot = camPose(veh)
+    render_renderViews.takeScreenshot({
+      renderViewName = 'teslaBackupCam' .. cam.buf, filename = rel,
+      resolution = vec3(cam.settings.width, cam.settings.height, 0),
+      pos = pos, rot = rot, fov = cam.settings.fov, nearPlane = 0.05, screenshotDelay = 0.01,
+    })
+  end)
+  if ok then
+    cam.seq = cam.seq + 1
+    cam.pending = rel
+    cam.failed = nil
+  elseif not cam.failed then
+    cam.failed = tostring(err)
+    event('error', 'backup camera: ' .. cam.failed)
+  end
+end
+
 -- wheel-button actions (mapped in the app's settings, pressed on the wheel; see relay button map)
 local PROFILE_ORDER = { 'sloth', 'chill', 'standard', 'hurry', 'madmax' }
 local runAction
@@ -838,7 +936,15 @@ handleCommand = function(msg)
     send({ t = 'route', points = {}, length = 0 })
     if planner.mode ~= 'off' and veh then planner:planPath(egoSnapshot(veh), trafficList()); planner.routeDirty = false end
   elseif t == 'settings' then
-    for k, v in pairs(msg) do if k ~= 't' and k ~= 'safety' then plannerSettings[k] = v end end
+    for k, v in pairs(msg) do if k ~= 't' and k ~= 'safety' and k ~= 'camera' then plannerSettings[k] = v end end
+    if type(msg.camera) == 'table' then
+      local c = msg.camera
+      if c.backup ~= nil then cam.settings.backup = c.backup and true or false end
+      if tonumber(c.fps) then cam.settings.fps = math.max(1, math.min(10, tonumber(c.fps))) end
+      if c.quality == 'low' then cam.settings.width, cam.settings.height = 320, 180
+      elseif c.quality == 'medium' then cam.settings.width, cam.settings.height = 480, 270
+      elseif c.quality == 'high' then cam.settings.width, cam.settings.height = 640, 360 end
+    end
     if planner then planner:configure(plannerSettings) end
     if type(msg.safety) == 'table' then
       for k, v in pairs(msg.safety) do safetySettings[k] = v end
@@ -858,6 +964,11 @@ handleCommand = function(msg)
     local ok, err = planner:autopark(egoSnapshot(veh), trafficList())
     if not ok then event('error', 'autopark: ' .. tostring(err)) end
     syncVehicleMode(veh)
+  elseif t == 'camera' then
+    -- { on = true } shows the backup camera for 15 s (a preview button); { inline = true } comes
+    -- from the relay when it can't read the frames from disk itself
+    if msg.inline ~= nil then cam.inline = msg.inline and true or false end
+    if msg.on == true then cam.previewUntil = realTime + 15 elseif msg.on == false then cam.previewUntil = -1 end
   elseif t == 'resetStrikes' then
     if planner then planner.nag:reset() end
   elseif t == 'requestMap' then
@@ -962,7 +1073,9 @@ function M.diagnostics()
     apMode = planner and planner.mode or 'none', profile = planner and planner.profile, activity = planner and planner.activity,
     hasPath = planner ~= nil and planner.path ~= nil, relayQueue = outBytes,
     weather = weather, weatherProbe = weatherProbe, raycast = rayFn ~= nil, overhead = overhead,
-    beacons = 0, emergencyNow = 0 }
+    beacons = 0, emergencyNow = 0,
+    camera = { supported = camSupported(), realPath = FS ~= nil and FS.getFileRealPath ~= nil, on = cam.on, seq = cam.seq,
+      inline = cam.inline, failed = cam.failed, settings = cam.settings } }
   for _, c in pairs(traffic) do
     d.traffic = d.traffic + 1
     if c.emergency then d.emergencyNow = d.emergencyNow + 1 end
@@ -1039,6 +1152,8 @@ local function onUpdate(dtReal, dtSim)
       event('levelLoaded', level)
     end
   end
+
+  pcall(camTick, veh)
 
   if realTime >= tWeather then
     tWeather = realTime + 2

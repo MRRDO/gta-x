@@ -252,8 +252,32 @@ G.map = { getMap = function() return { nodes = mapNodes } end }
 G.core_trafficSignals = { getSignalsDict = function() return { instances = signalInstances } end }
 G.scenetree = { findClassObjects = function() return {} end, findObject = function() return nil end }
 G.jsonReadFile = function() return nil end
-G.readFile = function() return nil end
 G.core_vehicles = { getModel = function(jb) return { model = { Brand = 'Harness', Name = jb == 'harness_sedan' and 'Sedan' or 'Truck' } } end }
+
+-- backup camera: the retail RenderView screenshot API writes a PNG into the user folder
+local CAM_USER = os.getenv('HARNESS_USER_DIR') or '/tmp/tesla-harness-user'
+local CAM_INLINE = os.getenv('HARNESS_CAM_INLINE') == '1' -- no FS:getFileRealPath: the relay can't find the files
+os.execute('mkdir -p "' .. CAM_USER .. '/temp/teslaBridge"')
+local FAKE_PNG = "\137\80\78\71\13\10\26\10\0\0\0\13\73\72\68\82\0\0\0\8\0\0\0\4\8\2\0\0\0\60\175\233\167\0\0\0\17\73\68\65\84\120\156\99\208\208\176\193\138\24\168\39\1\0\105\17\17\129\104\135\92\12\0\0\0\0\73\69\78\68\174\66\96\130"
+CAM_SHOTS = 0
+G.vec3 = function(x, y, z) return { x = x, y = y, z = z } end
+G.quatFromDir = function(d, u) return { x = 0, y = 0, z = 0, w = 1, d = d, u = u } end
+G.render_renderViews = { takeScreenshot = function(o)
+  assert(o.filename and o.resolution and o.pos and o.rot, 'takeScreenshot: missing fields')
+  local f = assert(io.open(CAM_USER .. '/' .. o.filename, 'wb'))
+  f:write(FAKE_PNG); f:close()
+  CAM_SHOTS = CAM_SHOTS + 1
+end }
+G.FS = {
+  directoryExists = function(_, d) return true end,
+  directoryCreate = function() end,
+  getFileRealPath = not CAM_INLINE and function(_, rel) return CAM_USER .. '/' .. rel end or nil,
+}
+G.readFile = function(path)
+  local f = io.open(CAM_USER .. '/' .. path, 'rb')
+  if not f then return nil end
+  local d = f:read('*a'); f:close(); return d
+end
 
 local geChunk = assert(loadfile('beamng/mod/lua/ge/extensions/teslaBridge.lua'))
 setfenv(geChunk, G)

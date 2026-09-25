@@ -9,11 +9,14 @@ import { connect, type Socket } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { readFileSync, existsSync, writeFileSync, statSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, dirname, extname, normalize, resolve } from 'node:path'
+import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { randomBytes, createHash } from 'node:crypto'
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import qrcode from 'qrcode-terminal'
-import { ACTIONS, COMMAND_TYPES, type ActionName, type ButtonMap, type MapInfo, type Minimap } from './protocol.ts'
+import { ACTIONS, COMMAND_TYPES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
+import { beamngModsDirs } from './beamngPaths.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -30,12 +33,21 @@ const GAME_PORT = Number(arg('game-port', '8766'))
 const APP_DIR = arg('app')
 const NO_AUTH = arg('no-auth') === 'true'
 const QUIET = arg('quiet') === 'true'
+// --tunnel: a Cloudflare quick tunnel gives the relay an https address, so the live (https)
+// app can connect with wss:// and the iPad's mic + camera work. Needs cloudflared installed.
+const TUNNEL = arg('tunnel') === 'true'
+const APP_URL = (arg('app-url') ?? 'https://tesla-ui-atv.tesla-ui-atv.workers.dev').replace(/\/+$/, '')
+if (TUNNEL && NO_AUTH) {
+  console.error('--tunnel puts the relay on the internet: it always needs the token (drop --no-auth)')
+  process.exit(1)
+}
 
-// A pairing token so nobody else on the Wi-Fi can drive the car. Kept across restarts.
+// A pairing token so nobody else on the Wi-Fi (or the internet, with --tunnel) can drive
+// the car. Kept across restarts. 16 hex chars; older short tokens are upgraded.
 const tokenFile = join(here, '.token')
 let TOKEN = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : ''
-if (!TOKEN) {
-  TOKEN = randomBytes(4).toString('hex')
+if (TOKEN.length < 16) {
+  TOKEN = randomBytes(8).toString('hex')
   writeFileSync(tokenFile, TOKEN + '\n')
 }
 
@@ -73,6 +85,52 @@ function saveVoiceNote(msg: any): string {
   }
   writeFileSync(join(feedbackDir, `${base}.json`), JSON.stringify(context, null, 2))
   return base
+}
+
+// ---------------------------------------------------------------------------
+// backup camera: the game renders small PNGs into its user folder while in R and tells us
+// where; we read them (same PC) and stream them to the app. If we can't find the files,
+// we ask the game to send the image data inline instead.
+// ---------------------------------------------------------------------------
+
+let lastCam: { data: Buffer; mime: string; seq: number } | null = null
+let camMisses = 0
+let camInlineAsked = false
+const userFolders = () => [arg('beamng-user'), ...beamngModsDirs().map((d) => dirname(d))].filter(Boolean) as string[]
+
+function pngComplete(b: Buffer) {
+  return b.length > 24 && b.readUInt32BE(0) === 0x89504e47 && b.subarray(b.length - 12).includes('IEND')
+}
+
+async function onCamFrame(msg: any) {
+  if (msg.off) {
+    lastCam = null
+    broadcast({ t: 'camera', view: 'rear', off: true } satisfies CameraFrame)
+    return
+  }
+  let data: Buffer | null = null
+  if (msg.data) data = Buffer.from(msg.data, 'base64')
+  else {
+    const paths = [msg.path, ...userFolders().map((u) => join(u, String(msg.rel ?? '')))].filter(Boolean) as string[]
+    for (const p of paths) {
+      try { data = await readFile(p); break } catch { /* next */ }
+    }
+  }
+  if (!data || !pngComplete(data)) {
+    // not there (or still being written): after a few misses, have the game send the bytes
+    if (!msg.data && ++camMisses >= 3 && !camInlineAsked) {
+      camInlineAsked = true
+      log('backup camera: frames not readable from disk, asking the game to send them inline')
+      sendGame({ t: 'camera', inline: true })
+    }
+    return
+  }
+  camMisses = 0
+  lastCam = { data, mime: 'image/png', seq: msg.seq ?? 0 }
+  broadcast({
+    t: 'camera', view: 'rear', seq: msg.seq, mime: 'image/png', data: data.toString('base64'),
+    width: msg.width, height: msg.height, mirrored: msg.mirrored !== false,
+  } satisfies CameraFrame, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +336,9 @@ function onGameLine(line: string) {
       broadcast(out)
       return
     }
+    case 'camFrame':
+      void onCamFrame(msg)
+      return
     case 'route':
       lastRoute = msg
       broadcast(msg)
@@ -308,15 +369,39 @@ function broadcast(msg: unknown, droppable = false) {
   }
 }
 
+// Requests from this PC skip the token. A tunnel (cloudflared) also connects from 127.0.0.1,
+// so anything carrying proxy headers counts as remote and needs the token.
+const PROXY_HEADERS = ['x-forwarded-for', 'forwarded', 'cf-connecting-ip', 'cf-ray', 'x-real-ip']
 function isLoopback(req: IncomingMessage) {
   const a = req.socket.remoteAddress ?? ''
-  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1'
+  if (!(a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1')) return false
+  return !PROXY_HEADERS.some((h) => req.headers[h] != null)
 }
 
+// wrong tokens: after 10 in a minute from one address, that address is shut out for 5 minutes
+const authFails = new Map<string, { n: number; since: number; blockedUntil: number }>()
+function clientAddress(req: IncomingMessage) {
+  const h = req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for']
+  return (Array.isArray(h) ? h[0] : h)?.split(',')[0].trim() || req.socket.remoteAddress || '?'
+}
+function tokenOk(given: string | null) {
+  if (!given) return false
+  const a = Buffer.from(given), b = Buffer.from(TOKEN)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
 function authorized(req: IncomingMessage) {
   if (NO_AUTH || isLoopback(req)) return true
+  const who = clientAddress(req)
+  const now = Date.now()
+  const f = authFails.get(who)
+  if (f && now < f.blockedUntil) return false
   const url = new URL(req.url ?? '/', 'http://x')
-  return url.searchParams.get('token') === TOKEN
+  if (tokenOk(url.searchParams.get('token'))) return true
+  const rec = f && now - f.since < 60_000 ? f : { n: 0, since: now, blockedUntil: 0 }
+  rec.n++
+  if (rec.n >= 10) { rec.blockedUntil = now + 5 * 60_000; log(`blocked ${who} for 5 min (wrong tokens)`) }
+  authFails.set(who, rec)
+  return false
 }
 
 const MIME: Record<string, string> = {
@@ -337,7 +422,14 @@ const server = createServer((req, res) => {
   if (path === '/' || path === '/test' || path === '/test.html') return serveFile(res, join(here, 'test.html'))
   if (path === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
-    return res.end(JSON.stringify({ game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null }))
+    const local = isLoopback(req)
+    return res.end(JSON.stringify({ game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null,
+      tunnel: local ? tunnelUrl : undefined, appLink: local && tunnelUrl ? appPairingLink(APP_URL, tunnelUrl, TOKEN) : undefined }))
+  }
+  // private: voice notes (with where the car was) and the backup camera need the token off this PC
+  if ((path === '/feedback' || path.startsWith('/feedback/') || path.startsWith('/camera')) && !authorized(req)) {
+    res.writeHead(401)
+    return res.end('token required')
   }
   if (path === '/feedback') {
     const list = existsSync(feedbackDir) ? readdirSync(feedbackDir).filter((f) => f.endsWith('.json')).sort().reverse() : []
@@ -348,6 +440,11 @@ const server = createServer((req, res) => {
     const f = normalize(join(feedbackDir, decodeURIComponent(path.slice(10))))
     if (!f.startsWith(feedbackDir) || !existsSync(f)) { res.writeHead(404); return res.end() }
     return serveFile(res, f)
+  }
+  if (path === '/camera.png') {
+    if (!lastCam) { res.writeHead(404); return res.end('backup camera off') }
+    res.writeHead(200, { 'content-type': lastCam.mime, 'cache-control': 'no-store' })
+    return res.end(lastCam.data)
   }
   if (path === '/minimap.png') {
     if (!lastMinimap) { res.writeHead(404); return res.end('no minimap yet') }
@@ -454,9 +551,77 @@ server.listen(PORT, '0.0.0.0', () => {
   if (!NO_AUTH) console.log(`  pairing token:        ${TOKEN}`)
   console.log(`  waiting for BeamNG on ${GAME_HOST}:${GAME_PORT} ...`)
   console.log('')
-  if (!QUIET) qrcode.generate(`http://${ip}:${PORT}/${q}`, { small: true })
+  if (!QUIET && !TUNNEL) qrcode.generate(`http://${ip}:${PORT}/${q}`, { small: true })
   connectGame()
+  if (TUNNEL) startTunnel()
 })
+
+// ---------------------------------------------------------------------------
+// Cloudflare quick tunnel (--tunnel): https://<random>.trycloudflare.com -> this relay.
+// The address changes every start, so scan the new QR code each time.
+// ---------------------------------------------------------------------------
+
+let tunnelUrl: string | null = null
+let tunnelProc: ChildProcess | null = null
+let tunnelRestarts = 0
+
+function findCloudflared(): string | null {
+  const own = arg('cloudflared')
+  if (own) return own
+  const names = process.platform === 'win32' ? ['cloudflared.exe'] : ['cloudflared']
+  const dirs = [...(process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':'),
+    'C:\\Program Files (x86)\\cloudflared', 'C:\\Program Files\\cloudflared',
+    join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'WinGet', 'Links')]
+  for (const d of dirs) for (const n of names) if (d && existsSync(join(d, n))) return join(d, n)
+  return null
+}
+
+/** The live app's address with the tunnel's wss URL (the app's bridgeUrl() reads ?bridge=). */
+function appPairingLink(appUrl: string, tunnel: string, token: string) {
+  const wss = tunnel.replace(/^https:/, 'wss:') + '/?token=' + token
+  return `${appUrl}/?bridge=${encodeURIComponent(wss)}`
+}
+
+function startTunnel() {
+  const exe = findCloudflared()
+  if (!exe) {
+    console.log('  --tunnel: cloudflared not found. Install it (winget install Cloudflare.cloudflared) or pass --cloudflared <path>.')
+    console.log('  using the Wi-Fi address instead (no iPad mic/camera in Safari over plain http):')
+    const ip = lanAddresses()[0] ?? 'localhost'
+    if (!QUIET) qrcode.generate(`http://${ip}:${PORT}/?token=${TOKEN}`, { small: true })
+    return
+  }
+  tunnelProc = spawn(exe, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${PORT}`], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const onData = (d: Buffer) => {
+    const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+    if (m && m[0] !== tunnelUrl) {
+      tunnelUrl = m[0]
+      const link = appPairingLink(APP_URL, tunnelUrl, TOKEN)
+      console.log('')
+      console.log(`  tunnel (https):       ${tunnelUrl}`)
+      console.log(`  test page (anywhere): ${tunnelUrl}/?token=${TOKEN}`)
+      console.log(`  app on the iPad:      ${link}`)
+      console.log('  scan this on the iPad (a new code every start):')
+      qrcode.generate(link, { small: true })
+    }
+  }
+  tunnelProc.stdout?.on('data', onData)
+  tunnelProc.stderr?.on('data', onData)
+  tunnelProc.on('exit', (code) => {
+    tunnelProc = null
+    tunnelUrl = null
+    if (shuttingDown) return
+    const wait = Math.min(30, 2 ** tunnelRestarts++) * 1000
+    log(`tunnel stopped (${code}); restarting in ${wait / 1000} s`)
+    setTimeout(startTunnel, wait)
+  })
+}
+
+let shuttingDown = false
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => { shuttingDown = true; tunnelProc?.kill(); process.exit(0) })
+}
+process.on('exit', () => tunnelProc?.kill())
 
 setInterval(() => {
   const secs = (Date.now() - stats.since) / 1000

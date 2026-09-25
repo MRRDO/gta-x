@@ -36,7 +36,8 @@ In PowerShell, in the `tesla-beamng` folder:
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-It installs Node.js LTS and Python 3.12 with winget if they're missing, then runs
+It installs Node.js LTS, Python 3.12 and cloudflared (the https tunnel for the iPad app)
+with winget if they're missing, then runs
 `npm install`, builds the mod, and copies it into BeamNG's mods folder. That folder is
 `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods` on current versions; older ones used
 `%LOCALAPPDATA%\BeamNG.drive\<version>\mods`. It then installs the wheel companion's pip
@@ -75,9 +76,15 @@ Check the result at any time with `npm run doctor` (read-only). ❌ lines must b
    - Don't use buttons BeamNG already uses for something else, or both will happen. Either
      unbind them in BeamNG's controls or pick free ones.
    - Alternative without the companion: BeamNG → Controls → Bindings → *Tesla UI Bridge*.
-6. **iPad**: scan the QR code in the relay window (same Wi-Fi) to open the test page on the
-   iPad. The real Tesla UI app gets connected by the UI session. The connection options
-   (Cloudflare tunnel / local http / native app) are still an open question for Quentin.
+6. **iPad**: the relay window shows an `https://…trycloudflare.com` address and a QR code.
+   Scanning it on the iPad opens the Tesla UI app already connected to the game.
+   - It's a **new code every start** (a free Cloudflare quick tunnel).
+   - Allow the iPad's camera and mic when asked: the camera checks attention, the mic does
+     voice notes.
+   - If there's no tunnel (cloudflared missing), the relay shows a Wi-Fi QR instead.
+7. **Backup camera**: shift to R in the game. A small rear view shows on the test page
+   (and in the app once the UI session adds it). The laptop screen doesn't change.
+   Settings has its quality and fps. Note whether the game gets choppy while reversing.
 
 ## First test (with Quentin driving)
 
