@@ -1,128 +1,208 @@
-# Handoff for Cowork: install and set up the Tesla ⇄ BeamNG bridge
+# Handoff for Cowork: install, set up and test the Tesla ⇄ BeamNG bridge
 
-You're setting this up on Quentin's Windows laptop (Ryzen 7 4700U, 24 GB, integrated
-graphics; BeamNG runs on Low at ~30 fps). Nothing here needs a GPU: the mod is CPU-light
-Lua, the relay is a small Node program. **Don't change BeamNG's graphics settings, and
-don't set anything that changes what's on the laptop screen.**
+You're on Quentin's Windows laptop (Ryzen 7 4700U, 24 GB, integrated graphics; BeamNG runs on
+Low at ~30 fps). Your job:
+1. install everything
+2. set it up
+3. make the Tesla Model X mod's doors openable
+4. test it all in the game
+5. send Quentin a report
 
-Talk to Quentin casually (a teen who likes slang, humor, and being asked questions).
-Ask before anything you're unsure about.
+Talk to Quentin casually (a teen who likes slang, humor, and being asked questions), and ask
+before anything you're unsure about.
 
-## What this is
+**Ground rules**
+- Don't change BeamNG's graphics or quality settings, or anything that changes what's on the
+  laptop screen (camera views, windows, resolution).
+- Don't edit the bridge's code (`tesla-beamng/beamng/mod`, `tesla-beamng/bridge`). If
+  something is broken, write it in the report. The dev session fixes code. The one exception
+  is the Tesla_X mod in Part 4, which you do edit.
+- Keep a copy of anything before you change it.
+- You can drive BeamNG yourself with the keyboard for the tests. Anything that needs the G29
+  wheel or the iPad needs Quentin, so ask them.
 
-- A **BeamNG.drive mod** (`beamng/dist/tesla_bridge.zip`): our own FSD-style autopilot,
-  active safety, and the link to the app.
-- A **relay** (`npm run bridge`): connects the game to the iPad app over Wi-Fi and serves
-  a test page at `http://localhost:8765/`.
-- A **wheel companion** (`bridge/wheel_helper.py --buttons`): reads the Logitech G29's
-  buttons so they can be mapped in Settings. It can also act as a backup force-feedback
-  driver if needed.
-- Full docs: `docs/BEAMNG_BRIDGE.md`.
-
-## Get the code
+## Part 1: get the code
 
 Either:
-- the handoff zip's `tesla-beamng/` folder, copied to e.g. `C:\Users\<you>\tesla-beamng`, or
-- `git clone -b claude/review-feedback-gyfm2f https://github.com/MRRDO/gta-x.git` and
-  use its `tesla-beamng/` folder (private repo: needs Quentin's GitHub login).
+- the handoff zip's `tesla-beamng/` folder, copied to `C:\Users\<you>\tesla-beamng`, or
+- `git clone -b claude/review-feedback-gyfm2f https://github.com/MRRDO/gta-x.git`, then use
+  its `tesla-beamng/` folder (private repo: needs Quentin's GitHub login).
 
-Use a path with no special characters (OneDrive-synced folders are fine but slower).
+The Tesla UI app's own repo should already be on the laptop at `~/tesla-ui-atv`. Setup builds
+its BeamNG version for the relay to serve.
 
-## Install (automatic)
+## Part 2: install (automatic)
 
-In PowerShell, in the `tesla-beamng` folder:
+PowerShell, in the `tesla-beamng` folder:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-It installs Node.js LTS, Python 3.12 and cloudflared (the https tunnel for the iPad app)
-with winget if they're missing, then runs
-`npm install`, builds the mod, and copies it into BeamNG's mods folder. That folder is
-`%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods` on current versions; older ones used
-`%LOCALAPPDATA%\BeamNG.drive\<version>\mods`. It then installs the wheel companion's pip
-packages, adds a Windows Firewall rule for Node on private networks (it asks for admin),
-puts a **Tesla Bridge** shortcut on the desktop, and runs the setup check.
+It:
+- installs Node.js LTS, Python 3.12 and cloudflared with winget if missing
+- runs `npm install`, builds the mod and copies it into BeamNG's mods folder
+  (`%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods` on current versions)
+- builds the app (`~/tesla-ui-atv` → `npm run build:beamng`)
+- installs the wheel companion's pip packages
+- adds a firewall rule (it asks for admin)
+- puts a **Tesla Bridge** shortcut on the desktop
+- runs `npm run doctor`
 
-- If BeamNG's user folder is somewhere else, find it with launcher → *Manage User Folder*
-  → *Open in Explorer*, then run again with `-BeamNGUserFolder "<that folder>"`.
-- If winget is missing, install Node LTS from nodejs.org and Python 3.12 from python.org
-  (tick "Add to PATH"), then run it again.
-- Re-run `setup.ps1` any time the code is updated. It also refreshes the mod.
+If something fails:
+- **BeamNG user folder not found:** launcher → *Manage User Folder* → *Open in Explorer* shows
+  it. Run again with `-BeamNGUserFolder "<that folder>"`.
+- **No winget:** install Node LTS (nodejs.org), Python 3.12 (python.org, tick "Add to PATH")
+  and cloudflared by hand, then run it again.
+- **Any ❌ line in `npm run doctor`:** fix it and run doctor again. ⚠️ lines are fine until
+  BeamNG and the relay are running.
 
-Check the result at any time with `npm run doctor` (read-only). ❌ lines must be fixed;
-⚠️ lines are fine until BeamNG and the relay are running.
+## Part 3: setup that needs Quentin
 
-## Setup that needs Quentin (walk them through it)
-
-1. **Wi-Fi set to Private** (Settings → Network → Wi-Fi → the network → *Private*). Without
-   it the iPad can't reach the laptop.
-2. **Logitech G HUB**: select the G29 and set:
+1. Wi-Fi set to **Private**: Settings → Network → Wi-Fi → the network.
+2. **Logitech G HUB**, with the G29 selected:
    - operating range **900°**
-   - **centering spring off** (it fights the autopilot)
-   - force-feedback strength 100%
-3. **BeamNG → Options → Controls → the G29**: force feedback **on** for steering (the mod
-   drives the wheel motor itself while FSD is on). Leave the steering lock at 1:1.
-4. **Start it:** open BeamNG → **West Coast USA** → spawn any car, then double-click
-   **Tesla Bridge** on the desktop. It opens:
-   - the relay window, with the QR code for the iPad
+   - **centering spring off**
+   - force feedback 100%
+3. **BeamNG → Options → Controls → the G29:**
+   - force feedback **on** for steering
+   - steering lock 1:1
+   - pedals on separate axes
+4. Start BeamNG → **West Coast USA** → any car. Then double-click **Tesla Bridge** on the
+   desktop. It opens:
+   - the relay window, with the QR code
    - a minimised "Wheel buttons" window
-   - the test page
-   
-   If Windows asks about the firewall, allow **Private**.
-5. **Map the wheel buttons:** test page → *Wheel buttons*. For each action Quentin wants
-   (Start/stop FSD, Voice note, lane changes, faster/slower, ...), click **Set**, then press
-   the button on the wheel. Saved automatically; the ▶ button tries an action.
-   - Don't use buttons BeamNG already uses for something else, or both will happen. Either
-     unbind them in BeamNG's controls or pick free ones.
-   - Alternative without the companion: BeamNG → Controls → Bindings → *Tesla UI Bridge*.
-6. **iPad**: the relay window shows an `https://…trycloudflare.com` address and a QR code.
-   Scanning it on the iPad opens the Tesla UI app already connected to the game.
-   - It's a **new code every start** (a free Cloudflare quick tunnel).
-   - Allow the iPad's camera and mic when asked: the camera checks attention, the mic does
-     voice notes.
-   - If there's no tunnel (cloudflared missing), the relay shows a Wi-Fi QR instead.
-7. **Backup camera**: shift to R in the game. A small rear view shows on the test page
-   (and in the app once the UI session adds it). The laptop screen doesn't change.
-   Settings has its quality and fps. Note whether the game gets choppy while reversing.
+   - the app, at `http://localhost:8765/`
 
-## The Tesla UI app
+   The test page is at `http://localhost:8765/test`.
+5. **Wheel buttons:** test page → *Wheel buttons*. For each action Quentin wants (start/stop
+   FSD, voice note, lane changes, faster/slower...), click **Set**, then have them press the
+   wheel button. Avoid buttons BeamNG already uses for something else.
+6. **iPad:** Quentin scans the QR in the relay window. It opens the Tesla UI app over https,
+   already connected. It's a new code on every start. Allow the camera (attention check) and
+   the mic (voice notes).
 
-The relay serves the app itself at `http://<pc>:8765/` (and through the tunnel QR). `setup.ps1`
-builds it from `~/tesla-ui-atv` (`npm run build:beamng`) if that folder exists. The test page is
-at `/test`. `npm run doctor` says whether the build was found.
+## Part 4: the Tesla Model X mod (make its doors openable)
 
-## First test (with Quentin driving)
+The app's 3D car came from this mod: `~/Downloads/tesla-model-x.zip` (it has
+`vehicles/Tesla_X/`). Its doors, frunk and trunk are welded shut: they're held by *latch
+beams* that only let go in a crash. The fix is to turn each latch into an **advanced
+coupler**, the way stock cars do it. The bridge already looks for couplers with these names:
+`doorFLCoupler`, `doorFRCoupler`, `doorRLCoupler`, `doorRRCoupler`, `hoodLatchCoupler`,
+`tailgateCoupler`.
 
-On the test page:
-1. **Run diagnostics → Copy**, and save the text to a file for the next dev session.
-2. Click a destination on the map a few blocks away, then press **FSD**. Watch:
-   - Does the in-car steering wheel turn?
-   - Does the G29 turn by itself? The *Steering wheel* card shows `active` and a `method`.
-   - Does it stay in lane, stop at stop signs and red lights, and signal?
-3. Try the takeovers: brake (disengages), gas (goes faster and stays on), and turning the
-   wheel hard (disengages).
-4. If the G29 doesn't move and the card says `unavailable`:
-   - close the "Wheel buttons" window
-   - turn **BeamNG's force feedback off** for the wheel
-   - run `bridge\wheel_helper.bat` (the backup: buttons + force feedback)
+1. **Install it unpacked.**
+   - Copy the zip somewhere safe as a backup.
+   - Extract it into `<BeamNG user folder>\mods\unpacked\tesla-model-x\`, so that
+     `...\unpacked\tesla-model-x\vehicles\Tesla_X\` exists. Don't also leave the zip in
+     `mods\`, or you get duplicates.
+   - Start BeamNG and spawn the Tesla_X once to check it works as it is. It should still
+     drive fine on the newest BeamNG. If it errors, note the errors from the console (`~`).
+2. **Find the stock pattern to copy.** The mod is built on the Vivace. In the BeamNG install
+   folder, open `content\vehicles\vivace.zip` (read-only; copy files out). Look at:
+   - its `*_doors_*.jbeam`, `*_hood.jbeam` and `*_tailgate.jbeam` (how the latch couplers
+     are written in this game version)
+   - `lua\vehicle\controller\advancedCouplerControl.lua` in the game files (the parameter
+     names)
 
-   The card should say `helper`.
+   **Follow the stock files over this doc if they differ.**
+3. **The latch beams in the mod.** These are breakGroup → node pairs (door node → body node).
+   - Front left, `X_doors_F.jbeam`, `door_FL_latch`: d6l-p3l, d6l-p4l, d6l-p5l, d6l-p6l,
+     d9l-p5l, d9l-p6l, d9l-p3l, d9l-p4l, d14l-p3l, d14l-p5l
+   - Front right: the same with `r`
+   - Rear left (Falcon Wing), `X_doors_R.jbeam`, `door_RL_latch`: d19l-q4l, q1l-d19l,
+     d19l-f9l, d22l-q1l, d22l-q7l, d22l-q2l, d22l-f9l, d28l-f9l
+   - Rear right: the same with `r`
+   - Hood (frunk), `X_hood.jbeam`, `hoodlatch`: h4r-f15, h4-f15, h4l-f15, h4r-f13rr,
+     h4l-f13ll
+   - Tailgate, `X_tailgate.jbeam`, `tailgatelatch`: t5-r4, t5-r2, t5-r4rr, t5-r4ll, t4-r4,
+     t4-r4rr, t4-r4ll, t4rr-r4rr, t4ll-r4ll, t3ll-r4ll, t3rr-r4rr
+4. **Per part:**
+   1. Keep one central pair as the coupler (e.g. `d9l`→`p5l`, `h4`→`f15`, `t5`→`r4`).
+      Remove the other latch beams, or leave them with no breakGroup at very low strength.
+   2. Add the controller to the part, matching the stock syntax. For example:
+      ```
+      "controller": [["fileName"], ["advancedCouplerControl", {"name":"doorFLCoupler"}]],
+      "doorFLCoupler": {
+        "groupType": "autoCoupling",
+        "couplerNodes": [
+          ["cid1","cid2","autoCouplingStrength","autoCouplingRadius","autoCouplingLockRadius","autoCouplingSpeed","couplingStartRadius","breakGroup"],
+          ["d9l","p5l", 40000, 0.01, 0.005, 0.2, 0.1, "door_FL_latch"]
+        ],
+        "openForceMagnitude": 60, "openForceDuration": 0.4,
+        "closeForceMagnitude": 250, "closeForceDuration": 1.2
+      }
+      ```
+      The close force pulls a door back shut (Model X doors are powered). The open force pops
+      it open.
+   3. Do the hood and tailgate first: they're the simplest. Then the front doors, then the
+      Falcon Wings.
+   4. JBeam is picky JSON: commas, brackets, no trailing junk. After each file, reload the
+      car in game (Ctrl+R) and check the console for errors.
+5. **Test the doors.** Spawn the Tesla_X in P, open `http://localhost:8765/test`, and tap FL,
+   FR, RL, RR, trunk and hood in *Doors*. Each should:
+   - open
+   - stay open
+   - close on the second tap
+   - show the right state on the page (and in the app on the iPad)
 
-## What to send back to the dev session
+   Rules the bridge enforces:
+   - doors only open when the car is stopped
+   - in D, it shifts to P first
+   - while moving it refuses (the log says so)
+6. If a part won't cooperate after a fair try, leave it with its original latch, note it, and
+   move on.
+   - The Falcon Wings swinging like normal doors is a known mod limit. Leave it.
+   - Keep the edited mod in `mods\unpacked\`, and zip a copy to
+     `Desktop\tesla-model-x-doors.zip` for Quentin.
 
-- the diagnostics text
-- `npm run doctor` output
-- the BeamNG console lines starting with `teslaBridge` / `teslaAutopilot` (`~` opens the
-  console; `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\beamng.log` has everything)
-- what the car did vs what it should have done (a short phone video helps)
-- any voice notes: `tesla-beamng\bridge\feedback\` (audio + a .json with the car's state)
+## Part 5: test it in the game
 
-## Don'ts
+Use the test page (`/test`). Try **three cars**: a stock sedan (e.g. Covet or Vivace), a stock
+pickup (D-Series), and the Tesla_X. Keep BeamNG on Low.
 
-- Don't change BeamNG's graphics/quality settings, or anything that changes the view on
-  the laptop screen.
-- Don't unzip the mod zip in the mods folder.
-- Don't commit `bridge/.token`, `bridge/buttons.json` or `bridge/feedback/` (personal files).
-- Don't run `wheel_helper.py` without `--buttons` while BeamNG's force feedback is **on**:
-  two programs would fight over the motor.
+For each check, write pass/fail plus a short note in the report, and note how the game felt
+(fps). Stop and ask Quentin when a check needs the wheel or the iPad.
+
+| # | Check | How | Pass when |
+|---|---|---|---|
+| 1 | Diagnostics | Test page → **Run diagnostics** → **Copy** | Save the text (it goes in the report) |
+| 2 | State | Watch the header | ~20 Hz, speed, gear, steering all move |
+| 3 | Commands | P/R/N/D, lights, signals, horn, doors | The car does each one |
+| 4 | FSD route | Click a destination a few blocks away, press **FSD** | Drives there: stays in lane, signals, stops at stop signs/red lights, parks or pulls over, then P |
+| 5 | In-car wheel | Cockpit camera during 4 | The steering wheel turns |
+| 6 | G29 (Quentin) | During 4 | The physical wheel turns by itself; the *Steering wheel* card shows `active` and a `method` |
+| 7 | Takeovers | Brake / turn the wheel hard / press gas | Brake and wheel disengage; gas speeds up and stays on |
+| 8 | Accidental bump (Quentin) | Above 25 mph, bump the wheel briefly and let go | Disengage, then `reengaged` in the log |
+| 9 | Start from Park | In a parking spot facing in, destination behind, press brake + FSD | Backs out by itself, then drives |
+| 10 | Backup camera | Shift to R | Small rear view on the test page; note the fps drop, if any |
+| 11 | Attention | Test page, *camera says: on phone* | Nag 1 → 2 → 3, then stops with hazards (a strike) |
+| 12 | Safety | FSD off, drive at a stopped car | Warning, then braking or a swerve |
+| 13 | Wheel buttons | Press the mapped buttons | Each does its action |
+| 14 | iPad app (Quentin) | Scan the QR | App opens and shows the car live; the gear strip, FSD and a map destination control the game |
+| 15 | Switch car / reload level | Ctrl+E car switch, reload the level | Keeps working |
+
+If the G29 doesn't move in check 6 and the card says `unavailable`:
+1. close "Wheel buttons"
+2. turn BeamNG's force feedback **off** for the G29
+3. run `bridge\wheel_helper.bat` (the backup)
+4. repeat check 6; the card should say `helper`
+5. afterwards, turn BeamNG's FFB back on and close the helper
+
+## Part 6: the report
+
+Make `Desktop\tesla-bridge-report\` with:
+- `report.md`: the Part 5 table with pass/fail and notes, fps notes, the Part 4 door results,
+  and anything weird (short and plain)
+- `diagnostics.txt`: the test page diagnostics output
+- `doctor.txt`: `npm run doctor` output
+- `beamng-log.txt`: the lines of
+  `%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\beamng.log` that mention `teslaBridge`,
+  `teslaAutopilot`, `Tesla_X` or `error` (the last run is enough)
+- `relay-log.txt`: copy the relay window's text
+- any voice notes: `tesla-beamng\bridge\feedback\`
+- `tesla-model-x-doors.zip`, if Part 4 worked
+
+Zip the folder to `Desktop\tesla-bridge-report.zip` and tell Quentin where it is. Also email it to
+quentincpullum@gmail.com, with the subject "BeamNG bridge test report", if you can send email.
+Quentin gives that zip to the dev session, which fixes whatever failed.
