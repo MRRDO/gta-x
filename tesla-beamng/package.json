@@ -1,0 +1,33 @@
+{
+  "name": "tesla-beamng-bridge",
+  "private": true,
+  "type": "module",
+  "description": "BeamNG.drive mod + relay that lets the Tesla UI ATV app drive and display a car in the game",
+  "scripts": {
+    "bridge": "tsx bridge/relay.ts",
+    "mod": "tsx bridge/buildMod.ts",
+    "test": "luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua && luajit beamng/test/test_maneuver.lua && luajit beamng/test/test_behaviors.lua",
+    "e2e": "tsx bridge/e2e.ts && tsx bridge/app/selftest.ts && tsx bridge/tunnel_test.ts",
+    "harness": "luajit beamng/test/harness.lua",
+    "typecheck": "tsc --noEmit",
+    "helper": "python3 bridge/wheel_helper.py",
+    "test:helper": "python3 beamng/test/test_wheel_helper.py",
+    "doctor": "tsx bridge/doctor.ts",
+    "bridge:tunnel": "tsx bridge/relay.ts --tunnel",
+    "test:tunnel": "tsx bridge/tunnel_test.ts"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/react": "^19.3.0",
+    "@types/ws": "^8.5.12",
+    "react": "^19.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "zustand": "^5.0.15"
+  }
+}

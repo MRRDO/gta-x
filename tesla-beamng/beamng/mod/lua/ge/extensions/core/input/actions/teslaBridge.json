@@ -1,0 +1,38 @@
+{
+    "teslaToggleFSD": {
+        "cat": "tesla",
+        "order": 0,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleAutopilot('fsd') end",
+        "isBasic": true,
+        "title": "Toggle FSD",
+        "desc": "Engage or disengage the Tesla UI autopilot (FSD). Bind it to a wheel button."
+    },
+    "teslaToggleAutosteer": {
+        "cat": "tesla",
+        "order": 1,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleAutopilot('autosteer') end",
+        "isBasic": true,
+        "title": "Toggle Autosteer",
+        "desc": "Engage or disengage steering-only autopilot. Bind it to a wheel button."
+    },
+    "teslaVoiceNote": {
+        "cat": "tesla",
+        "order": 2,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.voiceNote() end",
+        "isBasic": true,
+        "title": "Voice note (iPad mic)",
+        "desc": "Opens the iPad mic in the app so you can record a voice note for a future update."
+    },
+    "teslaNudge": {
+        "cat": "tesla",
+        "order": 3,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.nudge() end",
+        "isBasic": true,
+        "title": "Hands-on nudge",
+        "desc": "Counts as a steering-wheel nudge for the FSD attention monitor."
+    }
+}

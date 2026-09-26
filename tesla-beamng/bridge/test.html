@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BeamNG Bridge Test</title>
+<style>
+  :root {
+    --bg: #0e0f11; --panel: #17191c; --line: #2a2d32; --text: #e8e9eb; --dim: #8b9097;
+    --accent: #3e8bff; --good: #2fbf71; --warn: #f0b429; --bad: #ef4444; --road: #3a3f46;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.35 -apple-system, system-ui, Segoe UI, sans-serif; }
+  header { display: flex; gap: 12px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .pill { padding: 2px 10px; border-radius: 99px; background: var(--line); color: var(--dim); font-size: 12px; }
+  .pill.on { background: color-mix(in srgb, var(--good) 25%, transparent); color: var(--good); }
+  .pill.off { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+  main { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 12px; padding: 12px 16px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 0 0 8px; font-weight: 600; }
+  .big { font-size: 44px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 4px 0; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-variant-numeric: tabular-nums; }
+  .kv span:nth-child(odd) { color: var(--dim); }
+  button, select, input[type=text], input[type=number] {
+    background: #23262b; color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; font: inherit; cursor: pointer; min-height: 38px;
+  }
+  button:hover { border-color: #444a52; }
+  button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger.active { background: var(--bad); border-color: var(--bad); }
+  .gear { width: 44px; font-weight: 700; }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; flex: 1; }
+  .bar > i { display: block; height: 100%; background: var(--good); width: 0; }
+  .bar.brake > i { background: var(--bad); }
+  #wheel { width: 64px; height: 64px; transition: transform .05s linear; }
+  #mapWrap { position: relative; height: 62vh; min-height: 360px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #0b0c0e; }
+  #map { width: 100%; height: 100%; display: block; touch-action: none; }
+  #mapBar { position: absolute; top: 8px; left: 8px; right: 8px; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
+  #mapBar > * { pointer-events: auto; }
+  #mapHint { position: absolute; bottom: 8px; left: 10px; color: var(--dim); font-size: 12px; pointer-events: none; }
+  #accel { width: 100%; }
+  pre { white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; background: #0b0c0e; padding: 8px; border-radius: 8px; font-size: 12px; margin: 0; }
+  #log { max-height: 180px; overflow: auto; font-size: 12px; color: var(--dim); }
+  #log div { border-bottom: 1px solid var(--line); padding: 2px 0; }
+  #log .err { color: var(--bad); }
+  #log .ev { color: var(--warn); }
+  .sig { width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--line); color: var(--dim); font-weight: 700; }
+  .sig.on { background: var(--good); color: #000; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BeamNG bridge test</h1>
+  <span id="wsPill" class="pill">relay…</span>
+  <span id="gamePill" class="pill">game…</span>
+  <span id="vehName" class="pill">no vehicle</span>
+  <span id="rate" class="pill">0 Hz</span>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Drive</h2>
+      <div class="row" style="justify-content: space-between">
+        <div><span id="speed" class="big">--</span> <span style="color:var(--dim)">mph</span></div>
+        <svg id="wheel" viewBox="-32 -32 64 64" aria-label="steering wheel">
+          <circle r="28" fill="none" stroke="#8b9097" stroke-width="5"/>
+          <path d="M-26 4 L26 4 M0 4 L0 26" stroke="#8b9097" stroke-width="5" fill="none"/>
+          <circle cy="-28" r="3" fill="#3e8bff"/>
+        </svg>
+      </div>
+      <div class="row">
+        <button class="gear" data-gear="P">P</button><button class="gear" data-gear="R">R</button>
+        <button class="gear" data-gear="N">N</button><button class="gear" data-gear="D">D</button>
+        <span id="gearRaw" style="color:var(--dim)"></span>
+      </div>
+      <div class="row"><span style="width:62px;color:var(--dim)">throttle</span><div class="bar"><i id="thr"></i></div></div>
+      <div class="row"><span style="width:62px;color:var(--dim)">brake</span><div class="bar brake"><i id="brk"></i></div></div>
+      <div class="kv" style="margin-top:6px">
+        <span>steering</span><span id="steer">--</span>
+        <span>position</span><span id="pos">--</span>
+        <span>energy</span><span id="energy">--</span>
+      </div>
+      <div style="margin-top:8px">
+        <label style="color:var(--dim);font-size:12px">accelerator strip (hold; springs back)</label>
+        <input id="accel" type="range" min="-1" max="1" step="0.05" value="0">
+      </div>
+    </section>
+
+    <section id="camSection" style="display:none">
+      <h2>Backup camera</h2>
+      <div style="position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden">
+        <img id="camImg" alt="backup camera" style="width:100%;height:100%;object-fit:cover;transform:scaleX(-1);image-rendering:auto">
+        <canvas id="camGuides" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
+      </div>
+      <div class="row" style="color:var(--dim)" id="camInfo"></div>
+    </section>
+
+    <section>
+      <h2>Autopilot</h2>
+      <div class="row">
+        <button data-ap="off" class="danger">Off</button>
+        <button data-ap="tacc">TACC</button>
+        <button data-ap="autosteer">Autosteer</button>
+        <button data-ap="fsd">FSD</button>
+        <select id="profile">
+          <option value="sloth">Sloth</option><option value="chill">Chill</option>
+          <option value="standard" selected>Standard</option><option value="hurry">Hurry</option><option value="madmax">Mad Max</option>
+        </select>
+      </div>
+      <div class="row">
+        <button data-lc="left">◀ Lane change</button><button data-lc="right">Lane change ▶</button>
+        <button id="nudgeBtn">Hands-on nudge</button>
+        <button id="resetStrikes">Reset strikes</button>
+      </div>
+      <div class="row">
+        <button data-summon="forward">Summon ▲</button><button data-summon="reverse">Summon ▼</button>
+        <button data-summon="stop">Stop summon</button><button id="autopark">Autopark</button>
+      </div>
+      <div class="row" id="nagBanner" style="display:none;padding:6px 10px;border-radius:8px;font-weight:600"></div>
+      <div class="kv" id="apKv"></div>
+    </section>
+
+    <section>
+      <h2>Driver camera (simulated) &amp; safety</h2>
+      <div class="row">
+        <span style="color:var(--dim)">camera says</span>
+        <select id="attn">
+          <option value="">off (wheel nags)</option><option value="ok" selected>eyes on road</option>
+          <option value="phone">on phone</option><option value="eyesOff">eyes off road</option>
+        </select>
+        <button id="voiceBtn">🎙 Voice note</button>
+        <span id="voiceOut" style="color:var(--dim)"></span>
+      </div>
+      <div class="row" id="safetyRow"></div>
+    </section>
+
+    <section>
+      <h2>FSD settings</h2>
+      <div class="row" id="quirks"></div>
+      <div class="row" id="safetyToggles"></div>
+      <div class="row">
+        <span style="color:var(--dim)">FCW</span>
+        <select id="fcw"><option>early</option><option selected>medium</option><option>late</option><option>off</option></select>
+        <span style="color:var(--dim)">offset mph</span><input id="offset" type="number" min="-10" max="20" step="1" style="width:56px" placeholder="auto">
+        <span style="color:var(--dim)">follow</span><input id="followDist" type="number" min="1" max="7" step="1" style="width:48px" placeholder="auto">
+        <button id="applySettings">Apply</button>
+      </div>
+      <div class="row">
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="camBackup" checked> backup camera in R</label>
+        <span style="color:var(--dim)">quality</span>
+        <select id="camQuality"><option value="low" selected>low 320×180</option><option value="medium">medium 480×270</option><option value="high">high 640×360</option></select>
+        <span style="color:var(--dim)">fps</span><input id="camFps" type="number" min="1" max="10" value="5" style="width:48px">
+        <button id="camPreview">Preview camera</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Wheel buttons</h2>
+      <div class="row" style="color:var(--dim)" id="companionOut">wheel companion not running (start.bat starts it)</div>
+      <div class="kv" id="buttonsKv"></div>
+    </section>
+
+    <section>
+      <h2>Steering wheel (force feedback)</h2>
+      <div class="row">
+        <button id="springBtn" class="active">Wheel follows autopilot</button>
+        <label style="color:var(--dim);font-size:12px">strength</label>
+        <input id="springStrength" type="range" min="0" max="1" step="0.05" value="0.6" style="flex:1">
+      </div>
+      <div class="kv" id="wheelKv"></div>
+    </section>
+
+    <section>
+      <h2>Lights, signals, horn</h2>
+      <div class="row">
+        <span class="sig" id="sigL">◀</span>
+        <button data-signal="left">Left</button><button data-signal="hazard">Hazard</button>
+        <button data-signal="right">Right</button><button data-signal="off">Off</button>
+        <span class="sig" id="sigR">▶</span>
+      </div>
+      <div class="row">
+        <button data-light="low">Low beam</button><button data-light="high">High beam</button><button data-light="fog">Fog</button>
+        <button id="horn">Horn (hold)</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Doors</h2>
+      <div class="row" id="doors"><span style="color:var(--dim)">(this car reports none yet)</span></div>
+    </section>
+
+    <section>
+      <h2>Events</h2>
+      <div id="log"></div>
+    </section>
+  </div>
+
+  <div>
+    <div id="mapWrap">
+      <canvas id="map"></canvas>
+      <div id="mapBar">
+        <button id="follow" class="active">Follow car</button>
+        <select id="arrival">
+          <option value="">Arrival: auto</option><option>Parking Lot</option><option>Street</option>
+          <option>Driveway</option><option>Parking Garage</option><option>Curbside</option>
+        </select>
+        <button id="cancelRoute">Cancel route</button>
+        <button id="reqMap">Reload map</button>
+        <button id="mini">Minimap</button>
+      </div>
+      <div id="mapHint">tap/click the map to set a destination · drag to pan · scroll/pinch to zoom</div>
+    </div>
+    <section style="margin-top:12px">
+      <h2>Diagnostics</h2>
+      <div class="row">
+        <button id="debug">Run diagnostics</button>
+        <button id="copyDebug">Copy</button>
+        <button id="ping">Ping</button>
+        <span id="pingOut" style="color:var(--dim)"></span>
+      </div>
+      <pre id="debugOut">Run this once in each new BeamNG version and send the output over: it lists what the game's Lua exposes.</pre>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const MPH = 0.44704
+const token = new URLSearchParams(location.search).get('token') || ''
+let ws = null
+let state = null, map = null, traffic = [], route = [], dest = null, minimap = null, minimapImg = null, showMini = true, parkingPin = null
+let stateCount = 0
+
+// ------------------------------------------------------------------ socket
+function connect() {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/${token ? '?token=' + token : ''}`
+  ws = new WebSocket(url)
+  ws.onopen = () => { pill('wsPill', 'relay connected', true) }
+  ws.onclose = () => { pill('wsPill', 'relay offline', false); pill('gamePill', 'game ?', null); setTimeout(connect, 1500) }
+  ws.onmessage = (e) => onMsg(JSON.parse(e.data))
+}
+function send(msg) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)) }
+function pill(id, text, on) { const p = $(id); p.textContent = text; p.className = 'pill' + (on === true ? ' on' : on === false ? ' off' : '') }
+function logLine(text, cls) {
+  const d = document.createElement('div'); d.textContent = new Date().toLocaleTimeString() + '  ' + text
+  if (cls) d.className = cls
+  $('log').prepend(d)
+  while ($('log').children.length > 80) $('log').lastChild.remove()
+}
+
+function onMsg(m) {
+  switch (m.t) {
+    case 'bridge': pill('gamePill', m.game === 'connected' ? 'BeamNG ' + (m.version || '') : 'game not connected', m.game === 'connected'); break
+    case 'state': state = m; stateCount++; renderState(); break
+    case 'traffic': traffic = m.cars; break
+    case 'map': setMap(m); logLine(`map ${m.level}: ${m.nodes.length} nodes, ${m.links.length} links, ${m.signals.length} signals, ${m.parking.length} parking`); break
+    case 'minimap': loadMinimap(m); break
+    case 'route': route = m.points || []; parkingPin = m.parkingPin ? m.parkingPin.pos : null; logLine(route.length ? `route ${(m.length / 1609.34).toFixed(2)} mi${m.openEnded ? ' (following road)' : ''}${m.arrival ? ', arrival: ' + m.arrival : ''}` : 'route cleared'); break
+    case 'event':
+      logLine(`${m.kind}${m.detail ? ': ' + m.detail : ''}`, m.kind === 'error' ? 'err' : 'ev')
+      if (m.kind === 'voiceNote') toggleVoice() // the wheel button
+      if (m.kind === 'voiceNoteSaved') $('voiceOut').innerHTML = `saved <a href="/feedback${location.search}" target="_blank">${m.detail}</a>`
+      break
+    case 'buttonMap': buttonMap = m; renderButtons(); break
+    case 'camera': showCam(m); break
+    case 'wheelButton': if (m.down) { lastButton = m.button; renderButtons() } break
+    case 'debug': $('debugOut').textContent = JSON.stringify(m, null, 2); break
+    case 'pong': $('pingOut').textContent = `${(performance.now() - pingAt).toFixed(0)} ms round trip`; break
+  }
+}
+setInterval(() => { $('rate').textContent = `${stateCount} Hz` + (state && state.fps ? ` · game ${state.fps} fps` : ''); stateCount = 0 }, 1000)
+
+// ------------------------------------------------------------------ state
+function renderState() {
+  const s = state
+  $('vehName').textContent = s.vehicle ? `${s.vehicle.name} (${s.vehicle.model})` : 'no vehicle'
+  $('speed').textContent = (s.speed / MPH).toFixed(0)
+  document.querySelectorAll('[data-gear]').forEach((b) => b.classList.toggle('active', b.dataset.gear === s.gear))
+  $('gearRaw').textContent = ['P', 'R', 'N', 'D'].includes(s.gear) ? '' : s.gear
+  $('thr').style.width = (s.throttle * 100).toFixed(0) + '%'
+  $('brk').style.width = (s.brake * 100).toFixed(0) + '%'
+  $('steer').textContent = `${s.steering.toFixed(2)} input · ${s.steeringWheelDeg.toFixed(0)}° wheel`
+  $('wheel').style.transform = `rotate(${s.steeringWheelDeg}deg)`
+  $('pos').textContent = s.pos.map((v) => v.toFixed(1)).join(', ')
+  $('energy').textContent = s.battery != null ? `battery ${(s.battery * 100).toFixed(0)}%` : s.fuel != null ? `fuel ${(s.fuel * 100).toFixed(0)}%` : '--'
+  $('sigL').classList.toggle('on', s.signal === 'left' || s.signal === 'hazard')
+  $('sigR').classList.toggle('on', s.signal === 'right' || s.signal === 'hazard')
+  document.querySelectorAll('[data-signal]').forEach((b) => b.classList.toggle('active', b.dataset.signal === s.signal))
+  document.querySelectorAll('[data-light]').forEach((b) => b.classList.toggle('active', !!s.lights[b.dataset.light]))
+  const a = s.autopilot
+  document.querySelectorAll('[data-ap]').forEach((b) => b.classList.toggle('active', b.dataset.ap === (a.engaged ? a.mode : 'off')))
+  if (document.activeElement !== $('profile')) $('profile').value = a.profile
+  const mph = (v) => (v == null ? '--' : (v / MPH).toFixed(0) + ' mph')
+  const rows = [
+    ['engaged', a.engaged ? `yes (${a.mode})` : 'no'],
+    ['target speed', mph(a.targetSpeed)],
+    ['speed limit', mph(a.speedLimit)],
+    ['lead gap', a.leadGap == null ? '--' : a.leadGap.toFixed(1) + ' m'],
+    ['control', a.control ? `${a.control.kind} in ${a.control.dist.toFixed(0)} m${a.control.red ? ' (stop)' : ''}` : '--'],
+    ['next turn', a.nextTurn ? `${a.nextTurn.dir} in ${a.nextTurn.dist.toFixed(0)} m ${a.nextTurn.road || ''}` : '--'],
+    ['remaining', a.remaining == null ? '--' : (a.remaining / 1609.34).toFixed(2) + ' mi'],
+    ['last disengage', a.lastDisengage ? `${a.lastDisengage.reason} @ ${a.lastDisengage.time.toFixed(0)}s` : '--'],
+    ['steer calib', a.steerSign != null ? `sign ${a.steerSign}, gain ${(a.steerGain || 0).toFixed(3)}` : '--'],
+    ['activity', (a.activity || 'drive') + (a.maneuver ? ` · ${a.maneuver.kind} ${a.maneuver.step}/${a.maneuver.total} ${a.maneuver.dir < 0 ? 'R' : 'D'}` : '')],
+    ['lane', a.lane ? `${a.lane.index + 1} of ${a.lane.count}${a.lane.changing ? ` → ${a.lane.changing.dir} (${a.lane.changing.reason}, ${a.lane.changing.phase})` : ''}` : '--'],
+    ['set speed', mph(a.setSpeed)],
+    ['doing', [a.creeping && 'creeping for visibility', a.waitingFor && 'waiting for ' + a.waitingFor, a.goAround && 'going around',
+      a.emergencyVehicle && 'emergency vehicle: ' + a.emergencyVehicle, a.schoolBus && 'school bus', a.phantomBrake && 'phantom brake 👻',
+      a.weather && (a.weather.rain > 0.1 || a.weather.fog > 0.1) && `weather (rain ${a.weather.rain.toFixed(1)}, fog ${a.weather.fog.toFixed(1)})`].filter(Boolean).join(' · ') || '--'],
+    ['nag', a.nag ? `level ${a.nag.level}${a.nag.reason ? ' (' + a.nag.reason + ')' : ''} · strikes ${a.nag.strikes}/${a.nag.maxStrikes}${a.nag.lockedOut ? ' · LOCKED OUT' : ''}` : '--'],
+  ]
+  const nb = $('nagBanner'), lvl = a.nag?.level || 0
+  nb.style.display = lvl || a.nag?.lockedOut ? '' : 'none'
+  nb.style.background = lvl >= 3 || a.nag?.lockedOut ? '#7f1d1d' : lvl === 2 ? '#78350f' : '#1e3a8a'
+  nb.textContent = a.nag?.lockedOut ? 'FSD unavailable for the rest of this drive' : lvl >= 3 ? 'TAKE OVER IMMEDIATELY' : lvl === 2 ? 'Pay attention to the road 🔔' : 'Pay attention to the road'
+  const sf = s.safety
+  $('safetyRow').innerHTML = sf ? [
+    ['FCW', sf.fcw], ['AEB', sf.aeb], ['blind L', sf.blindLeft], ['blind R', sf.blindRight], ['lane departure', sf.laneDeparture],
+  ].map(([k, on]) => `<span class="pill${on ? ' off' : ''}">${k}</span>`).join('') + `<span style="color:var(--dim)">TTC ${sf.ttc == null ? '--' : sf.ttc.toFixed(1) + ' s'}</span>` : ''
+  $('apKv').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('')
+  const w = s.wheel
+  if (w) {
+    const deg = (x) => (x * 450).toFixed(0) + '°'
+    $('wheelKv').innerHTML = [
+      ['status', w.status + (w.reason ? ` (${w.reason})` : '')],
+      ['wheel / target', `${deg(w.pos)} / ${deg(w.target)}`],
+      ['force', (w.force * 100).toFixed(0) + '%'],
+      ['ratio', w.ratio.toFixed(2)],
+    ].map(([k, v]) => `<span>${k}</span><span>${v}</span>`).join('')
+    $('springBtn').classList.toggle('active', !['off', 'disabled'].includes(w.status))
+    if (document.activeElement !== $('springStrength')) $('springStrength').value = w.strength
+  }
+  // doors
+  const keys = Object.keys(s.doors || {})
+  const wrap = $('doors')
+  if (wrap.dataset.keys !== keys.join()) {
+    wrap.dataset.keys = keys.join()
+    wrap.innerHTML = keys.length ? '' : '<span style="color:var(--dim)">(this car reports none)</span>'
+    for (const k of keys) {
+      const b = document.createElement('button'); b.dataset.door = k; b.textContent = k
+      b.onclick = () => send({ t: 'door', door: k, open: !state.doors[k] })
+      wrap.append(b)
+    }
+  }
+  wrap.querySelectorAll('[data-door]').forEach((b) => b.classList.toggle('active', !!s.doors[b.dataset.door]))
+}
+
+// ------------------------------------------------------------------ backup camera
+let camFrames = 0, camFps = 0
+setInterval(() => { camFps = camFrames; camFrames = 0 }, 1000)
+function showCam(m) {
+  $('camSection').style.display = m.off ? 'none' : ''
+  if (m.off || !m.data) return
+  camFrames++
+  $('camImg').src = `data:${m.mime || 'image/png'};base64,${m.data}`
+  $('camImg').style.transform = m.mirrored === false ? 'none' : 'scaleX(-1)'
+  $('camInfo').textContent = `${m.width}×${m.height} · ${camFps} fps · frame ${m.seq}`
+  drawGuides()
+}
+// guide lines that bend with the steering, like the real backup camera
+function drawGuides() {
+  const c = $('camGuides'), W = (c.width = c.clientWidth * 2), H = (c.height = c.clientHeight * 2), g = c.getContext('2d')
+  const steer = state ? Math.max(-1, Math.min(1, state.steering)) : 0
+  g.lineWidth = 5; g.lineCap = 'round'
+  for (const side of [-1, 1]) {
+    g.beginPath()
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20, y = H * (0.95 - 0.5 * t), half = W * (0.3 - 0.17 * t)
+      const x = W / 2 + side * half - steer * W * 0.25 * t * t // mirrored view: steering right bends left
+      i ? g.lineTo(x, y) : g.moveTo(x, y)
+    }
+    g.strokeStyle = '#f0b429'; g.stroke()
+  }
+  g.beginPath(); g.moveTo(W * 0.24, H * 0.86); g.lineTo(W * 0.76, H * 0.86); g.strokeStyle = '#ef4444'; g.stroke()
+}
+
+// ------------------------------------------------------------------ wheel buttons
+// (same list as ACTIONS in protocol.ts)
+const ACTIONS = [
+  ['toggleFSD', 'Start / stop FSD'], ['toggleAutosteer', 'Start / stop Autosteer'], ['toggleTACC', 'Start / stop cruise (TACC)'],
+  ['disengage', 'Turn autopilot off'], ['voiceNote', 'Voice note (iPad mic)'], ['nudge', 'Hands-on nudge'],
+  ['laneLeft', 'Lane change left'], ['laneRight', 'Lane change right'], ['speedUp', 'Faster (FSD: next profile)'],
+  ['speedDown', 'Slower (FSD: previous profile)'], ['profileNext', 'Next speed profile'], ['profilePrev', 'Previous speed profile'],
+  ['followCloser', 'Follow closer'], ['followFarther', 'Follow farther'], ['autopark', 'Autopark'],
+  ['summonForward', 'Summon forward'], ['summonReverse', 'Summon reverse'], ['summonStop', 'Stop summon'],
+]
+let buttonMap = null, lastButton = null
+function renderButtons() {
+  const m = buttonMap || { map: {}, learning: null, companion: null }
+  $('companionOut').textContent = m.companion
+    ? `${m.companion.name} (${m.companion.buttons} buttons)${lastButton != null ? ' · last pressed: button ' + lastButton : ''}`
+    : 'wheel companion not running (start.bat starts it) — buttons bound in BeamNG still work'
+  $('buttonsKv').innerHTML = ACTIONS.map(([name, label]) => {
+    const b = m.map[name], learning = m.learning === name
+    return `<span>${label}</span><span style="display:flex;gap:6px;align-items:center">
+      <b style="min-width:70px">${learning ? 'press a button…' : b != null ? 'button ' + b : '—'}</b>
+      <button data-learn="${name}" class="${learning ? 'active' : ''}">${learning ? 'Cancel' : 'Set'}</button>
+      ${b != null ? `<button data-clear="${name}">Clear</button>` : ''}
+      <button data-try="${name}" title="do it now">▶</button></span>`
+  }).join('')
+  $('buttonsKv').querySelectorAll('[data-learn]').forEach((el) => (el.onclick = () =>
+    send({ t: 'learnButton', action: buttonMap?.learning === el.dataset.learn ? null : el.dataset.learn })))
+  $('buttonsKv').querySelectorAll('[data-clear]').forEach((el) => (el.onclick = () => send({ t: 'setButton', action: el.dataset.clear, button: null })))
+  $('buttonsKv').querySelectorAll('[data-try]').forEach((el) => (el.onclick = () => send({ t: 'action', name: el.dataset.try })))
+}
+renderButtons()
+
+// ------------------------------------------------------------------ controls
+document.querySelectorAll('[data-gear]').forEach((b) => (b.onclick = () => send({ t: 'gear', gear: b.dataset.gear })))
+document.querySelectorAll('[data-ap]').forEach((b) => (b.onclick = () => send({ t: 'autopilot', mode: b.dataset.ap, profile: $('profile').value })))
+$('profile').onchange = () => { if (state?.autopilot.engaged) send({ t: 'autopilot', mode: state.autopilot.mode, profile: $('profile').value }) }
+document.querySelectorAll('[data-signal]').forEach((b) => (b.onclick = () => {
+  const d = b.dataset.signal === 'off' ? null : b.dataset.signal
+  send({ t: 'signal', dir: state && state.signal === d ? null : d })
+}))
+document.querySelectorAll('[data-light]').forEach((b) => (b.onclick = () => {
+  const k = b.dataset.light
+  send({ t: 'lights', [k]: !(state && state.lights[k]) })
+}))
+const horn = $('horn')
+const hornOn = (e) => { e.preventDefault(); send({ t: 'horn', on: true }); horn.classList.add('active') }
+const hornOff = () => { send({ t: 'horn', on: false }); horn.classList.remove('active') }
+horn.addEventListener('pointerdown', hornOn); horn.addEventListener('pointerup', hornOff); horn.addEventListener('pointerleave', hornOff)
+
+let accelTimer = null
+const accel = $('accel')
+accel.addEventListener('pointerdown', () => {
+  clearInterval(accelTimer)
+  accelTimer = setInterval(() => send({ t: 'throttleOverride', value: Number(accel.value) }), 100)
+})
+const accelUp = () => { clearInterval(accelTimer); accel.value = 0; send({ t: 'throttleOverride', value: 0 }) }
+accel.addEventListener('pointerup', accelUp); accel.addEventListener('pointercancel', accelUp)
+
+document.querySelectorAll('[data-lc]').forEach((b) => (b.onclick = () => send({ t: 'signal', dir: b.dataset.lc })))
+document.querySelectorAll('[data-summon]').forEach((b) => (b.onclick = () => send({ t: 'summon', dir: b.dataset.summon === 'stop' ? null : b.dataset.summon })))
+$('autopark').onclick = () => send({ t: 'autopark' })
+$('camPreview').onclick = () => send({ t: 'camera', on: true })
+$('nudgeBtn').onclick = () => send({ t: 'nudge' })
+$('resetStrikes').onclick = () => send({ t: 'resetStrikes' })
+// the app's cabin camera, simulated: report attention 4x a second
+setInterval(() => { const v = $('attn').value; if (v) send({ t: 'attention', state: v }) }, 250)
+
+const QUIRKS = { phantomBraking: 'phantom braking', yellowHesitation: 'yellow hesitation', wiggle: 'wheel wiggle', weather: 'weather slowdown', creep: 'creep at stops' }
+const SAFETY = { aeb: 'AEB', evasion: 'collision evasion', lda: 'lane departure', blindSpot: 'blind spot', obstacleAware: 'obstacle-aware accel' }
+const checkbox = (wrap, key, label) => {
+  const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:4px;align-items:center'
+  l.innerHTML = `<input type="checkbox" data-key="${key}" checked> ${label}`; wrap.append(l)
+}
+for (const [k, v] of Object.entries(QUIRKS)) checkbox($('quirks'), k, v)
+for (const [k, v] of Object.entries(SAFETY)) checkbox($('safetyToggles'), k, v)
+$('applySettings').onclick = () => {
+  const quirks = {}, safety = { fcw: $('fcw').value }
+  $('quirks').querySelectorAll('input').forEach((i) => (quirks[i.dataset.key] = i.checked))
+  $('safetyToggles').querySelectorAll('input').forEach((i) => (safety[i.dataset.key] = i.checked))
+  const num = (id) => ($(id).value === '' ? null : Number($(id).value))
+  send({ t: 'settings', quirks, safety, speedOffsetMph: num('offset'), followDistance: num('followDist'),
+    camera: { backup: $('camBackup').checked, quality: $('camQuality').value, fps: num('camFps') ?? 5 } })
+}
+
+// voice note from this device's mic (the wheel button does the same through the game)
+let rec = null, recChunks = [], recAt = 0
+async function toggleVoice() {
+  if (rec) { rec.stop(); return }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    rec = new MediaRecorder(stream); recChunks = []; recAt = Date.now()
+    rec.ondataavailable = (e) => e.data.size && recChunks.push(e.data)
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop())
+      const blob = new Blob(recChunks, { type: rec.mimeType }); rec = null
+      $('voiceBtn').classList.remove('active'); $('voiceOut').textContent = 'uploading…'
+      const b = new Uint8Array(await blob.arrayBuffer()); let bin = ''
+      for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...b.subarray(i, i + 0x8000))
+      send({ t: 'voiceNote', audio: btoa(bin), mime: blob.type, durationSec: (Date.now() - recAt) / 1000 })
+    }
+    rec.start(); $('voiceBtn').classList.add('active'); $('voiceOut').textContent = 'recording… press again to save'
+  } catch (e) { $('voiceOut').textContent = 'mic: ' + e.message }
+}
+$('voiceBtn').onclick = toggleVoice
+
+$('springBtn').onclick = () => send({ t: 'wheel', spring: !$('springBtn').classList.contains('active') })
+$('springStrength').onchange = () => send({ t: 'wheel', strength: Number($('springStrength').value) })
+$('cancelRoute').onclick = () => { dest = null; send({ t: 'cancelRoute' }) }
+$('reqMap').onclick = () => send({ t: 'requestMap' })
+$('mini').onclick = () => { showMini = !showMini; $('mini').classList.toggle('active', showMini); if (!minimap) send({ t: 'requestMinimap' }) }
+$('debug').onclick = () => { $('debugOut').textContent = 'waiting…'; send({ t: 'debug' }) }
+$('copyDebug').onclick = () => navigator.clipboard?.writeText($('debugOut').textContent)
+let pingAt = 0
+$('ping').onclick = () => { pingAt = performance.now(); send({ t: 'ping' }) }
+$('follow').onclick = () => { follow = !follow; $('follow').classList.toggle('active', follow) }
+
+// ------------------------------------------------------------------ map
+const cv = $('map'), ctx = cv.getContext('2d')
+let view = { x: 0, y: 0, scale: 0.5 } // world center + px per meter
+let follow = true
+let roadPaths = [] // [{ width, path: Path2D }]
+let nodeIndex = new Map()
+
+function setMap(m) {
+  map = m
+  nodeIndex = new Map(m.nodes.map((n) => [n.id, n]))
+  const buckets = new Map()
+  for (const l of m.links) {
+    const a = nodeIndex.get(l.a), b = nodeIndex.get(l.b)
+    if (!a || !b) continue
+    const w = Math.max(2, Math.round((a.radius + b.radius)))
+    if (!buckets.has(w)) buckets.set(w, new Path2D())
+    const p = buckets.get(w)
+    p.moveTo(a.pos[0], a.pos[1]); p.lineTo(b.pos[0], b.pos[1])
+  }
+  roadPaths = [...buckets.entries()].map(([width, path]) => ({ width, path }))
+  if (!state) {
+    view.x = (m.bounds.min[0] + m.bounds.max[0]) / 2
+    view.y = (m.bounds.min[1] + m.bounds.max[1]) / 2
+    const span = Math.max(m.bounds.max[0] - m.bounds.min[0], m.bounds.max[1] - m.bounds.min[1]) || 1000
+    view.scale = Math.min(cv.clientWidth, cv.clientHeight) / span
+  }
+  if (m.minimap) loadMinimap({ url: m.minimap, offset: m.minimapInfo?.offset, size: m.minimapInfo?.size })
+}
+
+function loadMinimap(m) {
+  minimap = m
+  const img = new Image()
+  img.onload = () => { minimapImg = img }
+  img.src = m.url + (token ? '&token=' + token : '')
+}
+
+function resize() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1
+  cv.width = r.width * dpr; cv.height = r.height * dpr
+}
+window.addEventListener('resize', resize); resize()
+
+function worldToScreen(x, y) {
+  return [(x - view.x) * view.scale + cv.clientWidth / 2, -(y - view.y) * view.scale + cv.clientHeight / 2]
+}
+function screenToWorld(sx, sy) {
+  return [(sx - cv.clientWidth / 2) / view.scale + view.x, -(sy - cv.clientHeight / 2) / view.scale + view.y]
+}
+
+function draw() {
+  requestAnimationFrame(draw)
+  const dpr = window.devicePixelRatio || 1
+  const W = cv.clientWidth, H = cv.clientHeight
+  if (follow && state) { view.x = state.pos[0]; view.y = state.pos[1] }
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.clearRect(0, 0, cv.width, cv.height)
+  // world transform: screen = (world - view) * scale, y flipped
+  ctx.setTransform(dpr * view.scale, 0, 0, -dpr * view.scale, dpr * (W / 2 - view.x * view.scale), dpr * (H / 2 + view.y * view.scale))
+  if (showMini && minimapImg && minimap?.offset && minimap?.size) {
+    const [ox, oy] = minimap.offset, [sx, sy] = minimap.size
+    ctx.save(); ctx.translate(ox, oy + sy); ctx.scale(1, -1)
+    ctx.globalAlpha = 0.55; ctx.drawImage(minimapImg, 0, 0, sx, sy); ctx.restore()
+  }
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+  for (const r of roadPaths) {
+    ctx.strokeStyle = '#3a3f46'; ctx.lineWidth = Math.max(r.width, 1.5 / view.scale); ctx.stroke(r.path)
+  }
+  if (route.length > 1) {
+    ctx.beginPath(); ctx.moveTo(route[0][0], route[0][1])
+    for (const p of route) ctx.lineTo(p[0], p[1])
+    ctx.strokeStyle = '#3e8bff'; ctx.lineWidth = Math.max(2.5, 4 / view.scale); ctx.stroke()
+  }
+  const dot = (x, y, r, color) => { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill() }
+  const px = 1 / view.scale
+  if (map) {
+    for (const s of map.signals) dot(s.pos[0], s.pos[1], Math.max(1.5, 3 * px), s.kind === 'stop' ? '#ef4444' : '#f0b429')
+    for (const p of map.parking) dot(p.pos[0], p.pos[1], Math.max(1, 2 * px), '#2fbf71')
+  }
+  const car = (x, y, dx, dy, w, l, color) => {
+    const a = Math.atan2(dy, dx)
+    ctx.save(); ctx.translate(x, y); ctx.rotate(a)
+    const L = Math.max(l, 10 * px), Wd = Math.max(w, 5 * px)
+    ctx.fillStyle = color; ctx.fillRect(-L / 2, -Wd / 2, L, Wd)
+    ctx.fillStyle = '#fff'; ctx.fillRect(L / 2 - L * 0.2, -Wd / 2, L * 0.2, Wd)
+    ctx.restore()
+  }
+  for (const c of traffic) car(c.pos[0], c.pos[1], c.dir[0], c.dir[1], c.w, c.l, c.emergency ? '#ef4444' : c.schoolBus ? '#f0b429' : '#8b9097')
+  if (dest) dot(dest[0], dest[1], Math.max(2, 6 * px), '#ef4444')
+  if (parkingPin) { dot(parkingPin[0], parkingPin[1], Math.max(2.5, 8 * px), '#3e8bff'); ctx.save(); ctx.translate(parkingPin[0], parkingPin[1]); ctx.scale(px, -px); ctx.fillStyle = '#fff'; ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('P', 0, 0); ctx.restore() }
+  if (state) car(state.pos[0], state.pos[1], state.dir[0], state.dir[1], 1.9, 4.8, state.autopilot.engaged ? '#3e8bff' : '#e8e9eb')
+}
+requestAnimationFrame(draw)
+
+// pan / zoom / click
+let drag = null, moved = false
+const pointers = new Map()
+cv.addEventListener('pointerdown', (e) => { cv.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.offsetX, e.offsetY]); drag = { x: e.offsetX, y: e.offsetY, vx: view.x, vy: view.y }; moved = false })
+cv.addEventListener('pointermove', (e) => {
+  if (!pointers.has(e.pointerId)) return
+  const prev = pointers.get(e.pointerId)
+  pointers.set(e.pointerId, [e.offsetX, e.offsetY])
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()]
+    const others = [...pointers.entries()].find(([id]) => id !== e.pointerId)[1]
+    const d0 = Math.hypot(prev[0] - others[0], prev[1] - others[1]), d1 = Math.hypot(a[0] - b[0], a[1] - b[1])
+    if (d0 > 0) view.scale *= d1 / d0
+    moved = true; return
+  }
+  if (!drag) return
+  const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y
+  if (Math.abs(dx) + Math.abs(dy) > 4) { moved = true; follow = false; $('follow').classList.remove('active') }
+  view.x = drag.vx - dx / view.scale; view.y = drag.vy + dy / view.scale
+})
+cv.addEventListener('pointerup', (e) => {
+  pointers.delete(e.pointerId)
+  if (!moved && drag) {
+    const [wx, wy] = screenToWorld(e.offsetX, e.offsetY)
+    let z = 0, best = Infinity
+    if (map) for (const n of map.nodes) { const d = (n.pos[0] - wx) ** 2 + (n.pos[1] - wy) ** 2; if (d < best) { best = d; z = n.pos[2] } }
+    dest = [wx, wy, z]
+    const msg = { t: 'navigate', to: dest }
+    if ($('arrival').value) msg.arrival = $('arrival').value
+    send(msg)
+  }
+  drag = null
+})
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault()
+  const [wx, wy] = screenToWorld(e.offsetX, e.offsetY)
+  view.scale *= Math.exp(-e.deltaY * 0.0015)
+  view.scale = Math.min(20, Math.max(0.01, view.scale))
+  if (!follow) { const [nx, ny] = screenToWorld(e.offsetX, e.offsetY); view.x += wx - nx; view.y += wy - ny }
+}, { passive: false })
+
+connect()
+</script>
+</body>
+</html>
