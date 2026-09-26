@@ -8,8 +8,36 @@ Low at ~30 fps). Your job:
 4. test it all in the game
 5. send Quentin a report
 
-Talk to Quentin casually (a teen who likes slang, humor, and being asked questions), and ask
-before anything you're unsure about.
+Talk to Quentin casually (a teen who likes slang, humor, and being asked questions).
+
+## Run by yourself, and email Quentin
+
+Quentin won't be watching. Run straight through Parts 1-6 without waiting for a reply in chat.
+Everything that needs them goes by **email to quentincpullum@gmail.com** (Gmail connector, or
+whatever mail tool you have). If you can't send email at all, write each message to
+`Desktop\tesla-bridge-status.txt` (newest at the top) and keep going.
+
+Send an email:
+
+| When | Subject | Say |
+|---|---|---|
+| You start | `Tesla bridge: started` | What you're about to do and roughly how long it takes |
+| **You need Quentin** | `Tesla bridge: needs you` | Exactly what to do, in numbered steps: plug in the G29, approve a Windows admin (UAC) prompt, set G HUB, scan the QR, press a wheel button, hold the wheel for a test. Say whether you're waiting or moved on. |
+| **You're stuck** | `Tesla bridge: stuck` | The step, the exact error (short), what you tried, and what you need from them |
+| Setup finished, ready to test with them | `Tesla bridge: ready` | "Open BeamNG and the Tesla Bridge shortcut is ready", plus which checks still need them |
+| You're done | `Tesla bridge: done` | The Part 5 pass/fail summary (one line each) and where the report is; attach `tesla-bridge-report.zip` if you can |
+
+**When you count as stuck:** the same step fails twice after a real fix attempt, or you've
+been blocked on one thing for ~10 minutes. Email once, then **skip that step and carry on**
+with everything that doesn't depend on it. Don't loop on it.
+
+**When you need Quentin:** email once, batch everything you need into that one email,
+continue with the checks you can do alone (keyboard driving, test page), then come back to
+theirs at the end. Check the inbox for their reply every ~10 minutes if you can read email.
+If there's no answer in 30 minutes, mark those checks "needs Quentin" in the report and
+finish.
+
+At most one email per ~15 minutes, apart from "done". Keep them short, plain and friendly.
 
 **Ground rules**
 - Don't change BeamNG's graphics or quality settings, or anything that changes what's on the
@@ -19,7 +47,7 @@ before anything you're unsure about.
   is the Tesla_X mod in Part 4, which you do edit.
 - Keep a copy of anything before you change it.
 - You can drive BeamNG yourself with the keyboard for the tests. Anything that needs the G29
-  wheel or the iPad needs Quentin, so ask them.
+  wheel or the iPad needs Quentin: send a `needs you` email (above).
 
 ## Part 1: get the code
 
@@ -45,7 +73,8 @@ It:
   (`%LOCALAPPDATA%\BeamNG\BeamNG.drive\current\mods` on current versions)
 - builds the app (`~/tesla-ui-atv` → `npm run build:beamng`)
 - installs the wheel companion's pip packages
-- adds a firewall rule (it asks for admin)
+- adds a firewall rule (it pops a Windows admin prompt: if you can't approve it, email
+  `needs you` and carry on; the relay still works on this PC)
 - puts a **Tesla Bridge** shortcut on the desktop
 - runs `npm run doctor`
 
@@ -162,7 +191,8 @@ Use the test page (`/test`). Try **three cars**: a stock sedan (e.g. Covet or Vi
 pickup (D-Series), and the Tesla_X. Keep BeamNG on Low.
 
 For each check, write pass/fail plus a short note in the report, and note how the game felt
-(fps). Stop and ask Quentin when a check needs the wheel or the iPad.
+(fps). Checks marked (Quentin) need them: batch them into one `needs you` email, do the rest
+first, and do theirs at the end.
 
 | # | Check | How | Pass when |
 |---|---|---|---|
@@ -203,6 +233,15 @@ Make `Desktop\tesla-bridge-report\` with:
 - any voice notes: `tesla-beamng\bridge\feedback\`
 - `tesla-model-x-doors.zip`, if Part 4 worked
 
-Zip the folder to `Desktop\tesla-bridge-report.zip` and tell Quentin where it is. Also email it to
-quentincpullum@gmail.com, with the subject "BeamNG bridge test report", if you can send email.
+Zip the folder to `Desktop\tesla-bridge-report.zip`, then send the `Tesla bridge: done` email to
+quentincpullum@gmail.com with the zip attached (if attaching fails, say where it is).
 Quentin gives that zip to the dev session, which fixes whatever failed.
+
+## Start prompt (Quentin pastes this into Cowork once)
+
+```
+Open the Tesla BeamNG handoff (tesla-beamng-handoff.zip from my email, or
+C:\Users\<me>\Downloads) and follow COWORK_HANDOFF.md from start to finish by yourself.
+Don't wait for me in chat: email me at quentincpullum@gmail.com when you start, whenever
+you're stuck or need me, and when it's done with the report.
+```
