@@ -169,14 +169,46 @@ end
 
 local handleCommand -- forward
 
+-- BeamNG 0.39's plain 'socket' module is a stripped copy with no bind/tcp; the game's own
+-- code loads the full LuaSocket as 'socket.socket'. Take the first one that can listen.
+local socketTried = -1
+local netErrLogAt = -1
+local function loadSocket()
+  for _, name in ipairs({ 'socket.socket', 'socket' }) do
+    local ok, s = pcall(require, name)
+    if ok and type(s) == 'table' and (type(s.bind) == 'function' or type(s.tcp) == 'function') then
+      logI('network library: ' .. name)
+      return s
+    end
+  end
+  return nil
+end
+
+local function bindServer(host, port)
+  if type(socket.bind) == 'function' then return socket.bind(host, port) end
+  local s, err = socket.tcp()
+  if not s then return nil, err end
+  pcall(function() s:setoption('reuseaddr', true) end)
+  local ok, e = s:bind(host, port)
+  if not ok then s:close(); return nil, e end
+  ok, e = s:listen(8)
+  if not ok then s:close(); return nil, e end
+  return s
+end
+
 local function netUpdate()
   if not socket then
-    local ok, s = pcall(require, 'socket')
-    if not ok then return end
-    socket = s
+    if realTime < socketTried then return end
+    socket = loadSocket()
+    if not socket then
+      -- log once per 30 s, not every frame
+      logW('no usable network library (tried socket.socket, socket): the relay cannot connect')
+      socketTried = realTime + 30
+      return
+    end
   end
   if not server and realTime >= nextBindTry then
-    local s, err = socket.bind('127.0.0.1', PORT)
+    local s, err = bindServer('127.0.0.1', PORT)
     if s then
       s:settimeout(0)
       server = s
@@ -1123,7 +1155,12 @@ local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   realTime = realTime + dtReal
   gameTime = gameTime + (dtSim or dtReal)
-  netUpdate()
+  local okNet, netErr = pcall(netUpdate)
+  if not okNet and realTime >= netErrLogAt then
+    -- a network bug must not flood the log every frame
+    logW('network update failed: ' .. tostring(netErr))
+    netErrLogAt = realTime + 10
+  end
 
   local veh = playerVehicle()
   local vid = veh and veh:getID() or nil

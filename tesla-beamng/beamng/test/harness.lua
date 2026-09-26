@@ -282,6 +282,22 @@ G.readFile = function(path)
   local d = f:read('*a'); f:close(); return d
 end
 
+-- BeamNG 0.39: require('socket') is a stripped copy (no bind/tcp); the full LuaSocket is
+-- 'socket.socket'. HARNESS_SOCKET=plain: older games where 'socket' is the full one and
+-- 'socket.socket' doesn't exist. HARNESS_SOCKET=tcp: full library without the bind() helper.
+local SOCKET_MODE = os.getenv('HARNESS_SOCKET') or '039'
+G.require = function(name)
+  if name == 'socket' then
+    if SOCKET_MODE == 'plain' then return socket end
+    return { gettime = socket.gettime, sleep = socket.sleep, _VERSION = socket._VERSION }
+  elseif name == 'socket.socket' then
+    if SOCKET_MODE == 'plain' then error("module 'socket.socket' not found") end
+    if SOCKET_MODE == 'tcp' then return setmetatable({ bind = false }, { __index = socket }) end
+    return socket
+  end
+  return require(name)
+end
+
 local geChunk = assert(loadfile('beamng/mod/lua/ge/extensions/teslaBridge.lua'))
 setfenv(geChunk, G)
 local teslaBridge = geChunk()
