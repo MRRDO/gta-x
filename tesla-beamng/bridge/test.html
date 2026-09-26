@@ -271,7 +271,7 @@ function onMsg(m) {
     case 'pong': $('pingOut').textContent = `${(performance.now() - pingAt).toFixed(0)} ms round trip`; break
   }
 }
-setInterval(() => { $('rate').textContent = `${stateCount} Hz`; stateCount = 0 }, 1000)
+setInterval(() => { $('rate').textContent = `${stateCount} Hz` + (state && state.fps ? ` · game ${state.fps} fps` : ''); stateCount = 0 }, 1000)
 
 // ------------------------------------------------------------------ state
 function renderState() {

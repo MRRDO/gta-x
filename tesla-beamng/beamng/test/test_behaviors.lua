@@ -377,6 +377,60 @@ scenario('weather', function()
   check(wet.ego.v < dry.ego.v - 1.5, string.format('slower in heavy rain (%.1f vs %.1f m/s)', wet.ego.v, dry.ego.v))
 end)
 
+-- in-game bug (0.39): after crossing on green, the far-side light for the other direction
+-- (red) pulled the stop line back to the junction edge behind the car ("signal in -8 m")
+-- and FSD stopped in the intersection for good
+scenario('farSideSignal', function()
+  local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+    signals = {
+      { id = 'ours', x = 141, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return 'green' end },
+      { id = 'theirs', x = 159, y = 7, kind = 'signal', dirx = -1, diry = 0, get = function() return 'red' end },
+    } })
+  w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  check(w:engage('fsd', 'standard'), 'engage (far-side signal)')
+  local minV = 99
+  w:run(60, function(ww)
+    local x = ww:refPos()
+    if x > 146 and x < 170 then minV = math.min(minV, ww.ego.v) end
+    return ww:saw('arrived')
+  end)
+  check(minV > 2, 'does not stop in the junction for the far-side red (min ' .. string.format('%.1f', minV) .. ' m/s)')
+  check(w:saw('arrived') ~= nil, 'arrives past the far-side red')
+end)
+
+-- a signal whose state reads "stop" (stop-sign controller / flashing red): stop, then go
+scenario('stopStateSignal', function()
+  local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+    signals = { { id = 'flash', x = 141, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return 'stop' end } } })
+  w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  check(w:engage('fsd', 'standard'), 'engage (stop-state signal)')
+  local stopped = false
+  w:run(60, function(ww)
+    local fsm = ww.planner.stopFsm.flash
+    if fsm and fsm.state == 'stopped' then stopped = true end
+    return ww:saw('arrived')
+  end)
+  check(stopped, 'full stop at a signal showing stop')
+  check(w:saw('arrived') ~= nil, 'then leaves the line and arrives')
+end)
+
+-- a red that never changes (unreadable / broken light): treated as an all-way stop after 90 s
+scenario('stuckRed', function()
+  local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+    signals = { { id = 'dead', x = 141, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return 'red' end } } })
+  w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  check(w:engage('fsd', 'standard'), 'engage (stuck red)')
+  local tLeft
+  w:run(160, function(ww)
+    local x = ww:refPos()
+    if not tLeft and x > 150 then tLeft = ww.t end
+    return ww:saw('arrived')
+  end)
+  check(w:saw('signalStuck') ~= nil, 'reports the stuck light')
+  check(tLeft and tLeft > 90, 'waits at the red first (left at ' .. tostring(tLeft) .. ')')
+  check(w:saw('arrived') ~= nil, 'not stranded forever')
+end)
+
 scenario('yellow', function()
   -- borderline yellow: with the hesitation quirk and rng < 0.5 it stops, otherwise it goes
   local function run(rv)

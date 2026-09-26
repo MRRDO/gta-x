@@ -685,6 +685,28 @@ handlers.horn = function(cmd)
   if electrics.horn then pcall(electrics.horn, cmd.on and true or false) else errorEvent('no horn') end
 end
 
+local closing = {}
+
+local function watchClosing()
+  for name, w in pairs(closing) do
+    local st = string.lower(tostring(groupState(w.c) or ''))
+    local na = electrics.values[name .. '_notAttached']
+    local latched = st == 'attached' or st == 'closed' or st == 'locked' or (type(na) == 'number' and na == 0 and st ~= 'attaching')
+    if latched then
+      closing[name] = nil
+    elseif now - w.t > 2.5 then
+      if w.tries < 2 then
+        -- the latch timed out (state back to detached): arm it again
+        if st ~= 'attaching' and w.c.toggleGroup then pcall(w.c.toggleGroup) end
+        w.tries, w.t = w.tries + 1, now
+      else
+        closing[name] = nil
+        errorEvent((w.key or name) .. ' did not latch: this car has no closing force for it; push it shut in game (Tesla_X: give its coupler a closeForceMagnitude)')
+      end
+    end
+  end
+end
+
 handlers.door = function(cmd)
   local want = cmd.door
   if cmd.open then
@@ -701,6 +723,9 @@ handlers.door = function(cmd)
       if couplerOpen(cp.c, cp.name) ~= (cmd.open and true or false) then
         if cp.c.toggleGroup then pcall(cp.c.toggleGroup) end
       end
+      -- closing only arms the latch; the panel has to reach it. Watch it and re-arm if the
+      -- latch gives up (hoods with no closing force in their jbeam just sit there).
+      if not cmd.open then closing[cp.name] = { c = cp.c, t = now, tries = 0, key = k } else closing[cp.name] = nil end
       return
     end
   end
@@ -885,6 +910,7 @@ local function updateGFX(dt)
   now = now + dt
   if input and input.event ~= wrappedEvent then installInputHook() end
   installFFBHook()
+  if next(closing) then pcall(watchClosing) end
   local s = sense(dt)
   override.active = (now - override.t) < 0.5
 

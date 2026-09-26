@@ -116,6 +116,10 @@ function Driver:update(dt, sense, opts)
     uWant = uWant + 0.018 * math.sin(self.t * 4.1) -- FSD's little low-speed steering fidget
   end
   local rate = plan.urgent and 4 or self.steerRate * (v < 6 and 2 or 1)
+  -- stopped and staying stopped (light, stop line, hold): keep the wheel where it is instead
+  -- of chasing a pure-pursuit point that swings to full lock at zero speed
+  local holding = v < 0.5 and (plan.hold or (plan.stopS and plan.stopS - s < 2.5))
+  if holding then rate = 0 end
   local du = clamp(uWant - self.u, -rate * dt, rate * dt)
   self.u = self.u + du
   out.steer = self.u

@@ -263,7 +263,7 @@ CAM_SHOTS = 0
 local FAKE_JPG = '\255\216\255\224\0\16JFIF\0' .. string.rep('\0', 40) .. '\255\217'
 G.vec3 = function(x, y, z) return { x = x, y = y, z = z } end
 G.quatFromDir = function(d, u) return { x = 0, y = 0, z = 0, w = 1, d = d, u = u } end
-G.render_renderViews = { takeScreenshot = function(o)
+local RV = { takeScreenshot = function(o)
   assert(o.filename and o.resolution and o.pos and o.rot, 'takeScreenshot: missing fields')
   local jpg = o.filename:match('%.jpg$')
   if jpg and os.getenv('HARNESS_NO_JPG') == '1' then return end -- a game that silently can't write JPEG
@@ -271,6 +271,9 @@ G.render_renderViews = { takeScreenshot = function(o)
   f:write(jpg and FAKE_JPG or FAKE_PNG); f:close()
   CAM_SHOTS = CAM_SHOTS + 1
 end }
+-- 0.39: render_renderViews only exists after extensions.load (HARNESS_RV=global: always there)
+if os.getenv('HARNESS_RV') == 'global' then G.render_renderViews = RV end
+G.extensions = { load = function(name) if name == 'render_renderViews' then G.render_renderViews = RV end end }
 G.FS = {
   directoryExists = function(_, d) return true end,
   directoryCreate = function() end,

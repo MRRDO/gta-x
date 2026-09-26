@@ -42,6 +42,8 @@ export type State = {
   wheel?: WheelState
   /** Active safety, on whether or not FSD drives. */
   safety?: SafetyState
+  /** The game's frame rate. State comes once per frame at most, so below 20 fps the rate = fps. */
+  fps?: number
 }
 
 export type SafetyState = {

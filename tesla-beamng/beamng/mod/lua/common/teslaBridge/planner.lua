@@ -1007,7 +1007,22 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
           if tl > 1e-6 then okLat = abs((tx * sg.dirx + ty * sg.diry) / tl) > 0.6 end
         end
         local fsm = self.stopFsm[sg.id]
-        local relevant = okLat and (pr.s > sCar - 3 or (fsm and fsm.state ~= 'done'))
+        local waiting = fsm and fsm.state ~= 'done' and fsm.state ~= 'approach'
+        local relevant = okLat and (pr.s > sCar - 3 or waiting)
+        if relevant and not waiting then
+          -- once our reference point reaches the stop line we're committed: a light or sign
+          -- whose line is behind us (e.g. the far-side light for the other direction, whose
+          -- line is the edge of the junction we're already in) must never stop the car
+          local line = self:stopLine(sg, win, pr.s)
+          if line - sCar < 0.5 then
+            relevant = false
+            if fsm and fsm.state == 'approach' then
+              -- overshot a stop sign's line: stopped here, it counts; still rolling, it's missed
+              if v < 0.5 then fsm.state, fsm.t = 'stopped', t; relevant = true
+              else fsm.state = 'done'; self.cleared[sg.id] = true; self.clearedS = pr.s end
+            end
+          end
+        end
         if relevant and (not best or pr.s < best.s) then best = { sg = sg, s = pr.s } end
       end
     end
@@ -1018,15 +1033,34 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   local dist = s - sCar
   local control = { kind = sg.kind, dist = dist, red = false }
   local stopS
+  local stt = sg.kind == 'signal' and sg.get and sg.get() or nil
 
-  if sg.kind == 'stop' then
+  -- a red that never changes while we wait at it (a broken or unreadable light) is treated
+  -- like an all-way stop after 90 s, so FSD can't be stranded forever
+  self.redWait = self.redWait or {}
+  if stt == 'red' and v < 0.3 and dist < 8 then
+    local rw = self.redWait[sg.id]
+    if not rw then rw = { t = t }; self.redWait[sg.id] = rw end
+    if t - rw.t > 90 then
+      if not rw.noted then rw.noted = true; self:emit('signalStuck', { id = sg.id }) end
+      stt = 'stop'
+    end
+  elseif stt ~= 'red' then
+    self.redWait[sg.id] = nil
+  end
+
+  -- stop signs, and signals showing an all-way stop (flashing red / stop state)
+  if sg.kind == 'stop' or stt == 'stop' then
+    control.kind = 'stop'
     if self.cleared[sg.id] or sSign <= self.clearedS + 25 then return nil, control, waitingFor end
     local fsm = self.stopFsm[sg.id]
     if not fsm then fsm = { state = 'approach' }; self.stopFsm[sg.id] = fsm end
     control.red = true
     if fsm.state == 'approach' then
       stopS = s
-      if v < 0.3 and dist < 6 then fsm.state, fsm.t = 'stopped', t end
+      -- stopped at the line, or stopped short of it for a while (e.g. behind a car that left)
+      if v < 0.3 then fsm.still = fsm.still or t else fsm.still = nil end
+      if v < 0.3 and (dist < 6 or (dist < 20 and t - fsm.still > 2.5)) then fsm.state, fsm.t = 'stopped', t end
     elseif fsm.state == 'stopped' then
       stopS = s
       if t - fsm.t >= 2 then
@@ -1067,7 +1101,6 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   end
 
   -- traffic light
-  local stt = sg.get and sg.get() or nil
   control.state = stt
   control.red = stt == 'red'
   if stt == 'red' then

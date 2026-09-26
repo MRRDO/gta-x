@@ -173,6 +173,7 @@ local handleCommand -- forward
 -- code loads the full LuaSocket as 'socket.socket'. Take the first one that can listen.
 local socketTried = -1
 local netErrLogAt = -1
+local fpsAvg = 30
 local function loadSocket()
   for _, name in ipairs({ 'socket.socket', 'socket' }) do
     local ok, s = pcall(require, name)
@@ -186,7 +187,10 @@ end
 
 local function bindServer(host, port)
   if type(socket.bind) == 'function' then return socket.bind(host, port) end
-  local s, err = socket.tcp()
+  -- tcp4 makes the real socket now; plain tcp() may defer it to bind, so reuseaddr would
+  -- silently fail and a restart would find the port "in use" until TIME_WAIT ends
+  local mk = type(socket.tcp4) == 'function' and socket.tcp4 or socket.tcp
+  local s, err = mk()
   if not s then return nil, err end
   pcall(function() s:setoption('reuseaddr', true) end)
   local ok, e = s:bind(host, port)
@@ -290,6 +294,7 @@ local function findSignals()
         local ctrl = controllers and inst.controllerId and controllers[inst.controllerId]
         local ctype = ctrl and string.lower(tostring(ctrl.type or ctrl.name or '')) or ''
         local kind = ((typ .. ctype):find('stop') and not (typ .. ctype):find('light')) and 'stop' or 'signal'
+        local rec
         local function getState()
           local st
           if type(inst.getState) == 'function' then st = try(inst.getState, inst) end
@@ -297,15 +302,23 @@ local function findSignals()
           if st == nil and ctrl then st = ctrl.state or ctrl.activeState or ctrl.currState end
           if type(st) == 'table' then st = st.name or st.type or st.state end
           st = string.lower(tostring(st or ''))
-          if st:find('red') or st:find('stop') then return 'red' end
+          if rec then rec.raw = st end
+          -- flashing red / a plain "stop" state = all-way stop (stop, then go); flashing
+          -- yellow = caution (no stop). 'stop' alone must not read as a red light, or the
+          -- car waits forever at a stop-sign controller.
+          if st:find('flash') or st:find('blink') then return (st:find('red') or st:find('stop')) and 'stop' or nil end
+          if st:find('stop') and not st:find('red') then return 'stop' end
+          if st:find('off') or st:find('disabled') or st:find('none') then return nil end
+          if st:find('red') then return 'red' end
           if st:find('yellow') or st:find('amber') or st:find('caution') then return 'yellow' end
           if st:find('green') or st:find('go') then return 'green' end
           return nil
         end
-        signals[#signals + 1] = {
-          id = 'sig:' .. name, x = p.x, y = p.y, z = p.z, kind = kind,
+        rec = {
+          id = 'sig:' .. name, x = p.x, y = p.y, z = p.z, kind = kind, type = typ .. (ctype ~= '' and ('/' .. ctype) or ''),
           dirx = d and d.x or nil, diry = d and d.y or nil, get = kind == 'signal' and getState or nil,
         }
+        signals[#signals + 1] = rec
         found.ts = (found.ts or 0) + 1
       end
     end
@@ -778,6 +791,8 @@ function M.onVehicleState(vid, json)
     steerGain = va.steerGain, steerSign = va.steerSign,
   }
   st.safety = safetyStatus
+  -- the car reports once per frame at most, so below 20 fps the state rate = the game's fps
+  st.fps = num(fpsAvg, 0)
   send(st, true)
 end
 
@@ -839,8 +854,23 @@ end
 ---------------------------------------------------------------------------
 
 
+-- render_renderViews is an on-demand extension: in 0.39 it isn't loaded until someone asks
+-- for it, so the global is nil. Load it once, then look it up wherever it lands.
+local rvLoadTried = false
+local function renderViews()
+  local rv = render_renderViews or (type(extensions) == 'table' and rawget(extensions, 'render_renderViews'))
+  if type(rv) ~= 'table' and not rvLoadTried and extensions and type(extensions.load) == 'function' then
+    rvLoadTried = true
+    try(extensions.load, 'render_renderViews')
+    rv = render_renderViews or rawget(extensions, 'render_renderViews')
+    logI('backup camera: render_renderViews ' .. (type(rv) == 'table' and 'loaded' or 'not available in this game version'))
+  end
+  if type(rv) == 'table' and type(rv.takeScreenshot) == 'function' then return rv end
+  return nil
+end
+
 local function camSupported()
-  return type(render_renderViews) == 'table' and type(render_renderViews.takeScreenshot) == 'function'
+  return renderViews() ~= nil
 end
 
 -- bumper camera pose: behind the car, ~0.95 m up, looking back and 20 deg down
@@ -890,7 +920,10 @@ local function camTick(veh)
     return
   end
   if not camSupported() then
-    if not cam.failed then cam.failed = 'render_renderViews.takeScreenshot missing'; event('error', 'backup camera: ' .. cam.failed) end
+    if not cam.failed then
+      cam.failed = 'render_renderViews.takeScreenshot missing (RenderViewManagerInstance: ' .. tostring(rawget(_G, 'RenderViewManagerInstance') ~= nil) .. ')'
+      event('error', 'backup camera: ' .. cam.failed)
+    end
     return
   end
   if realTime < cam.nextT then return end
@@ -902,7 +935,7 @@ local function camTick(veh)
   local ok, err = pcall(function()
     if FS and FS.directoryExists and not FS:directoryExists(CAM_DIR) then FS:directoryCreate(CAM_DIR, true) end
     local pos, rot = camPose(veh)
-    render_renderViews.takeScreenshot({
+    renderViews().takeScreenshot({
       renderViewName = 'teslaBackupCam' .. cam.buf, filename = rel,
       resolution = vec3(cam.settings.width, cam.settings.height, 0),
       pos = pos, rot = rot, fov = cam.settings.fov, nearPlane = 0.05, screenshotDelay = 0.01,
@@ -1143,6 +1176,15 @@ function M.diagnostics()
     castRayStatic = rawget(_G, 'castRayStatic') ~= nil, vec3 = vec3 ~= nil,
   }
   if signals[1] then d.sampleSignal = { id = signals[1].id, kind = signals[1].kind, state = signals[1].get and signals[1].get() or nil } end
+  -- the raw state names and types this game version uses (for fixing the mapping)
+  local raws, types = {}, {}
+  for _, sg in ipairs(signals) do
+    if sg.get then sg.get() end
+    if sg.raw and not raws[sg.raw] then raws[sg.raw] = true; raws[#raws + 1] = sg.raw end
+    if sg.type and not types[sg.type] then types[sg.type] = true; types[#types + 1] = sg.type end
+    if #raws > 12 and #types > 12 then break end
+  end
+  d.signalStates = { raw = { unpack(raws, 1, 12) }, types = { unpack(types, 1, 12) } }
   if planner then d.nag = planner.nag:status() end
   return d
 end
@@ -1155,6 +1197,7 @@ local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   realTime = realTime + dtReal
   gameTime = gameTime + (dtSim or dtReal)
+  if dtReal > 0 then fpsAvg = fpsAvg + (1 / dtReal - fpsAvg) * 0.05 end
   local okNet, netErr = pcall(netUpdate)
   if not okNet and realTime >= netErrLogAt then
     -- a network bug must not flood the log every frame
@@ -1228,6 +1271,7 @@ end
 
 local function onClientStartMission()
   mapMsg, graph, level, planner = nil, nil, nil, nil
+  send({ t = 'route', points = {}, length = 0 }) -- the old level's route is meaningless now
   mapPending = true
   tMapPoll = realTime + 2 -- the road graph is built a moment after the level starts
   traffic, vehSize, beacons, beaconLoaded, vehNames = {}, {}, {}, {}, {}
@@ -1236,6 +1280,7 @@ end
 
 local function onClientEndMission()
   mapMsg, graph, level, planner = nil, nil, nil, nil
+  send({ t = 'route', points = {}, length = 0 }) -- the old level's route is meaningless now
   traffic, vehSize, beacons, beaconLoaded, vehNames = {}, {}, {}, {}, {}
   sentMode = 'off'
 end
