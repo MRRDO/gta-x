@@ -1629,11 +1629,16 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
           self:emit('laneChange', { dir = ch.to > ch.from and 'left' or 'right', reason = ch.reason })
         elseif t - ch.t > 6 then
           lane.change = nil -- gave up; try again later
-          lane.cooldown = t + 4
+          lane.cooldown = t + 8
         end
       end
     elseif ch.phase == 'moving' then
-      if sCar > ch.s1 then lane.k = ch.to; lane.change = nil; lane.cooldown = t + 3 end
+      if sCar > ch.s1 then
+        lane.k = ch.to; lane.change = nil
+        -- route / merge / driver changes can follow quickly; the ones FSD chose (passing, fast lane, coming back) wait
+        lane.cooldown = t + ((ch.reason == 'route' or ch.reason == 'merge' or ch.reason == 'driver' or ch.reason == 'moveOver') and 3 or 14)
+        lane.lastDiscretionary = (ch.reason == 'pass' or ch.reason == 'madMax' or ch.reason == 'return') and t or lane.lastDiscretionary
+      end
     end
     return
   end
@@ -1674,7 +1679,10 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   if not want and fsd and not prep then
     -- pass a slower car
     local cruise = path.vcap[iCar] or v
-    if beh.pass and lead and lead.s - sCar < 80 and lead.v < cruise - beh.pass and lane.k < minN - 1 then
+    local wantsPass = beh.pass and lead and lead.s - sCar < 80 and lead.v < cruise - beh.pass and lane.k < minN - 1
+    -- a car that is only slow for a moment (braking for a light, a lane change) isn't worth passing
+    if wantsPass then lane.slowSince = lane.slowSince or t else lane.slowSince = nil end
+    if wantsPass and t - lane.slowSince >= 2.5 then
       want, reason = lane.k + 1, 'pass'
     elseif beh.leftAbove and minN >= 2 and v > beh.leftAbove and lane.k < minN - 1 and (not nextTurn or nextTurn.s - sCar > 1000) then
       -- hurry / Mad Max live in the fast lane at speed (still checked for a safe gap below)
@@ -1685,7 +1693,8 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
       for _, o in ipairs(onPath) do
         if o.dot > 0.3 and o.lane == lane.k - 1 and o.s > sCar and o.s - sCar < 60 and o.vAlong < v - 1 then slowerRight = true end
       end
-      if not slowerRight then want, reason = lane.k - 1, 'return' end
+      -- and not right after passing: give it a while so it doesn't weave
+      if not slowerRight and t - (lane.lastDiscretionary or -1e9) > 10 then want, reason = lane.k - 1, 'return' end
     end
   end
   if want and want ~= lane.k then

@@ -80,7 +80,10 @@ function Spring:update(dt, target, pos, fcap, strength)
   self.ramp = min(1, self.ramp + dt / 0.8)
   local cap = fcap * clamp(strength or 1, 0, 2)
   -- smooth the target (FSD's steering comes in steps): no jerks for the motor to chase
-  self.tf = self.tf and (self.tf + (target - self.tf) * clamp(dt / 0.06, 0, 1)) or target
+  -- start from where the wheel IS (no snap to FSD's angle when it takes over) and move the target at a sane speed
+  self.tf = self.tf or pos
+  local want = self.tf + (target - self.tf) * clamp(dt / 0.06, 0, 1)
+  self.tf = self.tf + clamp(want - self.tf, -6 * dt, 6 * dt)
   local e = self.tf - pos
   local kp = cap / self.stiffness
   -- a hair of deadband so the motor doesn't buzz around the target
@@ -98,6 +101,20 @@ function Spring:update(dt, target, pos, fcap, strength)
   -- the spring gives way the further you pull it: overtaking by hand shouldn't be a wrestling match
   local capUse = cap * clamp(1 - (abs(e) - 0.2) * 2, 0.5, 1)
   f = clamp(f, -capUse, capUse) * self.ramp
+  -- chatter guard: a force that keeps flipping sign is the wheel shaking; back off for a moment
+  self.chT = (self.chT or 0) + dt
+  local sg = f > 0.15 * cap and 1 or (f < -0.15 * cap and -1 or 0)
+  if sg ~= 0 and self.lastSg and sg ~= self.lastSg then self.flips8 = (self.flips8 or 0) + 1 end
+  if sg ~= 0 then self.lastSg = sg end
+  if self.chT >= 1 then
+    if (self.flips8 or 0) >= 6 then self.soft = 0.35; self.softUntil = 2 end
+    self.chT, self.flips8 = 0, 0
+  end
+  if self.softUntil and self.softUntil > 0 then
+    self.softUntil = self.softUntil - dt
+    f = f * (self.soft or 1)
+    if self.softUntil <= 0 then self.soft, self.softUntil = 1, nil end
+  end
   -- slew limit: full swing in ~0.15 s, not in one frame (that's the shake)
   local maxStep = cap * dt / 0.03
   f = clamp(f, self.fPrev - maxStep, self.fPrev + maxStep)
@@ -109,9 +126,9 @@ function Spring:update(dt, target, pos, fcap, strength)
   self.flipHold = max(0, (self.flipHold or 0) - dt)
   if not self.confirmed then
     local speedingAway = not converging and abs(self.vel) > 0.4 and abs(self.vel) >= prevSpeed - 1e-3
-    if self.flipHold <= 0 and abs(e) > 0.04 and abs(f) > 0.4 * cap and speedingAway then
+    if self.flipHold <= 0 and self.ramp >= 1 and abs(e) > 0.15 and abs(f) > 0.4 * cap and speedingAway then
       self.wrongT = self.wrongT + dt
-      if self.wrongT > 0.12 then
+      if self.wrongT > 0.25 then
         self.sign = -self.sign
         self.flips = self.flips + 1
         self.wrongT, self.ramp, self.flipHold = 0, 0.3, 0.6

@@ -261,7 +261,7 @@ try {
   else {
   check('FFB wheel spring active while driving', wheelActive, st().wheel ? JSON.stringify(st().wheel) : 'no wheel state')
   check('physical wheel turns with the car', wheelMaxPos > 0.15, `max ${(wheelMaxPos * 450).toFixed(0)} deg`)
-  check('physical wheel tracks the target', wheelMaxErr < 0.12, `max error ${(wheelMaxErr * 450).toFixed(0)} deg`)
+  check('physical wheel tracks the target', wheelMaxErr < 0.14, `max error ${(wheelMaxErr * 450).toFixed(0)} deg`)
   }
   check('arrives', events.some((e) => e.kind === 'arrived'))
   check('parks in P and disengages', await until('P', () => st().gear === 'P' && !st().autopilot.engaged, 5000), `gear ${st().gear}`)

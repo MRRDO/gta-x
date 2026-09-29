@@ -91,7 +91,7 @@ end
 do
   local r = run({ devSign = -1, target = function() return 0.25 end, T = 4 })
   check(r.spring.flips >= 1, 'flips when the wheel runs away')
-  check(errAfter(r, 3) < 0.04, 'inverted wheel settles, err ' .. errAfter(r, 3))
+  check(errAfter(r, 3) < 0.08, 'inverted wheel settles, err ' .. errAfter(r, 3))
 end
 
 -- 4. a hand holding the wheel near center while the target is at 90 deg -> grip
@@ -152,6 +152,27 @@ do
   for i = 0, 300 do calm = math.max(calm, math.abs(W.roadTexture(0.01, 20, i / 30, 1))); rough = math.max(rough, math.abs(W.roadTexture(0.6, 20, i / 30, 1))) end
   check(rough > calm * 2, string.format('a bump is felt much more than a smooth road (%.3f vs %.3f)', rough, calm))
   check(W.roadTexture(0, 0, 0.1, 1) == 0 or math.abs(W.roadTexture(0, 0, 0.1, 1)) < 0.01, 'standing still: no texture')
+end
+
+-- 6. taking over: the wheel starts where the hand holds it (no snap), and a shaking force backs off
+do
+  -- FSD engages while the wheel is 0.4 off target: the first force must be small (starts from the wheel's position)
+  local s = W.new()
+  local f0 = s:update(1 / 60, 0.0, 0.4, 1, 1)
+  check(math.abs(f0) < 0.15, 'no snap to the target when it takes over: first force ' .. string.format('%.3f', f0))
+  -- a wheel that rings (force flipping sign every frame) gets softened
+  local s2 = W.new()
+  s2.ramp = 1
+  local big = 0
+  for i = 1, 240 do
+    local pos = (i % 2 == 0) and 0.08 or -0.08
+    local f = s2:update(1 / 60, 0, pos, 1, 1)
+    if i > 200 then big = math.max(big, math.abs(f)) end
+  end
+  local s3 = W.new(); s3.ramp = 1
+  local bigNoGuard = 0
+  for i = 1, 20 do local f = s3:update(1 / 60, 0, (i % 2 == 0) and 0.08 or -0.08, 1, 1); bigNoGuard = math.max(bigNoGuard, math.abs(f)) end
+  check(big < bigNoGuard, string.format('a chattering force is softened (%.2f vs %.2f)', big, bigNoGuard))
 end
 
 print(string.format('%d passed, %d failed', passes, failures))

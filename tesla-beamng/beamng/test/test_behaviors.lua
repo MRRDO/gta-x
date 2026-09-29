@@ -1016,5 +1016,39 @@ scenario('furiousDrive', function()
   check(tF and tS and tF < tS, string.format('furious is faster than standard (%.0f s vs %.0f s)', tF or -1, tS or -1))
 end)
 
+scenario('laneChangeRate', function()
+  -- a busy two-lane highway: a slow car every ~250 m in both lanes. It should pass when there is a real gain,
+  -- not weave back and forth.
+  local w = W.new({ nodes = straight(0, 6000, 7.5, 27), ego = { x = 0, y = RIGHT2, psi = 0, v = 24 } })
+  for i = 1, 14 do
+    local y = (i % 2 == 0) and LEFT2 or RIGHT2
+    w:addCar({ id = i, pts = line(200 + i * 260, y, 6000, y), speed = 16 + (i % 3) })
+  end
+  w:engage('fsd', 'standard')
+  w:run(150)
+  local n = 0
+  for _, e in ipairs(w.events) do if e.kind == 'laneChange' then n = n + 1 end end
+  print('lane changes in 150 s: ' .. n)
+  check(n <= 8, 'not too many lane changes on a busy highway: ' .. n)
+  check(not w.collided, 'no collision')
+end)
+
+scenario('laneCountFlap', function()
+  -- the level's road width wobbles between 1 and 2 lanes every few hundred metres (node radii differ):
+  -- that must not make FSD hop between lanes
+  local nodes = straight(0, 6000, 7.5, 27, 100, function(nn)
+    local k = 0
+    for id, n in pairs(nn) do k = k + 1; n.radius = (k % 3 == 0) and 6.4 or 7.5 end
+  end)
+  local w = W.new({ nodes = nodes, ego = { x = 0, y = RIGHT2, psi = 0, v = 24 } })
+  w:addCar({ id = 1, pts = line(400, RIGHT2, 6000, RIGHT2), speed = 14 })
+  w:engage('fsd', 'standard')
+  w:run(120)
+  local n = 0
+  for _, e in ipairs(w.events) do if e.kind == 'laneChange' then n = n + 1 end end
+  print('lane changes with wobbling width: ' .. n)
+  check(n <= 4, 'wobbling road width does not cause lane hopping: ' .. n)
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -225,17 +225,19 @@ function Safety:tick(t, dt, snap, ctx)
   end
 
   -- Lane Departure Avoidance (manual driving, 40-90 mph, no turn signal)
-  if st.lda and not ego.engaged and ctx.lane and speed > 17.9 and speed < 40.2 and not ego.signal then
+  -- Lane Departure Avoidance is gentle and only for a real departure: the map's road edge is only roughly known, so
+  -- it waits until the car is beyond it (not just near it), drifting outward, at highway speed
+  if st.lda and not ego.engaged and ctx.lane and speed > 22 and speed < 40.2 and not ego.signal then
     local L = ctx.lane
     local lat = L.lat
     local rate = self.prevLat and (lat - self.prevLat) / max(dt, 1e-3) or 0
-    local outward = (lat > 0 and rate > 0.12) or (lat < 0 and rate < -0.12)
-    if abs(lat) > L.halfW - 0.35 and outward and t > self.ldaUntil + 1.5 then
+    local outward = (lat > 0 and rate > 0.25) or (lat < 0 and rate < -0.25)
+    if abs(lat) > L.halfW + 0.3 and outward and t > self.ldaUntil + 3 then
       local toward = lat > 0 and 'left' or 'right'
       local emergency = (toward == 'left' and L.oncomingLeft) or (toward == 'left' and not L.sameLeft and not L.oncomingLeft)
         or (toward == 'right' and not L.sameRight)
       if (toward == 'left' and out.blindLeft) or (toward == 'right' and out.blindRight) then emergency = true end
-      self.ldaUntil = t + 0.8
+      self.ldaUntil = t + 0.5
       self.ldaDir = lat > 0 and 1 or -1
       self.ldaEmergency = emergency
       out.events[#out.events + 1] = { kind = 'laneDeparture', side = toward, emergency = emergency }
@@ -246,7 +248,7 @@ function Safety:tick(t, dt, snap, ctx)
   end
   if t <= self.ldaUntil then
     -- positive steering input turns right: push back toward the lane center
-    local mag = self.ldaEmergency and 0.07 or 0.035
+    local mag = self.ldaEmergency and 0.04 or 0.02
     out.lda = { steer = self.ldaDir > 0 and mag or -mag, emergency = self.ldaEmergency }
   end
 

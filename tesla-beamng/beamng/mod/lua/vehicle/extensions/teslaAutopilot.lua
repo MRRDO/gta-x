@@ -358,6 +358,7 @@ local function ffbProbe()
 end
 
 local function ffbTake()
+  ffb.farNoted, ffb.farT = false, 0
   ffb.own = false
   local ok, method, f, i, id = ffbProbe()
   if not ok or ffb.held then return ffb.held end
@@ -505,6 +506,17 @@ local function ffbUpdate(dt, targetInput)
   local due = now - ffb.lastSendT >= ffb.minInterval
   if (due and (ffb.lastForce == nil or abs(f - ffb.lastForce) > ffb.fcap / 400)) or (f == 0 and ffb.lastForce ~= 0) then ffbSend(f) end
   ffb.force, ffb.target, ffb.pos, ffb.grip = f, target, pos, grip
+  -- diagnostics for "the wheel goes hard right": say what it thinks when the wheel sits far from its target
+  if math.abs(pos - target) > 0.4 then
+    ffb.farT = (ffb.farT or 0) + dt
+    if ffb.farT > 1.2 and not ffb.farNoted then
+      ffb.farNoted = true
+      geEvent('notice', { detail = string.format('wheel far from target: pos %.2f target %.2f sign %d ratio %.2f lockDeg %.0f range %.0f confirmed %s force %.2f',
+        pos, target, ffb.spring.sign or 0, ffb.ratio or 0, wheelLockDeg() or 0, ffb.rangeDeg or 0, tostring(ffb.spring.confirmed), f) })
+    end
+  else
+    ffb.farT = 0
+  end
   if ffb.spring.disabled then
     errorEvent('wheel spring turned off: the wheel kept moving the wrong way')
     ffbRelease()
@@ -1175,7 +1187,7 @@ end
 -- Swerve Assist (you're driving, FSD off): big back-and-forth steering at speed, or the car
 -- starting to yaw hard -> ease the steering (less of your input, a little counter-steer
 -- against the yaw) and cut the throttle until the car settles, then hand it all back.
-local SWERVE_SPEED = 20 -- m/s (~45 mph)
+local SWERVE_SPEED = 22 -- m/s (~50 mph)
 
 local function swerveAssist(dt, s)
   if not swerve.on then return end
@@ -1189,7 +1201,7 @@ local function swerveAssist(dt, s)
   local yaw = s.yawRate or 0
   local fast = abs(s.v) > SWERVE_SPEED
   if not swerve.active then
-    if fast and ((#swerve.flips >= 2 and abs(yaw) > 0.2) or abs(yaw) > 0.55) then
+    if fast and ((#swerve.flips >= 3 and abs(yaw) > 0.3) or abs(yaw) > 0.7) then
       swerve.active, swerve.calmT, swerve.t0 = true, 0, now
       allowLocal({ 'steering', 'throttle' }, false)
       geEvent('swerveAssist', { detail = 'stabilizing' })
