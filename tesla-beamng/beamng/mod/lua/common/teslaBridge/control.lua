@@ -5,6 +5,7 @@
 -- simple car model (beamng/test/).
 
 local P = require('teslaBridge/pathing')
+local Dr = require('teslaBridge/drift')
 
 local M = {}
 
@@ -210,6 +211,22 @@ function Driver:update(dt, sense, opts)
     end
   end
   self.pThr, self.pBrk = out.throttle, out.brake
+  -- Furious drift (experimental, only when the planner allows it: furious profile, clear road, no stop coming)
+  if plan.drift and not reverse and not plan.urgent then
+    local kAhead = 0
+    for i = pr.i, #path.pts - 1 do
+      local si = path.s[i] - s
+      if si > 36 then break end
+      if si >= 12 then kAhead = math.max(kAhead, abs(P.curvatureAt(path.pts, i, 3))) end
+    end
+    self.drift = self.drift or Dr.new()
+    local r = self.drift:update(dt, { allowed = true, v = v, kAhead = kAhead, yawRate = sense.yawRate or 0, t = self.t })
+    if r.pb > 0 then out.parkingbrake = 1 end
+    if r.throttleMin > 0 then out.throttle, out.brake = math.max(out.throttle, r.throttleMin), 0 end
+    out.driftPhase = r.phase
+  elseif self.drift then
+    self.drift:reset()
+  end
   if opts.steerOnly then out.throttle, out.brake = 0, (vt < v - 3) and min(0.8, (v - vt) * 0.1) or 0 end
   return out
 end

@@ -205,6 +205,7 @@ export type EventKind =
   | 'arrivalChoice'    // the choice was applied
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
   | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
+  | 'confirmGo'        // trafficControl 'confirm': stopped at a stop sign / green light, waiting for the driver's go. data {what: 'stopSign' | 'light'}
   | 'pinRequired'      // PIN to Drive is locked and someone tried to drive
   | 'lightShow'        // detail: the show's name when it starts, 'end' when it finishes or is stopped (driving, or another command)
   | 'tripSummary'      // parked after a drive of 300 m+: detail = Safety Score, data {km, minutes, fsdPercent, hardBrakes, hardTurns, takeovers, tailgatePercent, topSpeed, score}
@@ -231,7 +232,7 @@ export type Debug = { t: 'debug'; ge: Record<string, unknown>; vehicle?: Record<
 export type ActionName =
   | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'disengage' | 'voiceNote' | 'nudge'
   | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
-  | 'followCloser' | 'followFarther' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
+  | 'followCloser' | 'followFarther' | 'confirm' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
   | 'dialUp' | 'dialDown' | 'dialClick' // the G29 red dial: turn = up/down, click cycles what it controls (DIAL_MODES)
   | 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' // media keys: the relay tells the app ({t:'media'}), not the game
 
@@ -250,6 +251,7 @@ export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'profilePrev', label: 'Previous speed profile' },
   { name: 'followCloser', label: 'Follow closer' },
   { name: 'followFarther', label: 'Follow farther' },
+  { name: 'confirm', label: 'Confirm (go after a stop, in Traffic Control confirm mode)' },
   { name: 'autopark', label: 'Autopark' },
   { name: 'park', label: 'Park (FSD driving: pull over and park)' },
   { name: 'dialUp', label: 'Dial turn up (volume / follow distance / speed / profile)' },
@@ -363,6 +365,10 @@ export type Command =
       takeover?: 'light' | 'normal' | 'firm'
       /** Swerve Assist while you drive (default on). */
       swerveAssist?: boolean
+      /** Furious profile only: a short handbrake-and-throttle drift through tight corners (experimental, untested in the real game; default on for Furious). Set false to turn it off. */
+      drift?: boolean
+      /** Traffic Light and Stop Sign Control: 'auto' (default) or 'confirm': after stopping FSD waits for your go (tap the accelerator, or the confirm button) before leaving a stop sign or a light that turned green. */
+      trafficControl?: 'auto' | 'confirm'
       /** Regenerative braking strength, Tesla's Standard / Low (default standard). Only when `regen` is on and the car has no regen of its own. */
       regenLevel?: 'standard' | 'low'
       /** Fog lights come on by themselves in fog (default on). */
@@ -381,6 +387,7 @@ export type Command =
   | { t: 'nudge' } // "hands on wheel" (e.g. a button for keyboard players)
   | { t: 'summon'; dir: 'forward' | 'reverse' | null } // Dumb Summon (null stops)
   | { t: 'climate'; on?: boolean; driverTemp?: number; passengerTemp?: number; fan?: number; defrost?: boolean; precondition?: boolean; cabinOverheat?: boolean; keepOn?: boolean; dogMode?: boolean; campMode?: boolean; bioweapon?: boolean; seatHeat?: Record<string, number>; wheelHeat?: boolean; vents?: string } // foundation: stored and echoed in state.climate for future fan/heater hardware; the game itself has no cabin climate
+  | { t: 'confirm' } // "go": answers a confirmGo event (also a wheel button / a tap on the accelerator)
   | { t: 'pinLock'; on: boolean } // PIN to Drive: on = the car stays in Park (and FSD refuses) until the app sends on:false after the PIN is entered
   | { t: 'lightShow'; name: 'welcome' | 'goodbye' | 'holiday' | 'strobe' | null } // choreographed headlights/fog/blinkers while parked (null stops it)
   | { t: 'arrivalChoice'; choice: 'park' | 'street' | 'pullOver' | 'driveway' | 'takeOver' } // answer to the 'arriving' event
@@ -410,7 +417,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm',
 ])
 
 export const MPH = 0.44704

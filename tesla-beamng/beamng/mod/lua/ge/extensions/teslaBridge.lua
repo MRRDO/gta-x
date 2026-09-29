@@ -1495,6 +1495,8 @@ handleCommand = function(msg)
     if not planner or not veh then return end
     planner:summon(msg.dir, egoSnapshot(veh))
     syncVehicleMode(veh)
+  elseif t == 'confirm' then
+    if planner then planner:confirm(gameTime) end
   elseif t == 'climate' then
     for k, ty in pairs(CLIMATE_KEYS) do
       if msg[k] ~= nil and type(msg[k]) == ty then climateState[k] = msg[k] end
@@ -1615,6 +1617,7 @@ runAction = function(name)
     plannerSettings.followDistance = math.max(1, math.min(7, cur + (name == 'followCloser' and -1 or 1)))
     if planner then planner:configure(plannerSettings) end
     event('settings', 'follow distance ' .. plannerSettings.followDistance)
+  elseif name == 'confirm' then handleCommand({ t = 'confirm' })
   elseif name == 'autopark' then handleCommand({ t = 'autopark' })
   elseif name == 'park' then handleCommand({ t = 'gear', gear = 'P' })
   elseif name == 'summonForward' then handleCommand({ t = 'summon', dir = 'forward' })

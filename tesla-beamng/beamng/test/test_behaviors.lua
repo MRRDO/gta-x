@@ -950,5 +950,71 @@ scenario('offRoad', function()
   end
 end)
 
+scenario('confirmMode', function()
+  local Q = { quirks = { phantomBraking = false, yellowHesitation = false, wiggle = false, weather = true, creep = false }, trafficControl = 'confirm' }
+  -- stop sign: it stops, asks, and waits for the go
+  local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 }, settings = Q,
+    signals = { { id = 'stop1', x = 141, y = -7, z = 0, kind = 'stop' } } })
+  w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  w:engage('fsd', 'standard')
+  w:run(40)
+  local x = w:refPos()
+  check(w:saw('confirmGo', function(e) return e.what == 'stopSign' end) ~= nil, 'asks for the go at the stop sign')
+  check(x < 150 and w.ego.v < 0.2, string.format('waits at the line without the go (x %.0f)', x))
+  w.planner:confirm(w.t)
+  w:run(40, function(ww) return ww:saw('arrived') end)
+  check(w:saw('arrived') ~= nil and not w.collided, 'goes once confirmed and arrives')
+  -- an accelerator tap is a go too
+  local w2 = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 }, settings = Q,
+    signals = { { id = 'stop1', x = 141, y = -7, z = 0, kind = 'stop' } } })
+  w2.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  w2:engage('fsd', 'standard')
+  w2:run(40)
+  w2.manualThrottle = 0.6
+  w2:run(40, function(ww) return ww:saw('arrived') end)
+  check(w2:saw('arrived') ~= nil, 'an accelerator tap confirms too')
+  -- a light that turns green after we stopped at red
+  local state = 'red'
+  local w3 = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 }, settings = Q,
+    signals = { { id = 'lt', x = 141, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return state end } } })
+  w3.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  w3:engage('fsd', 'standard')
+  w3:run(30)
+  state = 'green'
+  w3:run(15)
+  check(w3:saw('confirmGo', function(e) return e.what == 'light' end) ~= nil and w3:refPos() < 150, 'waits at a green light it stopped for, until confirmed')
+  w3.planner:confirm(w3.t)
+  w3:run(40, function(ww) return ww:saw('arrived') end)
+  check(w3:saw('arrived') ~= nil, 'goes on the green once confirmed')
+  -- default mode: no asking
+  local w4 = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+    signals = { { id = 'stop1', x = 141, y = -7, z = 0, kind = 'stop' } } })
+  w4.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  w4:engage('fsd', 'standard')
+  w4:run(60, function(ww) return ww:saw('arrived') end)
+  check(w4:saw('confirmGo') == nil and w4:saw('arrived') ~= nil, 'auto mode never asks')
+end)
+
+scenario('furiousDrive', function()
+  local function trip(profile)
+    local w = W.new({ nodes = grid(3, 3, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 } })
+    w.planner:setRoute({ 440, 300, 0 }, nil, 'Driveway')
+    w:engage('fsd', profile)
+    local driftSeen, pbSeen = false, false
+    w:run(120, function(ww)
+      if ww.plan and ww.plan.drift then driftSeen = true end
+      return ww:saw('arrived')
+    end)
+    return w, driftSeen
+  end
+  local wF, driftF = trip('furious')
+  check(wF:saw('arrived') ~= nil and not wF.collided, 'furious gets there without a collision')
+  check(driftF, 'furious allows drifts on a clear road')
+  local wS, driftS = trip('standard')
+  check(not driftS, 'other profiles never drift')
+  local tF, tS = wF:saw('arrived'), wS:saw('arrived')
+  check(tF and tS and tF < tS, string.format('furious is faster than standard (%.0f s vs %.0f s)', tF or -1, tS or -1))
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

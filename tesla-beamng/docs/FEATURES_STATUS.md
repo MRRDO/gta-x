@@ -34,5 +34,6 @@ Legend: **done+sim** = built and covered by the simulator tests (`npm test`, `np
 | N8 | Trip summary + Safety Score | done+sim |
 | N9 | Road feel in the wheel (heavy) | done, unverified (`roadFeel` 0..2 while FSD holds the wheel; while you drive, the game's own force feedback is untouched) |
 | N11 | UI sounds, wind sounds | app |
-| Max | Hold Max = cuts in and speeds; Furious in service mode | profile `furious`: done+sim (cut-ins, tailgating, +15 mph, hard braking, no rolling through reds). **Drifting and stunts: not done** (need real-car tuning in the game) |
+| Max | Hold Max = cuts in and speeds; Furious in service mode | profile `furious`: done+sim (cut-ins, tailgating, +15 mph, hard braking, no rolling through reds). Drift: done, experimental (`drift.lua`: a 0.35 s handbrake kick plus held throttle into tight corners, only on a clear road at 9-26 m/s, bails out if the car spins, 6 s cooldown, `drift: false` turns it off). It can only be tuned in the real game, so expect to adjust it. Stunts (jumps, spins) are not built |
 | Later | Voice commands, Model X/S HUD | noted, not started |
+| Confirm | Traffic Light and Stop Sign Control: confirm | done+sim (`trafficControl: 'confirm'`: after stopping at a stop sign, or at a light that then turns green, FSD waits for a tap on the accelerator or the `confirm` button; event `confirmGo`). It does not slow for a green light it never stopped at |

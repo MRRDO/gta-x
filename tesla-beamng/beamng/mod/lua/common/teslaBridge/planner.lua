@@ -46,6 +46,7 @@ M.DEFAULT_SETTINGS = {
   laneChanges = true,
   nags = true,
   unresponsive = 'park',  -- no answer to the last nag: park nearby if there's a spot, else pull over
+  trafficControl = 'auto', -- 'confirm': wait for the driver's go (accelerator tap / confirm button) after stopping at a sign or light
   confidenceFloor = 0.55, -- below this FSD asks the driver to take over (and keeps driving)
 }
 -- how long FSD sits at a stop sign before going, per profile (seconds; Tesla is brief)
@@ -1323,6 +1324,7 @@ function Planner:tick(snap)
     hold = hold, openEnded = path.openEnded or false,
     gapTime = gap, throttleMax = clamp(prof.throttle * ACCEL[self.settings.accelMode or 'standard'].th, 0.2, 1), decel = prof.decel,
     rise = prof.rise * ACCEL[self.settings.accelMode or 'standard'].rise, feel = self.settings.steerFeel,
+    drift = (self.profile == 'furious' and self.settings.drift ~= false and not lead and not stopS and not hold and not hazard and not (st.weather and (st.weather.rain > 0.3 or st.weather.fog > 0.3)) and (self.mode == 'fsd')) or nil,
     maxSpeed = maxSpeed, wiggle = wiggle or nil,
     urgent = (self.urgentUntil and t < self.urgentUntil) or nil,
     mode = self.mode,
@@ -1412,6 +1414,15 @@ end
 
 -- Stop signs (stop, 2 s, creep & peek, check cross traffic) and traffic lights (with
 -- yellow-light hesitation). Returns stopS (global arc length), control status, waitingFor.
+-- "Traffic Light and Stop Sign Control: confirm": after a stop FSD waits for the driver's go
+-- (a tap on the accelerator, or the confirm button) before leaving the line.
+function Planner:confirm(t) self.confirmT = t or self.t end
+function Planner:takeConfirm(t, ego)
+  if (ego and ego.throttle or 0) > 0.3 then return true end
+  if self.confirmT and t - self.confirmT < 5 then self.confirmT = nil; return true end
+  return false
+end
+
 function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   local best
   local egoPt = win.pts[1]
@@ -1536,7 +1547,10 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
         fsm.clearSince = nil
       else
         fsm.clearSince = fsm.clearSince or t
-        if t - fsm.clearSince > 0.3 then
+        if t - fsm.clearSince > 0.3 and self.settings.trafficControl == 'confirm' and not self:takeConfirm(t, ego) then
+          waitingFor = 'confirm'
+          if not fsm.asked then fsm.asked = true; self:emit('confirmGo', { what = 'stopSign' }) end
+        elseif t - fsm.clearSince > 0.3 then
           fsm.state = 'done'
           self.cleared[sg.id] = true
           self.clearedS = sSign
@@ -1553,6 +1567,8 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   -- traffic light
   control.state = stt
   control.red = stt == 'red'
+  self.lightStopped = self.lightStopped or {}
+  if stt == 'red' and v < 0.5 and dist < 10 then self.lightStopped[sg.id] = t end
   if stt == 'red' then
     stopS = s
   elseif stt == 'yellow' then
@@ -1572,6 +1588,22 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
     if dec.hesitate and t - dec.t < 0.7 then cap(max(3, v - 2)) end
   else
     self.yellow[sg.id] = nil
+    -- green after we stopped at it: in confirm mode wait for the driver's go
+    local stoppedAt = self.lightStopped[sg.id]
+    if stoppedAt and t - stoppedAt < 120 and self.settings.trafficControl == 'confirm' then
+      if self:takeConfirm(t, ego) then
+        self.lightStopped[sg.id] = nil
+      else
+        stopS = s
+        waitingFor = 'confirm'
+        if not control.asked then
+          control.asked = true
+          if self.lastConfirmAsk ~= sg.id then self.lastConfirmAsk = sg.id; self:emit('confirmGo', { what = 'light' }) end
+        end
+      end
+    else
+      self.lightStopped[sg.id] = nil
+    end
   end
   return stopS, control, waitingFor
 end
