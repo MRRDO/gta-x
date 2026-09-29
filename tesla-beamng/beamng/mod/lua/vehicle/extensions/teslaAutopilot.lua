@@ -116,6 +116,22 @@ end
 
 local WRAPS = { event = wrappedEvent, kbdSteer = wrappedKbdSteer, padAccelerateBrake = wrappedPad, toggleEvent = wrappedToggle }
 
+-- Paddles (and any shift-up / shift-down bindings) become turn signals: left = shift down,
+-- right = shift up. Gears then come only from the app / D-R-N-P (setting paddleSignals, default on).
+local paddleOrig = {}
+local function installPaddleSignals()
+  local mc = controller and controller.mainController
+  if not mc then return end
+  local function left() pcall(electrics.toggle_left_signal) end
+  local function right() pcall(electrics.toggle_right_signal) end
+  for name, fn in pairs({ shiftDownOnDown = left, shiftDown = left, shiftUpOnDown = right, shiftUp = right }) do
+    if type(mc[name]) == 'function' and not paddleOrig[name] and mc[name] ~= fn then
+      paddleOrig[name] = mc[name]
+      if name:find('OnDown') or name == 'shiftDown' or name == 'shiftUp' then mc[name] = function() if ap.paddleSignals ~= false then fn() else return paddleOrig[name]() end end end
+    end
+  end
+end
+
 local function installInputHook()
   if not input then return end
   for name, fn in pairs(WRAPS) do
@@ -338,6 +354,7 @@ local function ffbProbe()
 end
 
 local function ffbTake()
+  ffb.own = false
   local ok, method, f, i, id = ffbProbe()
   if not ok or ffb.held then return ffb.held end
   ffb.method, ffb.fn, ffb.idx, ffb.id = method, f, i, id
@@ -405,8 +422,28 @@ local function ffbRestoreTick()
   if ffbGiveBack() then ffb.restoreUntil = nil; return end
   if now > ffb.restoreUntil then
     ffb.restoreUntil = nil
-    errorEvent('could not give the wheel back to the game (no force feedback): re-select the wheel in Options > Controls, or reload the car')
+    -- the game won't take the wheel back: keep it alive with our own self-centering (stronger
+    -- with speed, like a real steering rack) instead of leaving it dead
+    ffb.own, ffb.status, ffb.reason = true, 'own', 'game force feedback did not come back: using our own centering'
+    ffb.spring:reset()
+    errorEvent('the game did not take the wheel back: using our own self-centering force feedback')
   end
+end
+
+-- our own self-centering while the game's FFB is unavailable: spring toward 0, firmer at speed
+local function ffbOwnTick(dt, s)
+  if not ffb.own or ffb.held or ap.engaged then return end
+  local id = hydrosId()
+  if id and id >= 0 then
+    ffb.own, ffb.status = false, 'available' -- the game has the wheel again
+    ffbSend(0)
+    return
+  end
+  if not ffb.id or ffb.id < 0 then return end
+  local pos = (raw.steering and raw.steering.v) or 0
+  local strength = 0.12 + 0.5 * math.min(1, abs(s.v) / 20)
+  local f = ffb.spring:update(dt, 0, pos, ffb.fcap, strength)
+  if dt > 1e-4 and now - ffb.lastSendT >= ffb.minInterval then ffbSend(f) end
 end
 
 -- where the physical wheel should be for a steering input: the same ANGLE as the car's
@@ -1134,6 +1171,8 @@ handlers.drive = function(cmd)
   if cmd.accel == 'chill' or cmd.accel == 'standard' then feel.accel = cmd.accel end
 end
 
+handlers.paddles = function(cmd) ap.paddleSignals = cmd.signals ~= false end
+
 handlers.swerveAssist = function(cmd)
   swerve.on = cmd.on ~= false
   if not swerve.on and swerve.active then
@@ -1146,6 +1185,7 @@ local function updateGFX(dt)
   now = now + dt
   if input and input.event ~= wrappedEvent then installInputHook() end
   installFFBHook()
+  if not ap.paddleHooked and controller and controller.mainController then ap.paddleHooked = true; pcall(installPaddleSignals) end
   if ffb.restoreUntil then pcall(ffbRestoreTick) end
   if next(closing) then pcall(watchClosing) end
   local s = sense(dt)
@@ -1239,6 +1279,7 @@ local function updateGFX(dt)
   else
     learnWheelRatio()
     checkAccidental()
+    if ffb.own then pcall(ffbOwnTick, dt, s) end
     applyAssist(false, s)
     -- Auto Shift out of Park: tell GE when the driver presses the brake in P (it picks D or R
     -- if the setting is on)

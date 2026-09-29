@@ -112,7 +112,15 @@ If something fails:
 5. **Wheel buttons:** test page → *Wheel buttons*. For each action Quentin wants (start/stop
    FSD, voice note, lane changes, faster/slower...), click **Set**, then have them press the
    wheel button. Avoid buttons BeamNG already uses for something else.
-6. **iPad:** Quentin scans the QR in the relay window. It opens the Tesla UI app over https,
+6. **No Wi-Fi? iPad over USB (Personal Hotspot):** plug the iPad into the laptop with its
+   cable. On the iPad: Settings > Personal Hotspot > on, and tap "Trust" when asked. The laptop
+   needs Apple Devices (or iTunes) installed so Windows sees it: a new network adapter appears
+   (an address like `172.20.10.x`). Set that network to **Private** (or allow Node on it in the
+   firewall), then start Tesla Bridge: the relay window lists every address it can be reached on;
+   the iPad opens `http://<the laptop's 172.20.10.x address>:8765/` (no Wi-Fi router needed).
+   The iPad camera/mic still need https, which needs the tunnel, which needs internet (the
+   iPad's cellular data works).
+7. **iPad:** Quentin scans the QR in the relay window. It opens the Tesla UI app over https,
    already connected. It's a new code on every start. Allow the camera (attention check) and
    the mic (voice notes).
 

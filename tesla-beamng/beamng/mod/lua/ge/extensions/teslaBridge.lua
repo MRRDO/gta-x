@@ -49,7 +49,7 @@ local vehDiag = nil
 
 -- backup camera state (see the backup camera section)
 local cam = {
-  settings = { backup = false, fps = 5, width = 320, height = 180, fov = 100, format = 'jpg' }, -- off by default: the off-screen capture flashes the screen white on D3D11 (0.39)
+  settings = { backup = false, fps = 3, width = 320, height = 180, fov = 100, format = 'jpg' }, -- off by default: the off-screen capture flashes the screen white on D3D11 (0.39)
   on = false, previewUntil = -1, nextT = 0, seq = 0, pending = nil, inline = false,
   reverseUntil = -1, failed = nil, buf = 0,
 }
@@ -179,6 +179,10 @@ local pushVehicleSettings -- forward
 local socketTried = -1
 local netErrLogAt = -1
 local fpsAvg = 30
+local learn = nil -- light on-line learning of his driving style (teslaBridge/learn)
+local tLearnSave = 0
+local loadLearn, saveLearn -- forward
+local Lr = require('teslaBridge/learn')
 local tAids = 0
 local function loadSocket()
   for _, name in ipairs({ 'socket.socket', 'socket' }) do
@@ -439,7 +443,8 @@ local function buildMap()
   end
   findSignals()
   findParking()
-  planner = Pl.new({ graph = graph, signals = signals, parking = parking })
+  if not learn then loadLearn() end
+  planner = Pl.new({ graph = graph, signals = signals, parking = parking, learn = learn })
   planner:configure(plannerSettings)
   sentMode = 'off'
   local sig = {}
@@ -810,6 +815,25 @@ local function driveAidsTick(veh)
   else
     drive.limitHere = nil
   end
+  -- learning (a few multiplies, twice a second)
+  if learn and plannerSettings.learning ~= false and drive.limitHere then
+    if (not planner or planner.mode == 'off') and lastVehSt.gear == 'D' then
+      local gapT
+      local cars = trafficList()
+      for _, c in ipairs(cars) do
+        local dx, dy = c.x - ego.x, c.y - ego.y
+        local along = dx * ego.hx + dy * ego.hy
+        if along > 3 and along < 80 and math.abs(-dx * ego.hy + dy * ego.hx) < 2 and ego.v > 3 then
+          local t = along / ego.v
+          if not gapT or t < gapT then gapT = t end
+        end
+      end
+      learn:watch(drive.limitHere, ego.v, gapT, 0.5)
+    elseif planner and planner.mode == 'fsd' and lastVehSt.accelOverride then
+      learn:feedback(drive.limitHere, 'faster', 0.5)
+    end
+    if realTime >= tLearnSave then tLearnSave = realTime + 60; saveLearn() end
+  end
   -- speed warning
   local mode = plannerSettings.speedWarning or 'display'
   local over = drive.limitHere and ego.v > drive.limitHere + (tonumber(plannerSettings.speedWarnOffset) or 5) * 0.44704
@@ -910,7 +934,7 @@ function M.onVehicleState(vid, json)
   local ok, st = pcall(jsonDecode, json)
   if not ok or type(st) ~= 'table' then return end
   lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil,
-    lights = st.lights }
+    lights = st.lights, accelOverride = st.autopilot and st.autopilot.accelOverride or false }
   -- backup camera: on in R, and for 2 s after leaving it (like the real thing)
   if st.gear == 'R' then cam.reverseUntil = realTime + 2 end
   if (st.handsNudges or 0) > nudgeCount then nudgeCount = st.handsNudges; nudgeT = gameTime end
@@ -976,6 +1000,9 @@ function M.onVehicleEvent(vid, json)
   if not ok or type(ev) ~= 'table' then return end
   local veh = playerVehicle()
   if ev.kind == 'disengage' then
+    if learn and drive.limitHere and (ev.reason == 'brake' or ev.reason == 'steer') and (lastVehSt.speed or 0) > drive.limitHere * 0.95 then
+      learn:feedback(drive.limitHere, 'slower') -- he took over while going at / over the limit
+    end
     if planner and planner.mode ~= 'off' then
       planner:disengage(ev.reason or 'error', ev.detail)
       sentMode = 'off' -- the car already let go
@@ -1051,6 +1078,7 @@ end
 pushVehicleSettings = function(veh)
   local ps = plannerSettings
   if ps.swerveAssist ~= nil then toVehicle(veh, 'command', { t = 'swerveAssist', on = ps.swerveAssist and true or false }) end
+  if ps.paddleSignals ~= nil then toVehicle(veh, 'command', { t = 'paddles', signals = ps.paddleSignals and true or false }) end
   if ps.stoppingMode or ps.regen ~= nil or ps.accelMode then
     toVehicle(veh, 'command', { t = 'drive', stopping = ps.stoppingMode, regen = ps.regen, accel = ps.accelMode })
   end
@@ -1159,7 +1187,7 @@ local function camTick(veh)
     if FS and FS.directoryExists and not FS:directoryExists(CAM_DIR) then FS:directoryCreate(CAM_DIR, true) end
     local pos, rot = camPose(veh)
     renderViews().takeScreenshot({
-      renderViewName = 'teslaBackupCam' .. cam.buf, filename = rel,
+      renderViewName = 'teslaBackupCam', filename = rel, -- ONE named view, reused: creating a view per frame is the likely cause of the D3D11 white flash
       resolution = vec3(cam.settings.width, cam.settings.height, 0),
       pos = pos, rot = rot, fov = cam.settings.fov, nearPlane = 0.05, screenshotDelay = 0.01,
     })
@@ -1570,12 +1598,26 @@ local function onVehicleDestroyed(vid)
   beacons[vid], beaconLoaded[vid], vehNames[vid] = nil, nil, nil
 end
 
+local LEARN_FILE = '/settings/teslaBridgeLearn.json'
+loadLearn = function()
+  local data = jsonReadFile and try(jsonReadFile, LEARN_FILE) or nil
+  learn = Lr.new(type(data) == 'table' and data or nil)
+end
+saveLearn = function()
+  if learn and learn.dirty and jsonWriteFile then
+    learn.dirty = false
+    try(jsonWriteFile, LEARN_FILE, learn:export(), true)
+  end
+end
+
 local function onExtensionLoaded()
   logI('loaded')
+  loadLearn()
   if levelName() then mapPending = true end
 end
 
 local function onExtensionUnloaded()
+  saveLearn()
   closeClient('unloaded')
   if server then pcall(function() server:close() end); server = nil end
 end

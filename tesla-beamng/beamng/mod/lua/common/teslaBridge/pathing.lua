@@ -711,13 +711,26 @@ function M.findTurns(g, center)
   for i = 2, #center - 1 do
     local p = center[i]
     local deg = 0
-    if p.node and g.adj[p.node] then for _ in pairs(g.adj[p.node]) do deg = deg + 1 end end
+    if p.node and g.adj[p.node] then for _, e in pairs(g.adj[p.node]) do if e.drv >= 0.3 then deg = deg + 1 end end end -- driveways / lot links don't count
     if deg >= 3 then
       local a, b = pointAt(s[i] - 15), pointAt(s[i] + 15)
       local ix, iy = norm2(p.x - a.x, p.y - a.y)
       local ox, oy = norm2(b.x - p.x, b.y - p.y)
       local ang = angleBetween(ix, iy, ox, oy)
-      if abs(ang) > math.rad(30) then
+      -- a bend in the road we're already on isn't a turn: if the way we go is the most
+      -- straight-ahead option at this node, no signal (phantom signals)
+      local straightest = math.huge
+      local pn = g.nodes[p.node]
+      for other, e in pairs(g.adj[p.node]) do
+        local on = g.nodes[other]
+        if on and e.drv >= 0.3 then
+          local ex, ey = norm2(on.x - pn.x, on.y - pn.y)
+          local da = abs(angleBetween(ix, iy, ex, ey))
+          if da < straightest and da < math.rad(150) then straightest = da end
+        end
+      end
+      local continues = abs(ang) <= straightest + math.rad(12) and abs(ang) < math.rad(70)
+      if abs(ang) > math.rad(30) and not continues then
         out[#out + 1] = { x = p.x, y = p.y, dir = ang > 0 and 'left' or 'right', angle = ang, node = p.node, road = center[i].edgeName or '' }
       end
     end

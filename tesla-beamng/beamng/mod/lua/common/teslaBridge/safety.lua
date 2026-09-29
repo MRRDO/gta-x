@@ -178,7 +178,17 @@ function Safety:tick(t, dt, snap, ctx)
   end
 
   -- Automatic Emergency Braking
-  if st.aeb and not out.evade and ttc and speed > 1 and (ttc < 0.8 or (ttc < 1.3 and need > 4)) then
+  -- phantom braking guards: the threat must persist for 3 ticks (0.15 s), and a parked car
+  -- beside the lane (well off our heading, not moving) isn't a threat
+  local threat = ttc and speed > 1 and (ttc < 0.8 or (ttc < 1.3 and need > 4))
+  if threat and who and abs(who.v or 0) < 0.6 then
+    local rx, ry = who.x - ego.x, who.y - ego.y
+    local lat = abs(-rx * ego.hy + ry * ego.hx)
+    -- only a graze of the path's edge (< 0.3 m of body overlap), driving straight: not a threat
+    if lat > ((ego.wid or 1.9) + (who.w or 1.9)) * 0.5 - 0.3 and abs(ego.yawRate or 0) < 0.15 then threat = false end
+  end
+  self.threatTicks = threat and ((self.threatTicks or 0) + 1) or 0
+  if st.aeb and not out.evade and threat and self.threatTicks >= 3 then
     if self.aebUntil < t then out.events[#out.events + 1] = { kind = 'aeb', ttc = ttc } end
     self.aebUntil = t + 0.6
   end

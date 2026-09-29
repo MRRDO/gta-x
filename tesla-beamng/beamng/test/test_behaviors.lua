@@ -396,6 +396,43 @@ scenario('monitoringModes', function()
   check(n.cameraLost == true and n.active == 'wheel', 'camera stops reporting -> wheel fallback')
 end)
 
+-- light learning: what he does when FSD is off and how he corrects FSD moves the scales a little
+scenario('learning', function()
+  local Lr = require('teslaBridge/learn')
+  local L = Lr.new()
+  check(L:speedScale(15) == 1 and L:gapScale(15) == 1, 'learning: starts neutral')
+  for _ = 1, 1500 do L:watch(15, 15 * 1.12, nil, 0.5) end -- 12 minutes at 12 % over the limit
+  local fast = L:speedScale(15)
+  check(fast > 1.03 and fast <= 1.2, string.format('learning: drives over the limit by habit -> FSD a bit faster (%.3f)', fast))
+  check(L:speedScale(30) < 1.005, 'learning: other road types stay neutral')
+  local L2 = Lr.new()
+  for _ = 1, 100 do L2:feedback(15, 'faster', 0.5) end
+  check(L2:speedScale(15) > 1.1, 'learning: holding the accelerator pushes FSD faster')
+  for _ = 1, 20 do L2:feedback(15, 'slower') end
+  check(L2:speedScale(15) < 1.0, 'learning: taking over while too fast pushes it slower (bounded)')
+  check(L2:speedScale(15) >= 0.85 and L2:gapScale(15) <= 1.4, 'learning: always bounded')
+  local L3 = Lr.new(L:export())
+  check(math.abs(L3:speedScale(15) - fast) < 1e-9, 'learning: survives save and load')
+end)
+
+-- phantom braking: a parked car beside the lane must not trigger AEB, a stopped car in the lane must
+scenario('aebParked', function()
+  local S = require('teslaBridge/safety')
+  local function braked(latOffset)
+    local sf = S.new()
+    local hit = false
+    for k = 0, 40 do
+      local ego = { x = 0, y = 0, hx = 1, hy = 0, v = 15, yawRate = 0, len = 4.6, wid = 1.9 }
+      local car = { id = 1, x = 22, y = latOffset, dx = 1, dy = 0, v = 0, l = 4.6, w = 1.9 }
+      local o = sf:tick(k * 0.05, 0.05, { ego = ego, cars = { car } }, { rays = {} })
+      if (o.aeb or 0) > 0 then hit = true end
+    end
+    return hit
+  end
+  check(braked(0) == true, 'AEB: still brakes for a stopped car in the lane')
+  check(braked(1.7) == false, 'AEB: no phantom braking for a parked car that only grazes the lane edge')
+end)
+
 scenario('aeb', function()
   local w = W.new({ nodes = straight(0, 2000, 5, 25), ego = { x = 0, y = LANE1, psi = 0, v = 20 },
     safety = { evasion = false } })

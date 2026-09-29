@@ -73,7 +73,7 @@ function M.new(opts)
     bumps = {},
     stopFsm = {}, cleared = {}, clearedS = -1e9,
     yellow = {},
-    nag = Nag.new(),
+    nag = Nag.new(), learn = opts.learn,
     t = 0, events = {}, lastDisengage = nil,
     wiggleUntil = -1, phantom = nil, lastOverhead = false,
     arrivalMemory = {},
@@ -1097,6 +1097,10 @@ function Planner:tick(snap)
   -- rain / fog
   local wx = snap.weather or {}
   local wxScale = 1
+  -- what we've learned about Quentin's style on this kind of road (FSD only, mild)
+  local limNow = path.limit and path.limit[pr.i]
+  local learnSpeed = self.learn and self.mode == 'fsd' and self.learn:speedScale(limNow) or 1
+  local learnGap = self.learn and self.mode == 'fsd' and self.learn:gapScale(limNow) or 1
   if q.weather and ((wx.rain or 0) > 0.05 or (wx.fog or 0) > 0.05) then
     local lim = st.speedLimit or 20
     cap(max(6, lim + prof.offset - (wx.rain or 0) * 6 * MPH - (wx.fog or 0) * 10 * MPH))
@@ -1204,10 +1208,10 @@ function Planner:tick(snap)
     flat[#flat + 1] = pt.x - ty * sh
     flat[#flat + 1] = pt.y + tx * sh
     flat[#flat + 1] = pt.z or 0
-    vcap[#vcap + 1] = path.vcap[i] * wxScale
+    vcap[#vcap + 1] = path.vcap[i] * wxScale * learnSpeed
   end
   self.seq = self.seq + 1
-  local gap = prof.gap
+  local gap = prof.gap * learnGap
   if self.mode ~= 'fsd' and self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
   out.plan = {
     seq = self.seq, pts = flat, vcap = vcap, dir = 1,

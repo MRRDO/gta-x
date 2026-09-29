@@ -247,5 +247,31 @@ do
   check(len < 450, string.format('destination between a street and a far-around highway: short route (%.0f m)', len))
 end
 
+do
+  -- phantom signals: a bend in the road you're already on (the straightest way at a 3-way
+  -- node) is not a turn; taking the side road is
+  local nodes = {
+    A = { pos = { x = 0, y = 0, z = 0 }, radius = 4, links = { B = { drivability = 1 } } },
+    B = { pos = { x = 100, y = 0, z = 0 }, radius = 4, links = { C = { drivability = 1 }, D = { drivability = 1 } } },
+    C = { pos = { x = 170, y = 70, z = 0 }, radius = 4, links = {} },
+    D = { pos = { x = 100, y = -100, z = 0 }, radius = 4, links = {} },
+  }
+  local g = P.buildGraph(nodes)
+  local function line(pts)
+    local out = {}
+    for i = 1, #pts - 1 do
+      local a, b = pts[i], pts[i + 1]
+      local n = math.floor(math.sqrt((b.x - a.x) ^ 2 + (b.y - a.y) ^ 2) / 5)
+      for k = 0, n - 1 do out[#out + 1] = { x = a.x + (b.x - a.x) * k / n, y = a.y + (b.y - a.y) * k / n, node = (k == 0) and a.node or nil } end
+    end
+    out[#out + 1] = { x = pts[#pts].x, y = pts[#pts].y }
+    return out
+  end
+  local bend = P.findTurns(g, line({ { x = 0, y = 0, node = 'A' }, { x = 100, y = 0, node = 'B' }, { x = 170, y = 70, node = 'C' } }))
+  check(#bend == 0, 'road that bends 45 deg at a side-road junction: no phantom signal (' .. #bend .. ')')
+  local side = P.findTurns(g, line({ { x = 0, y = 0, node = 'A' }, { x = 100, y = 0, node = 'B' }, { x = 100, y = -100, node = 'D' } }))
+  check(#side == 1 and side[1].dir == 'right', 'taking the side road is a right turn')
+end
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)
