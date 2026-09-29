@@ -340,6 +340,13 @@ local function ffbProbe()
   if not ffb.enabled then ffb.status, ffb.reason = 'off', 'turned off'; return false end
   if ffb.held or ffb.own then return true end
   if not hasSendFFB() then ffb.status, ffb.reason = 'unavailable', 'obj:sendForceFeedback missing'; return false end
+  -- the game itself isn't driving any wheel for steering (this car has no usable FFB binding): we can't
+  -- move or hold the wheel, so don't try (holding a wheel that can't follow reads as a takeover)
+  local gid = tonumber(hydrosCall('getFFBID'))
+  if gid and gid < 0 and hydros and hydros.enableFFB ~= false then
+    ffb.status, ffb.reason = 'no wheel', 'the game has no force feedback on steering in this car'
+    return false
+  end
   local cid = cfgId()
   if cid and cid >= 0 and type(hydros) == 'table' and hydros.enableFFB ~= nil and currentCfg() then
     ffb.status, ffb.reason = 'available', 'via FFB config'
@@ -359,7 +366,10 @@ local function ffbProbe()
 end
 
 local function ffbTake()
+  if ffb.dead then return false end -- the wheel can't follow force in this car: don't hold it
   ffb.farNoted, ffb.farT = false, 0
+  ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil
+  ffb.posStart, ffb.everMoved = nil, false
   if ffb.own and ffb.method and ffb.enabled and not ffb.helper then
     -- the device is already ours (kept after the last FSD): just start driving it again
     ffb.own, ffb.held, ffb.lastForce, ffb.restoreUntil, ffb.status = false, true, nil, nil, 'active'
@@ -529,6 +539,25 @@ local function ffbUpdate(dt, targetInput)
   local due = now - ffb.lastSendT >= ffb.minInterval
   if (due and (ffb.lastForce == nil or abs(f - ffb.lastForce) > ffb.fcap / 400)) or (f == 0 and ffb.lastForce ~= 0) then ffbSend(f) end
   ffb.force, ffb.target, ffb.pos, ffb.grip = f, target, pos, grip
+  ffb.posStart = ffb.posStart or pos
+  if math.abs(pos - ffb.posStart) > 0.02 then ffb.everMoved = true end
+  -- the wheel never moves although we push at length: the game isn't passing our force to the device
+  -- (no usable force feedback in this car). Holding it would read as a driver grabbing the wheel.
+  if abs(f) > 0.5 * ffb.fcap and dt > 1e-4 then
+    ffb.stuckT = (ffb.stuckT or 0) + dt
+    ffb.stuckLo = math.min(ffb.stuckLo or pos, pos)
+    ffb.stuckHi = math.max(ffb.stuckHi or pos, pos)
+    if ffb.stuckHi - ffb.stuckLo > 0.006 then ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil end
+    if ffb.stuckT > 2.5 then
+      ffb.dead = true
+      geEvent('notice', { detail = string.format('the wheel does not follow force feedback in this car (pos %.3f, force %.2f): FSD runs without holding the wheel', pos, f) })
+      ffbRelease(true)
+      ffb.status, ffb.reason = 'no wheel', 'the wheel does not follow force feedback in this car'
+      return false
+    end
+  else
+    ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil
+  end
   -- diagnostics for "the wheel goes hard right": say what it thinks when the wheel sits far from its target
   if math.abs(pos - target) > 0.4 then
     ffb.farT = (ffb.farT or 0) + dt
@@ -546,7 +575,7 @@ local function ffbUpdate(dt, targetInput)
     ffb.status, ffb.enabled = 'disabled', false
     return false
   end
-  return grip
+  return grip and ffb.everMoved == true
 end
 
 -- Learn how the wheel's raw axis maps to steering input (1:1 unless the car's
