@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { connect, type Socket } from 'node:net'
 import { homedir, networkInterfaces } from 'node:os'
 import { readFileSync, existsSync, writeFileSync, statSync, mkdirSync, readdirSync } from 'node:fs'
-import { join, dirname, extname, normalize, resolve } from 'node:path'
+import { join, dirname, extname, normalize, resolve, basename } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
@@ -459,6 +459,24 @@ function serveFile(res: ServerResponse, file: string) {
   res.end(readFileSync(file))
 }
 
+/**
+ * Quentin doesn't want the grey "Waiting for BeamNG..." / "Load into a world..." line under the
+ * boot logo: hide it when we serve the app (the logo stays; --boot-status keeps the line).
+ * Matches by text so it survives app rebuilds; only touches short text-only elements.
+ */
+const BOOT_STATUS_HIDE = `<script>(()=>{const re=/^(waiting for beamng|load into a world|start beamng)/i;
+const hide=(el)=>{if(el&&el.childElementCount===0&&re.test((el.textContent||'').trim()))el.style.display='none'};
+const scan=(n)=>{if(n.nodeType!==1)return;hide(n);n.querySelectorAll&&n.querySelectorAll('div,p,span,small').forEach(hide)};
+new MutationObserver((ms)=>ms.forEach((m)=>{m.addedNodes.forEach(scan);if(m.type==='characterData'||m.type==='childList')hide(m.target.nodeType===1?m.target:m.target.parentElement)}))
+.observe(document.documentElement,{childList:true,subtree:true,characterData:true});})()</script>`
+
+function serveIndex(res: ServerResponse, file: string) {
+  let html = readFileSync(file, 'utf8')
+  if (!arg('boot-status')) html = html.includes('</head>') ? html.replace('</head>', BOOT_STATUS_HIDE + '</head>') : BOOT_STATUS_HIDE + html
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' })
+  res.end(html)
+}
+
 /** The app's BeamNG build (dist-beamng) to serve at /: --app, $TESLA_APP_DIR, or next to this project. */
 function appRoot(): string | null {
   const c = [APP_DIR, process.env.TESLA_APP_DIR, join(here, '..', '..', 'tesla-ui-atv', 'dist-beamng'),
@@ -521,6 +539,7 @@ const server = createServer((req, res) => {
       if (extname(rel)) { res.writeHead(404); return res.end('not found') } // a missing asset, not a page
       file = join(root, 'index.html') // SPA fallback
     }
+    if (basename(file) === 'index.html') return serveIndex(res, file)
     return serveFile(res, file)
   }
   res.writeHead(404)

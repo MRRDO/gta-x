@@ -103,6 +103,7 @@ async function until(what: string, fn: () => boolean, timeoutMs: number) {
 try {
   check('map arrives', await until('map', () => !!map && map.nodes.length > 0, 15000), map ? `${map.nodes.length} nodes, ${map.signals.length} signals` : '')
   check('state streams', await until('state', () => states.length > 30, 10000))
+  check('speed limit shown with FSD off', await until('limit', () => Math.abs((state?.speedLimit ?? 0) - 13.4) < 0.3, 3000), String(state?.speedLimit) + ' at ' + JSON.stringify(state?.pos))
   {
     const get = async (p: string) => { const r = await fetch(`http://127.0.0.1:${PORT}${p}`); return [r.status, await r.text()] as const }
     const [s1, b1] = await get('/'), [s2, b2] = await get('/navigate/somewhere'), [s3, b3] = await get('/assets/main.js')
@@ -111,6 +112,7 @@ try {
       s1 === 200 && b1.includes('app-index') && s2 === 200 && b2.includes('app-index') && s3 === 200 && b3.includes('console') && s4 === 404,
       `${s1} ${s2} ${s3} ${s4}`)
     check('test page moved to /test', s5 === 200 && b5.includes('BeamNG bridge test'))
+    check('boot screen: the "Waiting for BeamNG" line is hidden (script injected into the app page)', b1.includes('waiting for beamng') && b2.includes('waiting for beamng'))
   }
   {
     const s = states.slice(-40)
@@ -421,6 +423,16 @@ try {
     playerInput('paddle left')
     check('paddle (turn signal) asks FSD for a lane change or the next turn', await until('paddle', () => events.some((e) => (e.kind === 'laneChange' && /driver/.test(JSON.stringify(e))) || e.kind === 'turnRequest'), 5000),
       events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    {
+      // the blinker may cancel after the turn (like a real one); it must not drop before it
+      let droppedEarly = '', t0 = Date.now()
+      while (Date.now() - t0 < 1500) {
+        const s1 = st()
+        if (s1.signal !== 'left' && (s1.autopilot.nextTurn?.dist ?? 0) > 10) droppedEarly = `${s1.signal} with the turn ${s1.autopilot.nextTurn?.dist} m away`
+        await sleep(50)
+      }
+      check('your turn signal stays on while FSD acts on it', !droppedEarly, droppedEarly)
+    }
     events.length = 0
     playerInput('shifter N')
     check('H-shifter moved under FSD: put back in D, FSD stays on', await until('gear back', () => st().gear === 'D' && events.some((e) => e.kind === 'notice'), 4000) && st().autopilot.engaged,
@@ -479,6 +491,29 @@ try {
     playerInput('repair')
     check('...and the alert clears once the car is repaired', await until('repaired', () => !st().autopilot.alert, 3000), JSON.stringify(st().autopilot.alert))
     send({ t: 'signal', dir: 'none' })
+  }
+
+  // --- Tesla driving aids: speed limit with FSD off, auto headlights, creep / Vehicle Hold
+  {
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off', () => !st().autopilot.engaged, 3000)
+    playerInput('tod 0.5') // midnight
+    check('auto headlights: on at night', await until('lights on', () => st().lights?.low === true, 4000), JSON.stringify(st().lights))
+    playerInput('tod 0.02') // noon
+    check('auto headlights: off in daylight', await until('lights off', () => st().lights?.low === false, 4000), JSON.stringify(st().lights))
+    playerInput('brake 1')
+    await until('stopped', () => st().speed < 0.3, 20000)
+    send({ t: 'gear', gear: 'D' })
+    send({ t: 'settings', stoppingMode: 'creep' })
+    await sleep(300)
+    playerInput('brake 0')
+    check('stopping mode creep: moves off with no pedals', await until('creep', () => st().speed > 0.5, 6000), `speed ${st().speed.toFixed(2)} gear ${st().gear}`)
+    send({ t: 'settings', stoppingMode: 'hold', regen: true })
+    check('stopping mode hold: regen slows it and Vehicle Hold holds it', await until('hold', () => st().speed < 0.1 && st().hold === true, 10000),
+      `speed ${st().speed.toFixed(2)} hold ${st().hold}`)
+    await sleep(1500)
+    check('...and it stays stopped with no brake pressed', st().speed < 0.1 && st().brake > 0.3, `speed ${st().speed.toFixed(2)} brake ${st().brake}`)
+    send({ t: 'settings', stoppingMode: 'roll', regen: false })
   }
 
   // --- Swerve Assist while the driver drives: yank the wheel back and forth at ~50 mph

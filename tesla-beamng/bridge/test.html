@@ -159,6 +159,19 @@
         <span id="nagInfo" class="pill"></span>
       </div>
       <div class="row">
+        <span style="color:var(--dim)">stopping mode</span>
+        <select id="stoppingMode"><option value="roll" selected>roll</option><option value="creep">creep</option><option value="hold">hold</option></select>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="regen"> regen braking</label>
+        <span style="color:var(--dim)">acceleration</span>
+        <select id="accelMode"><option value="standard" selected>standard</option><option value="chill">chill</option></select>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="autoHeadlights" checked> auto headlights</label>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="autoHighBeams"> auto high beams</label>
+        <span style="color:var(--dim)">speed warning</span>
+        <select id="speedWarning"><option value="display" selected>display</option><option value="chime">chime</option><option value="off">off</option></select>
+        <input id="speedWarnOffset" type="number" min="0" max="20" value="5" style="width:48px"><span style="color:var(--dim)">mph over</span>
+        <span id="limitInfo" class="pill"></span>
+      </div>
+      <div class="row">
         <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="camBackup"> backup camera in R (can flash the screen on D3D11)</label>
         <span style="color:var(--dim)">quality</span>
         <select id="camQuality"><option value="low" selected>low 320×180</option><option value="medium">medium 480×270</option><option value="high">high 640×360</option></select>
@@ -283,6 +296,7 @@ function onMsg(m) {
 }
 setInterval(() => {
   const n = state && state.autopilot && state.autopilot.nag
+  if (state) $('limitInfo').textContent = (state.speedLimit ? `limit ${Math.round(state.speedLimit / 0.44704)} mph` : 'no limit') + (state.speedWarning ? ' · OVER' : '') + (state.hold ? ' · HOLD' : '')
   if (n) $('nagInfo').textContent = `monitoring: ${n.mode ?? 'auto'} → ${n.active ?? '?'}${n.interval ? ` · nudge every ~${n.interval}s` : ''}`
 }, 1000)
 setInterval(() => { $('rate').textContent = `${stateCount} Hz` + (state && state.fps ? ` · game ${state.fps} fps` : ''); stateCount = 0 }, 1000)
@@ -472,6 +486,9 @@ $('applySettings').onclick = () => {
   const num = (id) => ($(id).value === '' ? null : Number($(id).value))
   send({ t: 'settings', quirks, safety, speedOffsetMph: num('offset'), followDistance: num('followDist'),
     nagMode: $('nagMode').value, unresponsive: $('unresponsive').value, autoShift: $('autoShift').checked, swerveAssist: $('swerveAssist').checked,
+    stoppingMode: $('stoppingMode').value, regen: $('regen').checked, accelMode: $('accelMode').value,
+    autoHeadlights: $('autoHeadlights').checked, autoHighBeams: $('autoHighBeams').checked,
+    speedWarning: $('speedWarning').value, speedWarnOffset: num('speedWarnOffset') ?? 5,
     camera: { backup: $('camBackup').checked, quality: $('camQuality').value, fps: num('camFps') ?? 5 } })
   send({ t: 'wheel', strength: num('wheelStrength') ?? 1 })
 }

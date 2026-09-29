@@ -44,6 +44,12 @@ export type State = {
   safety?: SafetyState
   /** The game's frame rate. State comes once per frame at most, so below 20 fps the rate = fps. */
   fps?: number
+  /** Speed limit of the road the car is on (m/s), FSD on or off. */
+  speedLimit?: number
+  /** Over the limit by more than the warning offset (Speed Assist): show the limit sign highlighted. */
+  speedWarning?: boolean
+  /** Vehicle Hold is holding the car (stopping mode 'hold'): the "H" icon. */
+  hold?: boolean
 }
 
 export type SafetyState = {
@@ -185,6 +191,8 @@ export type EventKind =
   | 'collision'        // the car was hit (see autopilot.alert)
   | 'signalStuck'      // a red that never changed for 90 s, treated as an all-way stop
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
+  | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
+  | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
   | 'pullOver'         // P pressed while FSD drives: pulling over ({dist}); take over to cancel
   | 'monitoring'       // camera mode: detail 'cameraUnavailable' (using the wheel) | 'camera' (back)
 
@@ -291,6 +299,20 @@ export type Command =
        * less often on highways and at low speed), 'auto' (default: camera while it reports).
        */
       nagMode?: 'auto' | 'camera' | 'wheel' | 'off'
+      /** Auto headlights (default on): on when it's dark or raining, off in daylight. */
+      autoHeadlights?: boolean
+      /** Auto high beams at night above 25 mph, dipped for cars ahead (default off). */
+      autoHighBeams?: boolean
+      /** Speed Assist: 'display' (default) highlights the limit, 'chime' also sends 'speedWarning' events, 'off'. */
+      speedWarning?: 'off' | 'display' | 'chime'
+      /** mph over the limit before the warning (default 5). */
+      speedWarnOffset?: number
+      /** While you drive: 'roll' (default, coast), 'creep' (moves off like an automatic), 'hold' (Vehicle Hold at a stop). */
+      stoppingMode?: 'roll' | 'creep' | 'hold'
+      /** Regenerative braking: lifting off the accelerator slows the car (one-pedal driving). Default off. */
+      regen?: boolean
+      /** Acceleration: 'standard' (default) or 'chill' (softer, eased in). */
+      accelMode?: 'standard' | 'chill'
       /** Swerve Assist while you drive (default on). */
       swerveAssist?: boolean }
   | { t: 'attention'; state: 'ok' | 'phone' | 'eyesOff' | 'unknown' } // from the app's cabin camera, ~2-5 Hz

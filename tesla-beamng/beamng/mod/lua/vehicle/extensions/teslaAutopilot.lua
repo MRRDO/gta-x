@@ -44,6 +44,9 @@ local assist = { aeb = 0, ldaSteer = 0, throttleCap = nil, t = -1e9 }
 local assistHeld = false -- local throttle/brake taken away for an assist
 local hazardOn = false
 local swerve = { on = true, flips = {}, lastSign = 0, active = false, calmT = 0, t0 = 0 } -- Swerve Assist
+-- Tesla driving feel while you drive (FSD off): stopping mode 'roll' | 'creep' | 'hold',
+-- regen (lift off = slows like one-pedal driving), accel 'standard' | 'chill'
+local feel = { stopping = 'roll', regen = false, accel = 'standard', held = false, th = 0, refresh = 0, holding = false }
 
 ---------------------------------------------------------------------------
 -- messaging to GE
@@ -643,6 +646,7 @@ local function buildState(s)
       steerSign = driver and driver.steerSign, steerGain = driver and driver.kmax[2],
     },
     handsNudges = handsNudges,
+    hold = feel.holding or nil, -- Vehicle Hold ("H" icon)
     rawThrottle = rawValue('throttle') or 0,
     wheel = {
       status = ffb.status, reason = ffb.reason, strength = ffb.strength, method = ffb.method,
@@ -675,6 +679,7 @@ local function disengage(reason, detail)
   if not ap.engaged then return end
   local mode, profile = ap.mode, ap.profile
   local wheelDriven = ffb.held or ffb.helper
+  feel.held = false -- pedals go back to the player below; driveFeel takes them again next frame
   ap.engaged = false
   ap.mode = 'off'
   ffbRelease()
@@ -742,6 +747,7 @@ local function engage(mode, opts)
     gearWant, gearTimer = nil, 0
     ap.inGearBefore = nil
     swerve.active, swerve.flips = false, {}
+    feel.held, feel.holding = false, false
     ap.prevL, ap.prevR = (e.signal_left_input or 0) > 0.5, (e.signal_right_input or 0) > 0.5
     ap.sigSetAt = now
   end
@@ -754,12 +760,28 @@ end
 -- commands from the app (via GE)
 ---------------------------------------------------------------------------
 
+-- Set the blinkers to a state (not toggle them): if the driver's blinker is already on the
+-- side we want, leave it on instead of switching it off.
 local function setSignal(dir)
   if not electrics.set_warn_signal then errorEvent('this car has no turn signals'); return end
-  pcall(electrics.set_warn_signal, 0)
-  if dir == 'hazard' then pcall(electrics.set_warn_signal, 1)
-  elseif dir == 'left' then pcall(electrics.toggle_left_signal)
-  elseif dir == 'right' then pcall(electrics.toggle_right_signal) end
+  local e = electrics.values
+  local function on(k) return (e[k] or 0) > 0.5 or e[k] == true end
+  if dir == 'hazard' then
+    if not on('hazard_enabled') then pcall(electrics.set_warn_signal, 1) end
+    return
+  end
+  if on('hazard_enabled') then pcall(electrics.set_warn_signal, 0) end
+  local l, r = on('signal_left_input'), on('signal_right_input')
+  if dir == 'left' then
+    if r then pcall(electrics.toggle_right_signal) end
+    if not l then pcall(electrics.toggle_left_signal) end
+  elseif dir == 'right' then
+    if l then pcall(electrics.toggle_left_signal) end
+    if not r then pcall(electrics.toggle_right_signal) end
+  else
+    if l then pcall(electrics.toggle_left_signal) end
+    if r then pcall(electrics.toggle_right_signal) end
+  end
 end
 
 local handlers = {}
@@ -1060,6 +1082,58 @@ local function swerveAssist(dt, s)
   end
 end
 
+-- Your pedals, reshaped the Tesla way. Needs the pedals routed through us while it's on.
+local function driveFeel(dt, s)
+  local on = feel.stopping ~= 'roll' or feel.regen or feel.accel ~= 'standard'
+  local g = gearLetter()
+  local driving = g == 'D' or g == 'R' or g:sub(1, 1) == 'M'
+  if not on or not driving or assistHeld or swerve.active then
+    if feel.held then
+      feel.held = false
+      allowLocal({ 'throttle', 'brake' }, true)
+      inject('throttle', rawValue('throttle') or 0)
+      inject('brake', rawValue('brake') or 0)
+    end
+    feel.holding = false
+    return
+  end
+  feel.refresh = feel.refresh - dt
+  if not feel.held or feel.refresh <= 0 then
+    feel.held, feel.refresh = true, 0.5
+    allowLocal({ 'throttle', 'brake' }, false)
+  end
+  local th, br = rawValue('throttle') or 0, rawValue('brake') or 0
+  -- Chill: softer and slower to build (about 60 % of the pedal, eased in)
+  if feel.accel == 'chill' then
+    local want = th * 0.6
+    local rate = (want > feel.th) and 0.8 or 3
+    feel.th = feel.th + math.max(-rate * dt, math.min(rate * dt, want - feel.th))
+    th = feel.th
+  else
+    feel.th = th
+  end
+  local v = abs(s.v)
+  feel.holding = false
+  if th < 0.02 and br < 0.02 then
+    if feel.regen and v > 1.5 and not (feel.stopping == 'creep' and v < 3) then
+      br = math.min(0.2, 0.06 + v * 0.008) -- lift off: regen slows the car, stronger at speed
+    end
+    if feel.stopping == 'hold' and v < 0.5 then
+      br, feel.holding = 0.6, true -- Vehicle Hold: stays stopped until you press the accelerator
+    elseif feel.stopping == 'creep' and v < 1.8 then
+      th = 0.09 -- creeps forward like a regular automatic
+    end
+  end
+  inject('throttle', th)
+  inject('brake', br)
+end
+
+handlers.drive = function(cmd)
+  if cmd.stopping == 'roll' or cmd.stopping == 'creep' or cmd.stopping == 'hold' then feel.stopping = cmd.stopping end
+  if cmd.regen ~= nil then feel.regen = cmd.regen and true or false end
+  if cmd.accel == 'chill' or cmd.accel == 'standard' then feel.accel = cmd.accel end
+end
+
 handlers.swerveAssist = function(cmd)
   swerve.on = cmd.on ~= false
   if not swerve.on and swerve.active then
@@ -1169,6 +1243,7 @@ local function updateGFX(dt)
     -- Auto Shift out of Park: tell GE when the driver presses the brake in P (it picks D or R
     -- if the setting is on)
     swerveAssist(dt, s)
+    driveFeel(dt, s)
     local bp = (rawValue('brake') or 0) > 0.3
     if bp and not ap.brakeWasDown and gearLetter() == 'P' and abs(s.v) < 0.3 then geEvent('brakeInPark', {}) end
     ap.brakeWasDown = bp

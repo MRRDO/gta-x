@@ -62,6 +62,7 @@ local safetySettings = {}
 local safety = Sf.new()
 local sentMode = 'off'
 local plannerStatus = {}
+local drive -- Tesla driving aids state (auto lights, speed warning), set below
 local spotsSentFor = nil
 local safetyStatus = {}
 local lastAssist = nil
@@ -171,12 +172,14 @@ end
 local handleCommand -- forward
 local parkingSpotsMsg -- forward
 local autoShift -- forward
+local pushVehicleSettings -- forward
 
 -- BeamNG 0.39's plain 'socket' module is a stripped copy with no bind/tcp; the game's own
 -- code loads the full LuaSocket as 'socket.socket'. Take the first one that can listen.
 local socketTried = -1
 local netErrLogAt = -1
 local fpsAvg = 30
+local tAids = 0
 local function loadSocket()
   for _, name in ipairs({ 'socket.socket', 'socket' }) do
     local ok, s = pcall(require, name)
@@ -309,7 +312,10 @@ local function findSignals()
           -- flashing red / a plain "stop" state = all-way stop (stop, then go); flashing
           -- yellow = caution (no stop). 'stop' alone must not read as a red light, or the
           -- car waits forever at a stop-sign controller.
-          if st:find('flash') or st:find('blink') then return (st:find('red') or st:find('stop')) and 'stop' or nil end
+          if st:find('flash') or st:find('blink') then
+            if rec then rec.flashing = true end -- a real light flashing red: all-way stop, not a painted line
+            return (st:find('red') or st:find('stop')) and 'stop' or nil
+          end
           if st:find('stop') and not st:find('red') then return 'stop' end
           if st:find('off') or st:find('disabled') or st:find('none') then return nil end
           if st:find('red') then return 'red' end
@@ -777,6 +783,80 @@ local function vehicleInfo(veh)
   return { id = veh:getID(), name = name, model = jb }
 end
 
+-- Tesla-style driving aids that run whether or not FSD drives (settings, default in brackets):
+--  autoHeadlights [on]: lights on when it's dark (BeamNG time of day: 0 = noon, 0.5 = midnight)
+--    or raining, off in daylight. Only acts when that changes, so you can still override.
+--  autoHighBeams [off]: at night above 25 mph, high beams unless a car is ahead within 150 m.
+--  speedWarning ['display'|'chime'|'off'] + speedWarnOffset [5 mph]: over the limit by more
+--    than the offset for 1.5 s -> state.speedWarning (and a 'speedWarning' event with 'chime').
+drive = { limitHere = nil, warning = nil, overSince = nil, lastChime = -1e9, lightsWant = nil, highWant = nil }
+
+local function timeOfDay()
+  local env = rawget(_G, 'core_environment')
+  if not env or type(env.getTimeOfDay) ~= 'function' then return nil end
+  local tod = try(env.getTimeOfDay)
+  if type(tod) == 'table' then tod = tod.time end
+  return tonumber(tod)
+end
+
+local function driveAidsTick(veh)
+  if not veh or not graph then return end
+  local ego = egoSnapshot(veh)
+  -- speed limit here
+  local e = P.nearestEdge(graph, ego.x, ego.y, ego.hx, ego.hy, 15)
+  if e then
+    local a, b = graph.nodes[e.a], graph.nodes[e.b]
+    drive.limitHere = e.lim or P.classDefaultSpeed((a.r + b.r) * 0.5, e.drv)
+  else
+    drive.limitHere = nil
+  end
+  -- speed warning
+  local mode = plannerSettings.speedWarning or 'display'
+  local over = drive.limitHere and ego.v > drive.limitHere + (tonumber(plannerSettings.speedWarnOffset) or 5) * 0.44704
+  if mode ~= 'off' and over then
+    drive.overSince = drive.overSince or realTime
+    if realTime - drive.overSince > 1.5 then
+      drive.warning = true
+      if mode == 'chime' and realTime - drive.lastChime > 15 then
+        drive.lastChime = realTime
+        relayEvent({ kind = 'speedWarning', detail = string.format('%.0f in a %.0f', ego.v / 0.44704, drive.limitHere / 0.44704) })
+      end
+    end
+  else
+    drive.overSince, drive.warning = nil, nil
+  end
+  -- lights
+  local tod = timeOfDay()
+  local dark = tod and tod > 0.22 and tod < 0.78 -- about 6:40 pm to 5:20 am
+  local wet = (weather.rain or 0) > 0.3
+  local lights = lastVehSt.lights or {}
+  if plannerSettings.autoHeadlights ~= false and tod then
+    local want = (dark or wet) and true or false
+    if want ~= drive.lightsWant then
+      drive.lightsWant = want
+      if want ~= (lights.low or false) then toVehicle(veh, 'command', { t = 'lights', low = want }) end
+    end
+  end
+  if not (plannerSettings.autoHighBeams and dark) then
+    -- setting off or daylight: hand the beams back dipped if we had them up
+    if drive.highWant then toVehicle(veh, 'command', { t = 'lights', high = false }) end
+    drive.highWant = nil
+  else
+    local blocked = false
+    for _, c in ipairs(trafficList()) do
+      local dx, dy = c.x - ego.x, c.y - ego.y
+      local d = math.sqrt(dx * dx + dy * dy)
+      if d < 150 and d > 1 and (dx * ego.hx + dy * ego.hy) / d > 0.94 then blocked = true; break end -- within ~20 deg ahead
+    end
+    local want = (lights.low or lights.high) and ego.v > 11 and not blocked
+    if want ~= drive.highWant then
+      drive.highWant = want
+      toVehicle(veh, 'command', { t = 'lights', high = want and true or false })
+      if want ~= nil then relayEvent({ kind = 'autoHighBeams', detail = want and 'on' or 'off' }) end
+    end
+  end
+end
+
 -- Red/blue alert card for the app (crash, take over now, attention).
 --  crash: the car's damage jumps by > 1500 within a second (a real hit, not a scrape); stays
 --         until the car is repaired/reset. FSD lets go and the hazards go on.
@@ -789,6 +869,7 @@ local function damageOf(vid)
 end
 
 local function computeAlert(vid, st, ps, nag)
+  if crash.vid ~= vid then crash = { hist = {}, active = nil, vid = vid } end -- another car: its own baseline
   local dmg = damageOf(vid)
   if dmg then
     local h = crash.hist
@@ -828,7 +909,8 @@ function M.onVehicleState(vid, json)
   if not levelName() then return end
   local ok, st = pcall(jsonDecode, json)
   if not ok or type(st) ~= 'table' then return end
-  lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil }
+  lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil,
+    lights = st.lights }
   -- backup camera: on in R, and for 2 s after leaving it (like the real thing)
   if st.gear == 'R' then cam.reverseUntil = realTime + 2 end
   if (st.handsNudges or 0) > nudgeCount then nudgeCount = st.handsNudges; nudgeT = gameTime end
@@ -878,6 +960,9 @@ function M.onVehicleState(vid, json)
     steerGain = va.steerGain, steerSign = va.steerSign,
   }
   st.safety = safetyStatus
+  -- the road's speed limit right here, FSD on or off (Tesla shows it all the time)
+  st.speedLimit = drive.limitHere and num(drive.limitHere, 1) or nil
+  st.speedWarning = drive.warning or nil
   local okA, alert = pcall(computeAlert, vid, st, ps, nag)
   st.autopilot.alert = okA and alert or nil
   -- the car reports once per frame at most, so below 20 fps the state rate = the game's fps
@@ -960,6 +1045,15 @@ autoShift = function(veh)
   local gear = (blockedAhead and not blockedBehind) and 'R' or 'D'
   toVehicle(veh, 'command', { t = 'gear', gear = gear })
   relayEvent({ kind = 'autoShift', detail = gear })
+end
+
+-- settings the car itself applies (its extension starts from defaults after a reload)
+pushVehicleSettings = function(veh)
+  local ps = plannerSettings
+  if ps.swerveAssist ~= nil then toVehicle(veh, 'command', { t = 'swerveAssist', on = ps.swerveAssist and true or false }) end
+  if ps.stoppingMode or ps.regen ~= nil or ps.accelMode then
+    toVehicle(veh, 'command', { t = 'drive', stopping = ps.stoppingMode, regen = ps.regen, accel = ps.accelMode })
+  end
 end
 
 local function engageFromApp(mode, profile)
@@ -1149,7 +1243,7 @@ handleCommand = function(msg)
       elseif c.quality == 'high' then cam.settings.width, cam.settings.height = 640, 360 end
     end
     if planner then planner:configure(plannerSettings) end
-    if msg.swerveAssist ~= nil and veh then toVehicle(veh, 'command', { t = 'swerveAssist', on = msg.swerveAssist and true or false }) end
+    if veh then pushVehicleSettings(veh) end
     if type(msg.safety) == 'table' then
       for k, v in pairs(msg.safety) do safetySettings[k] = v end
       safety:configure(safetySettings)
@@ -1376,6 +1470,7 @@ local function onUpdate(dtReal, dtSim)
     end
     if veh then
       ensureVehicleExtension(veh, true)
+      pcall(pushVehicleSettings, veh)
       event('vehicleChanged', vehicleInfo(veh).name)
       if mapMsg then send(mapMsg) end
     end
@@ -1400,6 +1495,12 @@ local function onUpdate(dtReal, dtSim)
   if realTime >= tWeather then
     tWeather = realTime + 2
     pcall(sampleWeather)
+  end
+
+  if realTime >= tAids then
+    tAids = realTime + 0.5
+    local okD, errD = pcall(driveAidsTick, veh)
+    if not okD then logW('drive aids: ' .. tostring(errD)) end
   end
 
   if realTime >= tTraffic then

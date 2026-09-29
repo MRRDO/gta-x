@@ -468,15 +468,19 @@ scenario('farSideSignal', function()
       { id = 'theirs', x = 159, y = 7, kind = 'signal', dirx = -1, diry = 0, get = function() return 'red' end },
       { id = 'north', x = 157, y = -9, kind = 'signal', dirx = 0, diry = 1, get = function() return 'red' end },
       { id = 'south', x = 143, y = 9, kind = 'signal', dirx = 0, diry = -1, get = function() return 'red' end },
+      -- mid-block, no junction near it, facing the other way: only the direction check can reject it
+      { id = 'midBlock', x = 75, y = 5, kind = 'signal', dirx = -1, diry = 0, get = function() return 'red' end },
     } })
   w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
   check(w:engage('fsd', 'standard'), 'engage (far-side signal)')
-  local minV = 99
+  local minV, minMid = 99, 99
   w:run(60, function(ww)
     local x = ww:refPos()
     if x > 146 and x < 170 then minV = math.min(minV, ww.ego.v) end
+    if x > 40 and x < 90 then minMid = math.min(minMid, ww.ego.v) end
     return ww:saw('arrived')
   end)
+  check(minMid > 2, string.format('ignores a red facing the other way mid-block (min %.1f m/s)', minMid))
   check(minV > 2, 'does not stop in the junction for the far-side red (min ' .. string.format('%.1f', minV) .. ' m/s)')
   check(w:saw('arrived') ~= nil, 'arrives past the far-side red')
   check(w.planner:signalDirConvention() == 1, 'learns that signal dir = travel direction (' .. tostring(w.planner:signalDirConvention()) .. ')')
@@ -535,6 +539,14 @@ scenario('paintedLine', function()
   check(free > 5, string.format('no stop at a painted line with no sign (min %.1f m/s)', free))
   local withPed = run(true)
   check(withPed < 0.5, string.format('stops for a pedestrian at the crosswalk (min %.1f m/s)', withPed))
+  -- a real light flashing red (no stop-sign prop needed) is still an all-way stop
+  local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+    signals = { { id = 'flash', x = 141, y = -7, kind = 'signal', dirx = 1, diry = 0, signNear = false, flashing = true, get = function() return 'stop' end } } })
+  w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  w:engage('fsd', 'standard')
+  local stopped = false
+  w:run(60, function(ww) if ww.planner.stopFsm.flash and ww.planner.stopFsm.flash.state == 'stopped' then stopped = true end; return ww:saw('arrived') end)
+  check(stopped, 'flashing red with no sign nearby: still stops, then goes')
 end)
 
 -- a red that never changes (unreadable / broken light): treated as an all-way stop after 90 s
@@ -691,6 +703,14 @@ scenario('parkPullOver', function()
   w2:run(1)
   w2.planner:disengage('steer')
   check(w2.planner.dest and w2.planner.dest[1] == 3000, 'taking over mid pull-over keeps the original trip')
+  local w3 = W.new({ nodes = straight(0, 5000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 15 } })
+  w3.planner:setRoute({ 3000, LANE1, 0 }, nil, 'Driveway')
+  w3:engage('fsd', 'standard')
+  w3:run(2)
+  w3.planner:pullOverNow(w3:snapshot().ego)
+  w3.planner:setRoute({ 4000, LANE1, 0 }, nil, 'Driveway')
+  w3.planner:disengage('steer')
+  check(w3.planner.dest and w3.planner.dest[1] == 4000, 'a new trip picked mid pull-over is kept after a takeover')
 end)
 
 print(string.format('%d passed, %d failed', passes, failures))

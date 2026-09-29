@@ -381,12 +381,14 @@ end
 function Planner:setRoute(dest, stops, arrival)
   self.dest, self.stops, self.arrival = dest, stops, arrival
   self.turnVia, self.chosenSpot = nil, nil
+  self.pullingOver, self.unresponsive = nil, nil -- a new trip replaces a pull-over in progress
   self.path = nil
   self.spot = nil
 end
 
 function Planner:cancelRoute()
   self.dest, self.stops, self.arrival, self.spot, self.turnVia, self.chosenSpot = nil, nil, nil, nil, nil, nil
+  self.pullingOver, self.unresponsive = nil, nil
   self.path = nil
 end
 
@@ -1323,7 +1325,7 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
           dot = tx * sg.dirx + ty * sg.diry
           -- facing our way only (once we know which way BeamNG's signal dir points)
           local conv = self:signalDirConvention()
-          okLat = conv and (conv * dot > 0.6) or abs(dot) > 0.6
+          if conv then okLat = conv * dot > 0.6 else okLat = abs(dot) > 0.6 end
         end
         if okLat and sg.prop and self:propFacesCrossRoad(sg, tx, ty, pr.dist + 2) then okLat = false end
         if okLat then
@@ -1381,7 +1383,7 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
 
   -- a signal in a stop state ('basicstop') with no stop sign near it is a painted line or a
   -- crosswalk: Quentin's rule is no full stop there, only for a pedestrian in the way
-  if stt == 'stop' and sg.signNear == false then
+  if stt == 'stop' and sg.signNear == false and not sg.flashing then
     control.kind, control.red = 'crosswalk', false
     if self:pedestrianNear(sg.x, sg.y, cars, 7) then
       control.red = true

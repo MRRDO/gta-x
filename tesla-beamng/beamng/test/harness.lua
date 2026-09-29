@@ -275,6 +275,10 @@ gameplay_parking = { getParkingSpots = function()
   return { objects = { { pos = { x = 75, y = 158, z = 0 }, dirVec = { x = 0, y = -1, z = 0 } } } }
 end }
 G.gameplay_parking = gameplay_parking -- the mod looks it up with rawget(_G, ...)
+-- time of day (BeamNG: 0 = noon, 0.5 = midnight); the test sets it with "tod 0.5"
+HARNESS_TOD = 0.1
+core_environment = { getTimeOfDay = function() return { time = HARNESS_TOD } end }
+G.core_environment = core_environment
 G.core_trafficSignals = { getSignalsDict = function() return { instances = signalInstances } end }
 G.scenetree = { findClassObjects = function() return {} end, findObject = function() return nil end }
 G.jsonReadFile = function() return nil end
@@ -455,6 +459,7 @@ local function readCtrl(dt)
   ctrlLast = line
   local what, val = line:match('^(%a+)%s+(%-?[%d%.]+)')
   if what == 'crash' then what = nil end
+  if what == 'tod' then HARNESS_TOD = tonumber(val); hlog('time of day ' .. val); return end
   if what then hlog('player input: ' .. what .. ' ' .. val); V.input.event(what, tonumber(val), 0); return end
   -- actions that don't go through input.event: a paddle bound to toggle_left_signal, an H-shifter
   local act, arg = line:match('^(%a+)%s+(%a+)')
