@@ -8,7 +8,7 @@ What a real EPS wheel does, and what `common/teslaBridge/steerfeel.lua` does abo
 - **Friction**: a steady drag against movement; tyre scrub is noticeable when parked. Built: Coulomb friction, stronger at parking speed.
 - **Damping**: the wheel resists being flicked, more at speed. Built.
 - **On-centre**: no knife-edge at zero; forces fade in over the first few degrees. Built.
-- **Road texture**: a light buzz with speed and bumps from vertical acceleration (`roadFeel` 0..2, `wheel.roadTexture`).
+- **Road texture**: a light buzz with speed and bumps from vertical acceleration (`roadFeel` 0..2, default 0 (off): it made the wheel shake; `wheel.roadTexture`).
 - **Steering Weight** `steeringWeight: light | standard | heavy` scales all of it (0.75 / 1 / 1.35).
 
 Where it applies: the bridge only drives the wheel's force feedback while FSD is driving, or when the game can't drive it (the "own" fallback). In those cases the fallback now uses this model once the wheel's direction is confirmed. **While you drive by hand, BeamNG's own force feedback is untouched** (it already models tyre forces); replacing it would need the bridge to compute real tyre forces, which it doesn't have, so I left it. If the game's own feel is what feels wrong, the fix is BeamNG's steering settings (force feedback strength, smoothing, a 900 degree lock in the wheel driver).

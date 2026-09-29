@@ -124,8 +124,8 @@ local paddleOrig = {}
 local function installPaddleSignals()
   local mc = controller and controller.mainController
   if not mc then return end
-  local function left() pcall(electrics.toggle_left_signal) end
-  local function right() pcall(electrics.toggle_right_signal) end
+  local function left() ap.paddleT = now; pcall(electrics.toggle_left_signal) end
+  local function right() ap.paddleT = now; pcall(electrics.toggle_right_signal) end
   for name, fn in pairs({ shiftDownOnDown = left, shiftDown = left, shiftUpOnDown = right, shiftUp = right }) do
     if type(mc[name]) == 'function' and not paddleOrig[name] and mc[name] ~= fn then
       paddleOrig[name] = mc[name]
@@ -196,7 +196,7 @@ local Sfl = require('teslaBridge/steerfeel')
 local steeringWeight = 'standard' -- Tesla's Steering Weight: light | standard | heavy
 
 local ffb = {
-  enabled = true, strength = 1.0,
+  enabled = true, strength = 0.6, roadFeel = 0, -- softer hold and no road buzz by default: the wheel shook and fought overtaking
   rangeDeg = 900, -- the physical wheel's rotation (G29: 900); the G29 turns 1:1 with the car's wheel
   restoreUntil = nil, -- after release: keep checking that the game has the wheel back
   spring = Wh.new({ gripScale = Wh.takeoverLimit(takeoverLevel) / 0.15 }), held = false, fn = nil, idx = nil, id = nil, fcap = 10, method = nil,
@@ -494,12 +494,12 @@ local function ffbUpdate(dt, targetInput)
   local target = wheelTarget(targetInput)
   local f, grip = ffb.spring:update(dt, target, pos, ffb.fcap, ffb.strength)
   -- road feel: bumps and surface texture through the wheel
-  if (ffb.roadFeel or 1) > 0 and dt > 1e-4 then
+  if (ffb.roadFeel or 0) > 0 and dt > 1e-4 then
     local gz = (type(sensors) == 'table' and tonumber(sensors.gz)) or 0
     if math.abs(gz) > 3 then gz = gz / 9.81 end -- m/s^2 -> g
     ffb.gzLP = (ffb.gzLP or gz) + (gz - (ffb.gzLP or gz)) * math.min(1, dt / 0.5)
     local v = tonumber(electrics.values.wheelspeed) or 0
-    f = math.max(-ffb.fcap, math.min(ffb.fcap, f + Wh.roadTexture(gz - ffb.gzLP, v, now, ffb.roadFeel or 1) * ffb.fcap))
+    f = math.max(-ffb.fcap, math.min(ffb.fcap, f + Wh.roadTexture(gz - ffb.gzLP, v, now, ffb.roadFeel or 0) * ffb.fcap))
   end
   if dt <= 1e-4 then f = 0 end -- paused: never leave a force on the motor
   local due = now - ffb.lastSendT >= ffb.minInterval
@@ -914,6 +914,24 @@ handlers.wipers = function(cmd)
   end
 end
 
+-- A wheel button the bridge uses (the dial, media keys...) may also be bound to something in the game
+-- (the G29's buttons toggle the ignition by default). The relay tells us when one was pressed; if the
+-- ignition changed in that instant, put it back.
+handlers.guard = function(cmd)
+  local h = ap.ignHist
+  if not h or #h == 0 or not electrics.setIgnitionLevel then return end
+  local want
+  for i = #h, 1, -1 do
+    if now - h[i].t >= 0.35 then want = h[i].l; break end
+  end
+  want = want or h[1].l
+  local cur = tonumber(electrics.values.ignitionLevel)
+  if cur and want and cur ~= want then
+    pcall(electrics.setIgnitionLevel, want)
+    geEvent('notice', { detail = 'wheel button also hit the ignition: put back' })
+  end
+end
+
 handlers.horn = function(cmd)
   if electrics.horn then pcall(electrics.horn, cmd.on and true or false) else errorEvent('no horn') end
 end
@@ -1283,6 +1301,32 @@ local function updateGFX(dt)
   if next(closing) then pcall(watchClosing) end
   local s = sense(dt)
   override.active = (now - override.t) < 0.5
+  -- A paddle turns a signal on; the game's own paddle binding may still shift the gear (it can reach the gearbox by
+  -- routes we can't wrap), so put the gear back if it moved just after a paddle press.
+  do
+    local g = gearLetter()
+    if ap.paddleT and ap.paddleSignals ~= false then
+      if now - ap.paddleT < 0.6 then
+        local before = ap.paddleGear or ap.lastGear
+        ap.paddleGear = before
+        if before and (before == 'D' or before == 'R' or before == 'N' or before == 'P') and g ~= before and not ap.engaged then
+          shiftTo(before)
+          if not ap.paddleNoted then ap.paddleNoted = true; geEvent('notice', { detail = 'paddle shift undone: paddles are turn signals' }) end
+        end
+      else
+        ap.paddleT, ap.paddleGear = nil, nil
+      end
+    end
+    if not ap.paddleT then ap.lastGear = g end
+    -- ignition history (for the wheel-button guard below): what it was ~0.4 s ago
+    local lvl = tonumber(electrics.values.ignitionLevel)
+    if lvl then
+      ap.ignHist = ap.ignHist or {}
+      local h = ap.ignHist
+      h[#h + 1] = { t = now, l = lvl }
+      while #h > 2 and now - h[2].t > 1.2 do table.remove(h, 1) end
+    end
+  end
 
   if ap.engaged then
     local aeb = applyAssist(true, s)

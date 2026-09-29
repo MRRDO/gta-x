@@ -213,6 +213,15 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
     case 'companionHello':
       companion = { ws, name: String(msg.name ?? 'wheel'), buttons: Number(msg.buttons) || 0 }
       log(`wheel companion: ${companion.name}, ${companion.buttons} buttons`)
+      // Logitech G29 / G920 / G923 in PC mode: the red dial is buttons 21 (clockwise), 22 (counter-clockwise) and 23 (press).
+      // Map them on first sight so the dial works without going through Settings (relearn there if yours differ).
+      if (/g29|g920|g923|driving force/i.test(companion.name) && companion.buttons >= 24) {
+        const defaults: [ActionName, number][] = [['dialUp', 21], ['dialDown', 22], ['dialClick', 23]]
+        for (const [a, b] of defaults) {
+          const taken = (Object.keys(buttonMap) as ActionName[]).some((k) => buttonMap[k] === b)
+          if (buttonMap[a] === undefined && !taken) assignButton(a, b)
+        }
+      }
       broadcast(buttonMapMsg())
       return true
     case 'requestButtonMap':
@@ -241,6 +250,7 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
       }
       const action = (Object.keys(buttonMap) as ActionName[]).find((k) => buttonMap[k] === button)
       if (action) {
+        sendGame({ t: 'buttonGuard' }) // the game may have its own binding on this button (ignition): the mod puts that back
         const act = action.startsWith('dial') ? dialAction(action) : action
         if (!act) return true
         if (MEDIA_ACTIONS.has(act)) broadcast({ t: 'media', action: act }) // volume etc. go to the iPad, not the game

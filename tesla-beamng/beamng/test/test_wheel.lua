@@ -126,8 +126,9 @@ do
       T = 4,
     })
   end
-  check(hold(0.12, 'light').gripAt ~= nil, 'light level: a modest push (0.08 off) counts as taking over')
-  check(hold(0.12, 'normal').gripAt == nil, 'normal level: the same light push is only a nudge')
+  check(hold(0.15, 'light').gripAt ~= nil, 'light level: a modest push (0.05 off) counts as taking over')
+  check(hold(0.185, 'normal').gripAt == nil, 'normal level: a light push (0.015 off) is only a nudge')
+  check(hold(0.12, 'normal').gripAt ~= nil, 'normal level: holding the wheel 0.08 off takes over')
   check(hold(0.0, 'normal').gripAt ~= nil, 'normal level: holding the wheel well away takes over')
   check(hold(0.0, 'firm').gripAt ~= nil, 'firm level: a real grip still takes over')
   check(W.nudgeBias(0.02, 0.25) == 0, 'no nudge inside the dead zone')

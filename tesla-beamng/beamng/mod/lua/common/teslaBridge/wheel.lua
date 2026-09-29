@@ -32,7 +32,7 @@ function M.roadTexture(hp, v, t, gain)
   return clamp(tex * gain, -0.35 * gain, 0.35 * gain) * ((hp or 0) < 0 and -1 or 1)
 end
 
-M.TAKEOVER = { light = 0.14, normal = 0.25, firm = 0.4 }
+M.TAKEOVER = { light = 0.09, normal = 0.14, firm = 0.25 }
 function M.takeoverLimit(level) return M.TAKEOVER[level] or M.TAKEOVER.normal end
 
 -- Steering the driver adds on top of FSD's while they lean on the wheel lightly.
@@ -95,7 +95,9 @@ function Spring:update(dt, target, pos, fcap, strength)
     self.integ = self.integ * max(0, 1 - dt * 4)
   end
   local f = kp * eUse - kp * self.damping * self.vel + self.integ * cap
-  f = clamp(f, -cap, cap) * self.ramp
+  -- the spring gives way the further you pull it: overtaking by hand shouldn't be a wrestling match
+  local capUse = cap * clamp(1 - (abs(e) - 0.2) * 2, 0.5, 1)
+  f = clamp(f, -capUse, capUse) * self.ramp
   -- slew limit: full swing in ~0.15 s, not in one frame (that's the shake)
   local maxStep = cap * dt / 0.03
   f = clamp(f, self.fPrev - maxStep, self.fPrev + maxStep)
@@ -128,8 +130,8 @@ function Spring:update(dt, target, pos, fcap, strength)
   -- Also resisting: the spring pushes hard but the wheel stays still (held against FSD);
   -- a wheel that's just lagging in a quick turn is moving toward the target, so it's not that.
   local gs = self.gripScale or 1
-  local held = abs(e) > 0.1 * gs and abs(f) > 0.6 * cap and not (converging and abs(self.vel) > 0.1)
-  local resisting = abs(e) > 0.06 * gs and abs(f) > 0.5 * cap and abs(self.vel) < 0.05
+  local held = abs(e) > 0.1 * gs and abs(f) > 0.6 * capUse and not (converging and abs(self.vel) > 0.1)
+  local resisting = abs(e) > 0.06 * gs and abs(f) > 0.5 * capUse and abs(self.vel) < 0.05
   if self.ramp >= 1 and (held or resisting) then
     self.gripT = self.gripT + dt
   else

@@ -377,7 +377,7 @@ export type Command =
       steeringWeight?: 'light' | 'standard' | 'heavy'
       /** Hill Hold: stopped on a slope with your feet off the pedals, the brake stays on until you accelerate (default on). Best effort, needs a real game to verify. */
       hillHold?: boolean
-      /** Road feel through the wheel while FSD drives (bumps and surface texture), 0..2, default 1. */
+      /** Road feel through the wheel while FSD drives (bumps and surface texture), 0..2, default 0 (off: it made the wheel shake). */
       roadFeel?: number
       /** Valet Mode: self-driving off, gentle acceleration, top speed about 65 mph. */
       valet?: boolean
@@ -387,6 +387,7 @@ export type Command =
   | { t: 'nudge' } // "hands on wheel" (e.g. a button for keyboard players)
   | { t: 'summon'; dir: 'forward' | 'reverse' | null } // Dumb Summon (null stops)
   | { t: 'climate'; on?: boolean; driverTemp?: number; passengerTemp?: number; fan?: number; defrost?: boolean; precondition?: boolean; cabinOverheat?: boolean; keepOn?: boolean; dogMode?: boolean; campMode?: boolean; bioweapon?: boolean; seatHeat?: Record<string, number>; wheelHeat?: boolean; vents?: string } // foundation: stored and echoed in state.climate for future fan/heater hardware; the game itself has no cabin climate
+  | { t: 'buttonGuard' } // relay -> game: a mapped wheel button was just pressed; undo what the game's own binding did with it (ignition)
   | { t: 'confirm' } // "go": answers a confirmGo event (also a wheel button / a tap on the accelerator)
   | { t: 'pinLock'; on: boolean } // PIN to Drive: on = the car stays in Park (and FSD refuses) until the app sends on:false after the PIN is entered
   | { t: 'lightShow'; name: 'welcome' | 'goodbye' | 'holiday' | 'strobe' | null } // choreographed headlights/fog/blinkers while parked (null stops it)
@@ -417,7 +418,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard',
 ])
 
 export const MPH = 0.44704

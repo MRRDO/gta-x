@@ -1495,6 +1495,8 @@ handleCommand = function(msg)
     if not planner or not veh then return end
     planner:summon(msg.dir, egoSnapshot(veh))
     syncVehicleMode(veh)
+  elseif t == 'buttonGuard' then
+    if veh then ensureVehicleExtension(veh); toVehicle(veh, 'command', { t = 'guard' }) end
   elseif t == 'confirm' then
     if planner then planner:confirm(gameTime) end
   elseif t == 'climate' then
