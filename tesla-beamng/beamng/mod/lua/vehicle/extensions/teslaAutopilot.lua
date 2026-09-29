@@ -192,6 +192,8 @@ end
 ---------------------------------------------------------------------------
 
 local Wh = require('teslaBridge/wheel')
+local Sfl = require('teslaBridge/steerfeel')
+local steeringWeight = 'standard' -- Tesla's Steering Weight: light | standard | heavy
 
 local ffb = {
   enabled = true, strength = 1.0,
@@ -445,6 +447,11 @@ local function ffbOwnTick(dt, s)
   local pos = (raw.steering and raw.steering.v) or 0
   local strength = 0.12 + 0.5 * math.min(1, abs(s.v) / 20)
   local f = ffb.spring:update(dt, 0, pos, ffb.fcap, strength)
+  if ffb.spring.confirmed then
+    -- the wheel's direction is known: use the real EPS feel (self-aligning, friction, damping) instead of a plain spring
+    local t = Sfl.torque({ pos = pos, vel = ffb.spring.vel or 0, v = s.v, latAcc = math.abs((s.yawRate or 0) * s.v), weight = steeringWeight, gain = ffb.strength })
+    f = ffb.spring.sign * t * ffb.fcap
+  end
   if dt > 1e-4 and now - ffb.lastSendT >= ffb.minInterval then ffbSend(f) end
 end
 
@@ -964,6 +971,7 @@ handlers.throttleOverride = function(cmd)
 end
 
 handlers.wheel = function(cmd)
+  if cmd.weight == 'light' or cmd.weight == 'standard' or cmd.weight == 'heavy' then steeringWeight = cmd.weight end
   if cmd.takeover == 'light' or cmd.takeover == 'normal' or cmd.takeover == 'firm' then
     takeoverLevel = cmd.takeover
     if ffb.spring then ffb.spring.gripScale = Wh.takeoverLimit(cmd.takeover) / 0.15 end
@@ -1228,7 +1236,7 @@ local function driveFeel(dt, s)
   feel.holding = false
   if th < 0.02 and br < 0.02 then
     if feel.regen and not carHasOwnRegen() and v > 1.5 and not (feel.stopping == 'creep' and v < 3) then
-      br = math.min(0.2, 0.06 + v * 0.008) -- lift off: regen slows the car, stronger at speed
+      br = math.min(0.2, 0.06 + v * 0.008) * (feel.regenLevel == 'low' and 0.6 or 1) -- lift off: regen slows the car, stronger at speed (Tesla: Standard / Low)
     end
     if (feel.stopping == 'hold' or hill) and v < 0.5 then
       br, feel.holding = 0.6, true -- Vehicle Hold: stays stopped until you press the accelerator
@@ -1242,6 +1250,7 @@ end
 
 handlers.drive = function(cmd)
   if cmd.stopping == 'roll' or cmd.stopping == 'creep' or cmd.stopping == 'hold' then feel.stopping = cmd.stopping end
+  if cmd.regenLevel == 'low' or cmd.regenLevel == 'standard' then feel.regenLevel = cmd.regenLevel end
   if cmd.hillHold ~= nil then feel.hill = cmd.hillHold and true or false end
   if cmd.regen ~= nil then
     feel.regen = cmd.regen and true or false

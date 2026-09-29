@@ -9,7 +9,7 @@ Legend: **done+sim** = built and covered by the simulator tests (`npm test`, `np
 | 4 | Speed limit sign reading | **not done**: BeamNG signs aren't exposed; the road's speed limit from the map is used (state.speedLimit) |
 | 5 | Emergency Lane Departure Avoidance | done+sim (existed: steers back from the road edge, `laneDeparture` emergency events) |
 | 6 | Rear Cross Traffic Alert + reverse braking | done+sim (`safety.rearWarn`, event `rearCrossTraffic`, brakes) |
-| 8 | Front and side cameras | **not done**: needs more render views (the backup cam flash on D3D11 is still unverified, so more views would risk it) |
+| 8 | Front and side cameras | done, unverified: front (on request) and side repeaters (on signal, `camera.side`), one screenshot at a time with an fps governor (docs/WHEEL_AND_CAMERAS.md). The D3D11 flash is still unverified; all cameras are off by default |
 | 10 | Traction modes, Slip Start, Track, Launch, Drift | **not done** except `accelMode: 'sport'` and the furious profile (see below). BeamNG's traction control is per-car and has no common API |
 | 12 | Vehicle Hold with parking brake on slopes | done, unverified: `hillHold` brakes when stopped on a slope; stopping mode `hold` existed |
 | Wheel | Light turn nudges FSD, firm turn takes over | done+sim (`takeover: light|normal|firm`), feel needs the G29 |

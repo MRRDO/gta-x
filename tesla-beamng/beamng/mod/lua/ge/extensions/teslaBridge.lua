@@ -48,11 +48,17 @@ local vehSize = {}       -- [vid] = { w, l }
 local vehDiag = nil
 
 -- backup camera state (see the backup camera section)
+local Cg = require('teslaBridge/camgov')
+local CAM_VIEWS = { 'rear', 'front', 'left', 'right' }
 local cam = {
-  settings = { backup = false, fps = 3, width = 320, height = 180, fov = 100, format = 'jpg' }, -- off by default: the off-screen capture flashes the screen white on D3D11 (0.39)
-  on = false, previewUntil = -1, nextT = 0, seq = 0, pending = nil, inline = false,
-  reverseUntil = -1, failed = nil, buf = 0,
+  settings = { backup = false, side = false, fps = 3, width = 320, height = 180, fov = 100, format = 'jpg' }, -- off by default: the off-screen capture flashes the screen white on D3D11 (0.39)
+  previewUntil = -1, nextT = 0, inline = false, reverseUntil = -1, failed = nil,
+  previews = {},                      -- view -> realTime until which the app asked for it (front / left / right previews)
+  views = {},                         -- per view: { on, seq, buf, pending }
+  rr = 0,                             -- round robin: one screenshot per tick, whichever view is next
+  gov = Cg.new(), scale = 1, level = 0, govNotedLevel = 0,
 }
+for _, v in ipairs(CAM_VIEWS) do cam.views[v] = { on = false, seq = 0, buf = 0, pending = nil } end
 local CAM_DIR = 'temp/teslaBridge'
 
 -- FSD brain, safety, and what we last told the car
@@ -949,6 +955,14 @@ local function driveAidsTick(veh)
       if want ~= (lights.low or false) then toVehicle(veh, 'command', { t = 'lights', low = want }) end
     end
   end
+  -- fog lights in fog (Tesla: auto fog), only ever switched off again if we switched them on
+  if plannerSettings.autoFogLights ~= false and not show then
+    local foggy = (weather.fog or 0) > 0.4 and (lights.low or lights.high or false)
+    if foggy ~= (drive.fogWant or false) then
+      if foggy or drive.fogWant then toVehicle(veh, 'command', { t = 'lights', fog = foggy and true or false }) end
+      drive.fogWant = foggy
+    end
+  end
   if not (plannerSettings.autoHighBeams and dark) then
     -- setting off or daylight: hand the beams back dipped if we had them up
     if drive.highWant then toVehicle(veh, 'command', { t = 'lights', high = false }) end
@@ -1109,6 +1123,11 @@ function M.onVehicleState(vid, json)
   st.speedLimit = drive.limitHere and num(drive.limitHere, 1) or nil
   st.speedWarning = drive.warning or nil
   if next(climateState) then st.climate = climateState end
+  do
+    local vs = {}
+    for _, name in ipairs(CAM_VIEWS) do if cam.views[name].on then vs[#vs + 1] = name end end
+    if #vs > 0 or cam.level > 0 then st.camera = { views = vs, level = cam.level, paused = cam.level >= 3 } end
+  end
   st.trip = { score = tripScore:score(), km = num(tripScore.dist / 1000, 2), fsdPercent = num(tripScore.dist > 0 and tripScore.fsdDist / tripScore.dist * 100 or 0, 0), hardBrakes = tripScore.hardBrakes }
   local okA, alert = pcall(computeAlert, vid, st, ps, nag)
   st.autopilot.alert = okA and alert or nil
@@ -1210,10 +1229,10 @@ pushVehicleSettings = function(veh)
   local ps = plannerSettings
   if ps.swerveAssist ~= nil then toVehicle(veh, 'command', { t = 'swerveAssist', on = ps.swerveAssist and true or false }) end
   if ps.valet then toVehicle(veh, 'command', { t = 'drive', accel = 'chill' }) end
-  if ps.takeover or ps.roadFeel ~= nil then toVehicle(veh, 'command', { t = 'wheel', takeover = ps.takeover, roadFeel = ps.roadFeel }) end
+  if ps.takeover or ps.roadFeel ~= nil or ps.steeringWeight then toVehicle(veh, 'command', { t = 'wheel', takeover = ps.takeover, roadFeel = ps.roadFeel, weight = ps.steeringWeight }) end
   if ps.paddleSignals ~= nil then toVehicle(veh, 'command', { t = 'paddles', signals = ps.paddleSignals and true or false }) end
-  if ps.stoppingMode or ps.regen ~= nil or ps.accelMode or ps.hillHold ~= nil then
-    toVehicle(veh, 'command', { t = 'drive', stopping = ps.stoppingMode, regen = ps.regen, accel = ps.accelMode, hillHold = ps.hillHold })
+  if ps.stoppingMode or ps.regen ~= nil or ps.accelMode or ps.hillHold ~= nil or ps.regenLevel then
+    toVehicle(veh, 'command', { t = 'drive', stopping = ps.stoppingMode, regen = ps.regen, accel = ps.accelMode, hillHold = ps.hillHold, regenLevel = ps.regenLevel })
   end
 end
 
@@ -1259,17 +1278,31 @@ local function camSupported()
   return renderViews() ~= nil
 end
 
--- bumper camera pose: behind the car, ~0.95 m up, looking back and 20 deg down
-local function camPose(veh)
+-- Camera poses (BeamNG: x right, y forward, z up). rear = bumper looking back and down; front = nose,
+-- looking ahead; left / right = side repeaters on the front fenders, looking back along the body.
+local function camPose(veh, view)
   local p, d = veh:getPosition(), veh:getDirectionVector()
   local u = try(function() return veh:getDirectionVectorUp() end)
   local ux, uy, uz = 0, 0, 1
   if u and u.z then ux, uy, uz = u.x, u.y, u.z end
-  local back = sizeOf(veh).l * 0.5 + 0.12
+  local sz = sizeOf(veh)
+  -- left = up x forward
+  local lx, ly, lz = uy * d.z - uz * d.y, uz * d.x - ux * d.z, ux * d.y - uy * d.x
+  if view == 'front' then
+    local fwd = sz.l * 0.5 + 0.05
+    local k = math.tan(math.rad(6))
+    return vec3(p.x + d.x * fwd + ux * 1.0, p.y + d.y * fwd + uy * 1.0, p.z + d.z * fwd + uz * 1.0),
+      quatFromDir(vec3(d.x - ux * k, d.y - uy * k, d.z - uz * k), vec3(ux, uy, uz))
+  elseif view == 'left' or view == 'right' then
+    local sgn = view == 'left' and 1 or -1
+    local side, fwd = sz.w * 0.5 + 0.05, sz.l * 0.25
+    local px, py, pz = p.x + d.x * fwd + lx * side * sgn + ux * 0.9, p.y + d.y * fwd + ly * side * sgn + uy * 0.9, p.z + d.z * fwd + lz * side * sgn + uz * 0.9
+    return vec3(px, py, pz), quatFromDir(vec3(-d.x + lx * 0.4 * sgn, -d.y + ly * 0.4 * sgn, -d.z + lz * 0.4 * sgn), vec3(ux, uy, uz))
+  end
+  local back = sz.l * 0.5 + 0.12
   local px, py, pz = p.x - d.x * back + ux * 0.95, p.y - d.y * back + uy * 0.95, p.z - d.z * back + uz * 0.95
   local k = math.tan(math.rad(20))
-  local lx, ly, lz = -d.x - ux * k, -d.y - uy * k, -d.z - uz * k
-  return vec3(px, py, pz), quatFromDir(vec3(lx, ly, lz), vec3(ux, uy, uz))
+  return vec3(px, py, pz), quatFromDir(vec3(-d.x - ux * k, -d.y - uy * k, -d.z - uz * k), vec3(ux, uy, uz))
 end
 
 local function camRealPath(rel)
@@ -1280,12 +1313,13 @@ local function camRealPath(rel)
 end
 
 -- the frame asked for last time is on disk by now: tell the relay where (or send it)
-local function camAnnounce()
-  local rel = cam.pending
-  cam.pending = nil
+local function camAnnounce(view)
+  local v = cam.views[view]
+  local rel = v.pending
+  v.pending = nil
   if not rel then return end
-  local msg = { t = 'camFrame', view = 'rear', seq = cam.seq, rel = rel, path = camRealPath(rel),
-    width = cam.settings.width, height = cam.settings.height, fps = cam.settings.fps, mirrored = true }
+  local msg = { t = 'camFrame', view = view, seq = v.seq, rel = rel, path = camRealPath(rel),
+    width = cam.settings.width, height = cam.settings.height, fps = cam.settings.fps, mirrored = view == 'rear' }
   if cam.inline and readFile and mime then
     local data = try(readFile, rel)
     -- no file: still tell the relay (it counts misses and may ask for another format)
@@ -1294,48 +1328,83 @@ local function camAnnounce()
   send(msg)
 end
 
-local function camTick(veh)
-  if not cam.settings.backup and realTime > cam.previewUntil then cam.on = false end
-  local want = veh and ((cam.settings.backup and realTime < cam.reverseUntil) or realTime < cam.previewUntil)
-  if not want then
-    if cam.on then
-      cam.on = false
-      cam.pending = nil
-      send({ t = 'camFrame', view = 'rear', off = true })
-    end
-    return
+-- which views want a picture right now
+local function camWanted(veh)
+  local w = {}
+  if not veh then return w end
+  if (cam.settings.backup and realTime < cam.reverseUntil) or realTime < cam.previewUntil then w.rear = true end
+  if (cam.previews.front or -1) > realTime then w.front = true end
+  -- side repeaters: while signaling (like a real car), or when the app asked
+  local sig = lastVehSt.signal
+  if cam.settings.side and (lastVehSt.speed or 0) > 0.5 then
+    if sig == 'left' then w.left = true elseif sig == 'right' then w.right = true end
   end
+  if (cam.previews.left or -1) > realTime then w.left = true end
+  if (cam.previews.right or -1) > realTime then w.right = true end
+  return w
+end
+
+local function camTick(veh)
+  -- frame-rate governor: cameras are extra rendering, so they give way when the game slows down
+  local scale, level, changed = cam.gov:update(realTime, fpsAvg)
+  cam.scale, cam.level = scale, level
+  if changed then
+    relayEvent({ kind = 'notice', detail = level == 0 and 'cameras back to full rate' or (level == 3 and 'cameras paused: the game is running slowly' or 'cameras slowed to keep the frame rate up') })
+  end
+  local want = camWanted(veh)
+  local n = 0
+  for _, name in ipairs(CAM_VIEWS) do
+    local v = cam.views[name]
+    if want[name] then n = n + 1
+    elseif v.on then
+      v.on, v.pending = false, nil
+      send({ t = 'camFrame', view = name, off = true })
+    end
+  end
+  if n == 0 or scale <= 0 then return end
   if not camSupported() then
     if not cam.failed then
       cam.failed = 'render_renderViews.takeScreenshot missing (RenderViewManagerInstance: ' .. tostring(rawget(_G, 'RenderViewManagerInstance') ~= nil) .. ')'
-      event('error', 'backup camera: ' .. cam.failed)
+      event('error', 'camera: ' .. cam.failed)
     end
     return
   end
   if realTime < cam.nextT then return end
-  cam.nextT = realTime + 1 / math.max(1, math.min(10, cam.settings.fps))
-  cam.on = true
-  camAnnounce()
-  cam.buf = 1 - cam.buf
-  local rel = CAM_DIR .. '/rear_' .. (cam.buf == 0 and 'a' or 'b') .. '.' .. cam.settings.format
+  -- the rate is per view; the governor scales it, and it never asks for more than a sixth of the game's fps in total
+  local perView = math.max(1, math.min(10, cam.settings.fps))
+  local total = math.min(perView * n * scale, math.max(1, (fpsAvg or 30) / 6))
+  cam.nextT = realTime + 1 / total
+  -- next wanted view, round robin: one screenshot per tick
+  local name
+  for k = 1, #CAM_VIEWS do
+    local cand = CAM_VIEWS[((cam.rr + k - 1) % #CAM_VIEWS) + 1]
+    if want[cand] then name = cand; cam.rr = (cam.rr + k) % #CAM_VIEWS; break end
+  end
+  if not name then return end
+  local v = cam.views[name]
+  v.on = true
+  camAnnounce(name)
+  v.buf = 1 - v.buf
+  local rel = CAM_DIR .. '/' .. name .. '_' .. (v.buf == 0 and 'a' or 'b') .. '.' .. cam.settings.format
   local ok, err = pcall(function()
     if FS and FS.directoryExists and not FS:directoryExists(CAM_DIR) then FS:directoryCreate(CAM_DIR, true) end
-    local pos, rot = camPose(veh)
+    local pos, rot = camPose(veh, name)
     renderViews().takeScreenshot({
-      renderViewName = 'teslaBackupCam', filename = rel, -- ONE named view, reused: creating a view per frame is the likely cause of the D3D11 white flash
+      -- ONE named view, reused (a view per frame is the likely cause of the D3D11 white flash)
+      renderViewName = 'teslaCam_' .. name, filename = rel,
       resolution = vec3(cam.settings.width, cam.settings.height, 0),
-      pos = pos, rot = rot, fov = cam.settings.fov, nearPlane = 0.05, screenshotDelay = 0.01,
+      pos = pos, rot = rot, fov = name == 'rear' and cam.settings.fov or 90, nearPlane = 0.05, screenshotDelay = 0.01,
     })
   end)
   if ok then
-    cam.seq = cam.seq + 1
-    cam.pending = rel
+    v.seq = v.seq + 1
+    v.pending = rel
     cam.failed = nil
   elseif cam.settings.format ~= 'png' then
     cam.settings.format = 'png' -- this game can't write JPEG screenshots this way: try PNG
   elseif not cam.failed then
     cam.failed = tostring(err)
-    event('error', 'backup camera: ' .. cam.failed)
+    event('error', 'camera: ' .. cam.failed)
   end
 end
 
@@ -1405,6 +1474,7 @@ handleCommand = function(msg)
     if type(msg.camera) == 'table' then
       local c = msg.camera
       if c.backup ~= nil then cam.settings.backup = c.backup and true or false end
+      if c.side ~= nil then cam.settings.side = c.side and true or false end
       if tonumber(c.fps) then cam.settings.fps = math.max(1, math.min(10, tonumber(c.fps))) end
       if c.quality == 'low' then cam.settings.width, cam.settings.height = 320, 180
       elseif c.quality == 'medium' then cam.settings.width, cam.settings.height = 480, 270
@@ -1473,7 +1543,11 @@ handleCommand = function(msg)
     -- from the relay when it can't read the frames from disk itself
     if msg.inline ~= nil then cam.inline = msg.inline and true or false end
     if msg.format == 'png' or msg.format == 'jpg' then cam.settings.format = msg.format end
-    if msg.on == true then cam.previewUntil = realTime + 15 elseif msg.on == false then cam.previewUntil = -1 end
+    local pv = msg.view
+    if pv == 'front' or pv == 'left' or pv == 'right' then
+      if msg.on == true then cam.previews[pv] = realTime + 15 elseif msg.on == false then cam.previews[pv] = -1 end
+    elseif msg.on == true then cam.previewUntil = realTime + 15
+    elseif msg.on == false then cam.previewUntil = -1 end
   elseif t == 'resetStrikes' then
     if planner then planner.nag:reset() end
   elseif t == 'requestMap' then
@@ -1589,7 +1663,7 @@ function M.diagnostics()
     relayQueue2 = outBytes,
     weather = weather, weatherProbe = weatherProbe, raycast = rayFn ~= nil, overhead = overhead,
     beacons = 0, emergencyNow = 0,
-    camera = { supported = camSupported(), realPath = FS ~= nil and FS.getFileRealPath ~= nil, on = cam.on, seq = cam.seq,
+    camera = { supported = camSupported(), realPath = FS ~= nil and FS.getFileRealPath ~= nil, on = cam.views.rear.on, seq = cam.views.rear.seq, level = cam.level, scale = cam.scale, views = (function() local o = {} for _, n in ipairs(CAM_VIEWS) do if cam.views[n].on then o[#o + 1] = n end end return o end)(),
       inline = cam.inline, failed = cam.failed, settings = cam.settings } }
   for _, c in pairs(traffic) do
     d.traffic = d.traffic + 1

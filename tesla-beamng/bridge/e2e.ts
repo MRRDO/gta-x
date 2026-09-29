@@ -196,6 +196,18 @@ try {
   check('camera preview without R', await until('preview', () => camFrames.length > nFrames + 1, 5000))
   send({ t: 'camera', on: false })
   check('preview off', await until('cam off 2', () => camOff > 1, 5000))
+  // front camera on request, tagged with its own view
+  {
+    const n0 = camFrames.length
+    send({ t: 'camera', on: true, view: 'front' })
+    check('front camera on request', await until('front', () => camFrames.slice(n0).some((f) => f.view === 'front'), 5000), camFrames.slice(n0).map((f) => f.view).join(','))
+    check('...and it is not mirrored like the backup camera', camFrames.slice(n0).filter((f) => f.view === 'front').every((f) => f.mirrored === false))
+    send({ t: 'camera', on: false, view: 'front' })
+    await sleep(500)
+    const rearBefore = camFrames.filter((f) => f.view === 'rear').length
+    await sleep(1500)
+    check('front camera stops when told (no more frames)', camFrames.filter((f) => f.view === 'front').length === camFrames.slice(n0).filter((f) => f.view === 'front').length && camFrames.filter((f) => f.view === 'rear').length === rearBefore)
+  }
 
   send({ t: 'horn', on: true })
   await sleep(200)

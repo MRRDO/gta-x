@@ -95,7 +95,10 @@ function saveVoiceNote(msg: any): string {
 // we ask the game to send the image data inline instead.
 // ---------------------------------------------------------------------------
 
-let lastCam: { data: Buffer; mime: string; seq: number } | null = null
+const CAM_VIEWS = ['rear', 'front', 'left', 'right'] as const
+type CamViewName = (typeof CAM_VIEWS)[number]
+const camViewOf = (v: unknown): CamViewName => (CAM_VIEWS as readonly string[]).includes(String(v)) ? (v as CamViewName) : 'rear'
+const lastCams = new Map<CamViewName, { data: Buffer; mime: string; seq: number }>()
 let camMisses = 0
 let camInlineAsked = false
 const userFolders = () => [arg('beamng-user'), ...beamngModsDirs().map((d) => dirname(d))].filter(Boolean) as string[]
@@ -109,9 +112,10 @@ function imageKind(b: Buffer): 'image/png' | 'image/jpeg' | null {
 let camFormatAsked = false
 
 async function onCamFrame(msg: any) {
+  const view = camViewOf(msg.view)
   if (msg.off) {
-    lastCam = null
-    broadcast({ t: 'camera', view: 'rear', off: true } satisfies CameraFrame)
+    lastCams.delete(view)
+    broadcast({ t: 'camera', view, off: true } satisfies CameraFrame)
     return
   }
   let data: Buffer | null = null
@@ -144,14 +148,14 @@ async function onCamFrame(msg: any) {
     return
   }
   camMisses = 0
-  lastCam = { data, mime, seq: msg.seq ?? 0 }
+  lastCams.set(view, { data, mime, seq: msg.seq ?? 0 })
   if (msg.width && (msg.width !== camInfo.width || msg.height !== camInfo.height || (msg.fps && msg.fps !== camInfo.fps))) {
     camInfo = { width: msg.width, height: msg.height, fps: msg.fps ?? camInfo.fps }
     broadcast(camerasMsg())
   }
-  for (const c of camClients) if (c.readyState === WebSocket.OPEN && c.bufferedAmount < 1_000_000) c.send(data, { binary: true })
+  for (const c of camClients.get(view) ?? []) if (c.readyState === WebSocket.OPEN && c.bufferedAmount < 1_000_000) c.send(data, { binary: true })
   broadcast({
-    t: 'camera', view: 'rear', seq: msg.seq, mime, data: data.toString('base64'),
+    t: 'camera', view, seq: msg.seq, mime, data: data.toString('base64'),
     width: msg.width, height: msg.height, mirrored: msg.mirrored !== false,
   } satisfies CameraFrame, true)
 }
@@ -540,9 +544,11 @@ const server = createServer((req, res) => {
     if (!f.startsWith(feedbackDir) || !existsSync(f)) { res.writeHead(404); return res.end() }
     return serveFile(res, f)
   }
-  if (path === '/camera.png' || /^\/cam\/rear\.(jpg|png)$/.test(path)) {
+  const camPath = /^\/cam\/(rear|front|left|right)\.(jpg|png)$/.exec(path)
+  if (path === '/camera.png' || camPath) {
     const cors = { 'access-control-allow-origin': '*', 'cache-control': 'no-store' }
-    if (!lastCam) { res.writeHead(404, cors); return res.end('backup camera off') }
+    const lastCam = lastCams.get(camPath ? (camPath[1] as CamViewName) : 'rear')
+    if (!lastCam) { res.writeHead(404, cors); return res.end('camera off') }
     res.writeHead(200, { ...cors, 'content-type': lastCam.mime })
     return res.end(lastCam.data)
   }
@@ -580,16 +586,19 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
 })
 
-const camClients = new Set<WebSocket>()
+const camClients = new Map<CamViewName, Set<WebSocket>>(CAM_VIEWS.map((v) => [v, new Set<WebSocket>()]))
 let camInfo = { width: 320, height: 180, fps: 5 }
-const camerasMsg = () => ({ t: 'cameras', cams: [{ id: 'rear', ...camInfo }] })
+const camerasMsg = () => ({ t: 'cameras', cams: CAM_VIEWS.map((id) => ({ id, ...camInfo })) })
 
 wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-  // ws://host/cam/rear: one binary image per message (the backup camera, while in R)
-  if (new URL(req.url ?? '/', 'http://x').pathname.startsWith('/cam/')) {
-    camClients.add(ws)
-    if (lastCam) ws.send(lastCam.data, { binary: true })
-    ws.on('close', () => camClients.delete(ws))
+  // ws://host/cam/<rear|front|left|right>: one binary image per message
+  const camWsPath = new URL(req.url ?? '/', 'http://x').pathname
+  if (camWsPath.startsWith('/cam/')) {
+    const view = camViewOf(camWsPath.slice(5))
+    camClients.get(view)!.add(ws)
+    const last = lastCams.get(view)
+    if (last) ws.send(last.data, { binary: true })
+    ws.on('close', () => camClients.get(view)!.delete(ws))
     return
   }
   clients.add(ws)

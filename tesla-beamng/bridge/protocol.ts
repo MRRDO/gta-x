@@ -54,6 +54,8 @@ export type State = {
   /** This trip so far (resets when you park after driving 300 m or more): Safety Score 0..100 and stats. */
   /** Climate settings the app last sent ({t:'climate'}). Nothing in the game reacts to them; hardware bridges (fan, heater) can read this. */
   climate?: Record<string, unknown>
+  /** Cameras: which views are streaming and whether the frame-rate governor has slowed or paused them (the game's fps fell). */
+  camera?: { views: CamView[]; level: 0 | 1 | 2 | 3; paused: boolean }
   trip?: { score: number; km: number; fsdPercent: number; hardBrakes: number }
 }
 
@@ -283,17 +285,20 @@ export type WheelButton = { t: 'wheelButton'; button: number; down: boolean }
  * Relay -> app: a backup-camera frame (while in R, or a preview). `data` is base64 PNG.
  * Real backup cameras show a mirror image: draw it flipped when `mirrored`. `off` = hide the view.
  */
+/** rear = backup camera (in R); front = on request; left/right = side repeaters while signaling (setting camera.side) */
+export type CamView = 'rear' | 'front' | 'left' | 'right'
 export type CameraFrame = {
-  t: 'camera'; view: 'rear'; off?: boolean
+  t: 'camera'; view: CamView; off?: boolean
   seq?: number; mime?: string; data?: string; width?: number; height?: number; mirrored?: boolean
 }
 
 /**
  * Relay -> app on connect: the car cameras it can stream. Each one: ws://host/cam/<id> sends one
  * binary image (JPEG, or PNG if the game can't write JPEG) per message; GET /cam/<id>.jpg is the
- * latest frame. Only 'rear' (the backup camera), and only while in R.
+ * latest frame (/cam/<id>.jpg). 'rear' only in R (or a preview); 'front' only on request ({t:'camera', on:true, view:'front'}); 'left'/'right' only while signaling
+ * with camera.side on. A frame-rate governor drops or pauses the cameras when the game's fps falls (see state.camera).
  */
-export type Cameras = { t: 'cameras'; cams: { id: 'rear'; width: number; height: number; fps: number }[] }
+export type Cameras = { t: 'cameras'; cams: { id: CamView; width: number; height: number; fps: number }[] }
 
 /** Relay -> app when a wheel button mapped to a media action is pressed (the G29's dial = volume). */
 export type Media = { t: 'media'; action: 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' }
@@ -358,6 +363,12 @@ export type Command =
       takeover?: 'light' | 'normal' | 'firm'
       /** Swerve Assist while you drive (default on). */
       swerveAssist?: boolean
+      /** Regenerative braking strength, Tesla's Standard / Low (default standard). Only when `regen` is on and the car has no regen of its own. */
+      regenLevel?: 'standard' | 'low'
+      /** Fog lights come on by themselves in fog (default on). */
+      autoFogLights?: boolean
+      /** Steering Weight (Tesla: Controls > Dynamics): 'light' | 'standard' | 'heavy'. Scales the wheel's self-centering, friction and damping when the bridge drives the wheel's force feedback (FSD, or when the game can't). */
+      steeringWeight?: 'light' | 'standard' | 'heavy'
       /** Hill Hold: stopped on a slope with your feet off the pedals, the brake stays on until you accelerate (default on). Best effort, needs a real game to verify. */
       hillHold?: boolean
       /** Road feel through the wheel while FSD drives (bumps and surface texture), 0..2, default 1. */
@@ -382,7 +393,7 @@ export type Command =
   | { t: 'setButton'; action: ActionName; button: number | null } // set / clear directly
   | { t: 'requestButtonMap' }
   | { t: 'hello'; app?: string; version?: string } // the app says hi on connect (logged by the relay)
-  | { t: 'camera'; on?: boolean } // show the backup camera for 15 s without shifting to R (a preview button); false hides it
+  | { t: 'camera'; on?: boolean; view?: CamView } // show the backup camera for 15 s without shifting to R (a preview button); false hides it
   | { t: 'wheelButton'; button: number; down: boolean } // from the wheel companion
   | { t: 'companionHello'; name: string; buttons: number } // from the wheel companion
   | { t: 'requestMap' }
@@ -391,7 +402,7 @@ export type Command =
   | { t: 'ping' }
 
 /** Backup camera: on in R (default on), frames per second 1..10 (default 5), quality low 320x180 (default) / medium 480x270 / high 640x360. Higher costs more fps in the game. */
-export type CameraSettings = { backup?: boolean; fps?: number; quality?: 'low' | 'medium' | 'high' }
+export type CameraSettings = { backup?: boolean; side?: boolean; fps?: number; quality?: 'low' | 'medium' | 'high' }
 export type Quirks = { phantomBraking: boolean; yellowHesitation: boolean; wiggle: boolean; weather: boolean; creep: boolean }
 export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: boolean; evasion: boolean; lda: boolean; blindSpot: boolean; obstacleAware: boolean }
 
