@@ -192,7 +192,7 @@ local CLIMATE_KEYS = { on = 'boolean', driverTemp = 'number', passengerTemp = 'n
   cabinOverheat = 'boolean', keepOn = 'boolean', dogMode = 'boolean', campMode = 'boolean', bioweapon = 'boolean', seatHeat = 'table', wheelHeat = 'boolean', vents = 'string' }
 local pinLocked = false -- PIN to Drive: the car stays in Park until the app says the PIN was entered
 local pinNoticeT = -1e9
-local wiperLevel = nil
+local wiperLevel = 0 -- 0 at start: we never switch off wipers the driver turned on
 local Ls = require('teslaBridge/lightshow')
 local show = nil -- running light show { name, t0, last = key, prev = restore state }
 local tShow = 0
@@ -1508,6 +1508,7 @@ local function stepProfile(dir)
   if not planner then return end
   local i = 3
   for k, p in ipairs(PROFILE_ORDER) do if p == planner.profile then i = k end end
+  if planner.profile == 'furious' then i = #PROFILE_ORDER end -- above Mad Max; the dial steps down to it
   local p = PROFILE_ORDER[math.max(1, math.min(#PROFILE_ORDER, i + dir))]
   planner:setProfile(p)
   event('settings', 'profile ' .. p)
