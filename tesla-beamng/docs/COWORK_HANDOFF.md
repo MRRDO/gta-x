@@ -126,7 +126,7 @@ If something fails:
 
 ## Part 4: the Tesla Model X mod (make its doors openable)
 
-The app's 3D car came from this mod: `~/Downloads/tesla-model-x.zip` (it has
+The app's 3D car came from this mod: `models/beamng/tesla-model-x.zip` in the tesla-ui-atv repo (also `~/Downloads/tesla-model-x.zip`; it has
 `vehicles/Tesla_X/`). Its doors, frunk and trunk are welded shut: they're held by *latch
 beams* that only let go in a crash. The fix is to turn each latch into an **advanced
 coupler**, the way stock cars do it. The bridge already looks for couplers with these names:
@@ -140,8 +140,8 @@ coupler**, the way stock cars do it. The bridge already looks for couplers with 
      `mods\`, or you get duplicates.
    - Start BeamNG and spawn the Tesla_X once to check it works as it is. It should still
      drive fine on the newest BeamNG. If it errors, note the errors from the console (`~`).
-2. **Find the stock pattern to copy.** The mod is built on the Vivace. In the BeamNG install
-   folder, open `content\vehicles\vivace.zip` (read-only; copy files out). Look at:
+2. **Find the stock pattern to copy.** The mod is built on the ETK 800 (its files are named etk800_*.jbeam, so the stock pattern is in etk800.zip). In the BeamNG install
+   folder, open `content\vehicles\etk800.zip` (read-only; copy files out). Look at:
    - its `*_doors_*.jbeam`, `*_hood.jbeam` and `*_tailgate.jbeam` (how the latch couplers
      are written in this game version)
    - `lua\vehicle\controller\advancedCouplerControl.lua` in the game files (the parameter
@@ -200,7 +200,7 @@ coupler**, the way stock cars do it. The bridge already looks for couplers with 
 
 ## Part 5: test it in the game
 
-Use the test page (`/test`). Try **three cars**: a stock sedan (e.g. Covet or Vivace), a stock
+Use the test page (`/test`). Try **three cars**: a stock sedan (e.g. Covet or ETK 800), a stock
 pickup (D-Series), and the Tesla_X. Keep BeamNG on Low.
 
 For each check, write pass/fail plus a short note in the report, and note how the game felt
