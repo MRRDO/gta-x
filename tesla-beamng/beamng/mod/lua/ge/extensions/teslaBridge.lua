@@ -49,7 +49,7 @@ local vehDiag = nil
 
 -- backup camera state (see the backup camera section)
 local cam = {
-  settings = { backup = true, fps = 5, width = 320, height = 180, fov = 100, format = 'jpg' },
+  settings = { backup = false, fps = 5, width = 320, height = 180, fov = 100, format = 'jpg' }, -- off by default: the off-screen capture flashes the screen white on D3D11 (0.39)
   on = false, previewUntil = -1, nextT = 0, seq = 0, pending = nil, inline = false,
   reverseUntil = -1, failed = nil, buf = 0,
 }
@@ -341,6 +341,17 @@ local function findSignals()
         signals[#signals + 1] = { id = 'prop:' .. tostring(name), x = p.x, y = p.y, z = p.z, kind = 'stop', prop = true }
         found.props = (found.props or 0) + 1
       end
+    end
+  end
+  -- which traffic-system signals have a real stop sign standing near them (a 'basicstop'
+  -- controller with no sign is a painted line / crosswalk: never a full stop)
+  for _, sg in ipairs(signals) do
+    if not sg.prop then
+      for _, pp in ipairs(signals) do
+        if pp.prop and (pp.x - sg.x) ^ 2 + (pp.y - sg.y) ^ 2 < 20 * 20 then sg.signNear = true; break end
+      end
+      if (found.props or 0) == 0 then sg.signNear = nil end -- no props in this level: can't tell
+      if (found.props or 0) > 0 and not sg.signNear then sg.signNear = false end
     end
   end
   -- traffic-system "stop" points with no stop-sign prop nearby are crosswalks / painted lines,
@@ -660,6 +671,7 @@ end
 local function relayEvent(ev)
   local detail = ev.detail or ev.reason or ev.dir or ev.side or ev.what or ev.action or ev.state
   if ev.kind == 'nag' then detail = tostring(ev.level) .. (ev.reason and (' ' .. ev.reason) or '') end
+  if ev.kind == 'monitoring' then detail = ev.state end
   if ev.kind == 'strike' then detail = tostring(ev.strikes) .. '/' .. tostring(ev.max) end
   if ev.kind == 'disengage' then detail = ev.reason end -- the UI keys on the reason; the rest is in data
   local msg = { t = 'event', kind = ev.kind, detail = detail and tostring(detail) or nil, data = ev }
@@ -812,6 +824,8 @@ function M.onVehicleState(vid, json)
   local veh = vehicleById(vid)
   local pv = playerVehicle()
   if not pv or pv:getID() ~= vid then return end
+  -- main menu / no level: no state (the app shows its boot logo until we're in a world)
+  if not levelName() then return end
   local ok, st = pcall(jsonDecode, json)
   if not ok or type(st) ~= 'table' then return end
   lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil }
@@ -857,7 +871,8 @@ function M.onVehicleState(vid, json)
     phantomBrake = ps.phantomBrake or false,
     weather = ps.weather,
     maneuver = ps.maneuver,
-    nag = { level = nag.level or 0, reason = nag.reason, strikes = nag.strikes or 0, maxStrikes = nag.maxStrikes or 5, lockedOut = nag.lockedOut or false },
+    nag = { level = nag.level or 0, reason = nag.reason, strikes = nag.strikes or 0, maxStrikes = nag.maxStrikes or 5, lockedOut = nag.lockedOut or false,
+      mode = nag.mode, active = nag.active, interval = nag.interval },
     lastDisengage = planner and planner.lastDisengage or nil,
     accelOverride = va.accelOverride or false,
     steerGain = va.steerGain, steerSign = va.steerSign,
@@ -1075,6 +1090,12 @@ handleCommand = function(msg)
   local t = msg.t
   if t == 'action' then return runAction(msg.name) end
   local veh = playerVehicle()
+  if t == 'gear' and msg.gear == 'P' and planner and planner.mode ~= 'off' and planner.activity == 'drive'
+    and not planner.pullingOver and veh and (lastVehSt.speed or 0) > 1 then
+    -- P while FSD drives: pull over to the side of the road and park (take over to cancel)
+    local okP = planner:pullOverNow(egoSnapshot(veh))
+    if okP then relayEvent({ kind = 'pullOver', detail = 'pulling over (take over to cancel)' }); return end
+  end
   if t == 'gear' or t == 'lights' or t == 'horn' or t == 'door' or t == 'throttleOverride' or t == 'wheel' then
     if not veh then event('error', 'no player vehicle'); return end
     ensureVehicleExtension(veh)
@@ -1238,6 +1259,7 @@ runAction = function(name)
     if planner then planner:configure(plannerSettings) end
     event('settings', 'follow distance ' .. plannerSettings.followDistance)
   elseif name == 'autopark' then handleCommand({ t = 'autopark' })
+  elseif name == 'park' then handleCommand({ t = 'gear', gear = 'P' })
   elseif name == 'summonForward' then handleCommand({ t = 'summon', dir = 'forward' })
   elseif name == 'summonReverse' then handleCommand({ t = 'summon', dir = 'reverse' })
   elseif name == 'summonStop' then handleCommand({ t = 'summon', dir = nil })
@@ -1415,6 +1437,7 @@ local function onClientStartMission()
 end
 
 local function onClientEndMission()
+  event('levelUnloaded', level or '')
   mapMsg, graph, level, planner = nil, nil, nil, nil
   send({ t = 'route', points = {}, length = 0 }) -- the old level's route is meaningless now
   traffic, vehSize, beacons, beaconLoaded, vehNames = {}, {}, {}, {}, {}

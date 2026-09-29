@@ -24,14 +24,16 @@ function M.new(opts)
     flips = 0,
     disabled = false,
     stiffness = opts.stiffness or 0.09, -- raw error that asks for full force
-    damping = opts.damping or 0.2,      -- seconds (Kd / Kp)
+    damping = opts.damping or 0.28,     -- seconds (Kd / Kp)
     ramp = 0, vel = 0, lastPos = nil,
+    tf = nil, fPrev = 0, integ = 0,     -- smoothed target, last force, friction term
     wrongT = 0, goodT = 0, gripT = 0,
   }, Spring)
 end
 
 function Spring:reset()
   self.ramp, self.vel, self.lastPos = 0, 0, nil
+  self.tf, self.fPrev, self.integ = nil, 0, 0
   self.wrongT, self.gripT, self.goodT = 0, 0, 0
 end
 
@@ -47,11 +49,28 @@ function Spring:update(dt, target, pos, fcap, strength)
   end
   self.lastPos = pos
   self.ramp = min(1, self.ramp + dt / 0.8)
-  local cap = fcap * clamp(strength or 1, 0, 1)
-  local e = target - pos
+  local cap = fcap * clamp(strength or 1, 0, 2)
+  -- smooth the target (FSD's steering comes in steps): no jerks for the motor to chase
+  self.tf = self.tf and (self.tf + (target - self.tf) * clamp(dt / 0.06, 0, 1)) or target
+  local e = self.tf - pos
   local kp = cap / self.stiffness
-  local f = kp * e - kp * self.damping * self.vel
+  -- a hair of deadband so the motor doesn't buzz around the target
+  local eUse = e
+  local DB = 0.004
+  if abs(eUse) < DB then eUse = 0 else eUse = eUse - (eUse > 0 and DB or -DB) end
+  -- friction: a small steady error with the wheel not moving builds extra push (wheels
+  -- with a stiff rim otherwise stop a few degrees short)
+  if abs(e) > 0.01 and abs(self.vel) < 0.05 then
+    self.integ = clamp(self.integ + e * dt * 4, -0.3, 0.3)
+  else
+    self.integ = self.integ * max(0, 1 - dt * 4)
+  end
+  local f = kp * eUse - kp * self.damping * self.vel + self.integ * cap
   f = clamp(f, -cap, cap) * self.ramp
+  -- slew limit: full swing in ~0.15 s, not in one frame (that's the shake)
+  local maxStep = cap * dt / 0.03
+  f = clamp(f, self.fPrev - maxStep, self.fPrev + maxStep)
+  self.fPrev = f
   local converging = e * self.vel > 0 -- |target - pos| shrinking
 
   -- direction check: pushing hard but the wheel keeps speeding up away from the

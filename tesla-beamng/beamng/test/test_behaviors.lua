@@ -361,6 +361,41 @@ scenario('unresponsive', function()
   check(w2:saw('strike') ~= nil and w2.planner.mode == 'off', 'parked: strike, FSD off')
 end)
 
+-- driver monitoring modes (nagMode): off / camera / wheel, wheel interval by road context
+scenario('monitoringModes', function()
+  local N = require('teslaBridge/nag')
+  -- road factors
+  check(N.wheelFactor({ v = 5 }) == 2.0, 'wheel mode: slow (< 20 mph) -> fewer nags')
+  check(N.wheelFactor({ v = 28, limit = 29 }) == 1.6, 'wheel mode: highway -> fewer nags')
+  check(N.wheelFactor({ v = 15, limit = 15.6 }) == 0.7, 'wheel mode: city street 25-45 mph -> more nags')
+  local function drive(mode, att, secs, v, limit)
+    local n = N.new()
+    n.mode = mode
+    n.rng = function() return 0.5 end
+    n:nudge(0)
+    local first
+    for k = 1, secs * 10 do
+      local t = k / 10
+      local o = n:tick(t, true, 'standard', att and att(t) or nil, { v = v or 15, limit = limit })
+      if not first and o.level >= 1 then first = t end
+    end
+    return first, n
+  end
+  local offAt = drive('off', function(t) return { state = 'phone', t = t } end, 60)
+  check(offAt == nil, 'off: no nags at all, even on the phone')
+  local camAt = drive('camera', function(t) return { state = 'phone', t = t } end, 30)
+  check(camAt and camAt < 10, 'camera: on the phone -> nag (' .. tostring(camAt) .. ' s)')
+  local camOk = drive('camera', function(t) return { state = 'ok', t = t } end, 120)
+  check(camOk == nil, 'camera: eyes on the road -> no wheel nudges needed')
+  local wheelIgnoresCam = drive('wheel', function(t) return { state = 'ok', t = t } end, 60, 15, 15.6)
+  check(wheelIgnoresCam and wheelIgnoresCam < 30, 'wheel: camera ignored, city street nag after ~21 s (' .. tostring(wheelIgnoresCam) .. ')')
+  local hwy = drive('wheel', nil, 90, 28, 29)
+  check(hwy and hwy > 45, 'wheel: highway nag comes later (' .. tostring(hwy) .. ' s)')
+  -- camera mode, camera stops: falls back to the wheel and says so
+  local _, n = drive('camera', function(t) if t < 5 then return { state = 'ok', t = t } end return { state = 'ok', t = 5 } end, 20)
+  check(n.cameraLost == true and n.active == 'wheel', 'camera stops reporting -> wheel fallback')
+end)
+
 scenario('aeb', function()
   local w = W.new({ nodes = straight(0, 2000, 5, 25), ego = { x = 0, y = LANE1, psi = 0, v = 20 },
     safety = { evasion = false } })
@@ -479,6 +514,29 @@ scenario('stopStateSignal', function()
   check(w:saw('arrived') ~= nil, 'then leaves the line and arrives')
 end)
 
+-- in-game round 3: 'basicstop' controllers with no stop sign are painted lines / crosswalks.
+-- Quentin's rule: no full stop there, only for a pedestrian in the way
+scenario('paintedLine', function()
+  local function run(ped)
+    local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+      signals = { { id = 'line', x = 100, y = -7, kind = 'signal', dirx = 1, diry = 0, signNear = false, get = function() return 'stop' end } } })
+    if ped then w:addCar({ id = 99, w = 0.6, l = 0.6, pts = { { x = 103, y = -3 }, { x = 103, y = -2.9 } }, speedFn = function() return 0 end, s0 = 0 }) end
+    w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+    w:engage('fsd', 'standard')
+    local minV = 99
+    w:run(40, function(ww)
+      local x = ww:refPos()
+      if x > 60 and x < 100 then minV = math.min(minV, ww.ego.v) end
+      return x > 140
+    end)
+    return minV
+  end
+  local free = run(false)
+  check(free > 5, string.format('no stop at a painted line with no sign (min %.1f m/s)', free))
+  local withPed = run(true)
+  check(withPed < 0.5, string.format('stops for a pedestrian at the crosswalk (min %.1f m/s)', withPed))
+end)
+
 -- a red that never changes (unreadable / broken light): treated as an all-way stop after 90 s
 scenario('stuckRed', function()
   local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
@@ -591,6 +649,48 @@ scenario('paddleTurn', function()
   local w2, maxY2 = run(true)
   check(maxY2 > 20, 'with a destination: takes the left turn first (' .. string.format('%.0f', maxY2) .. ')')
   check(w2:saw('arrived') ~= nil, '...then still gets to the destination')
+end)
+
+-- Quentin: "apply the turn signal and it'll force a turn there": with a junction just ahead,
+-- the signal turns there even when a same-direction lane exists
+scenario('signalTurn', function()
+  local w = W.new({ nodes = grid(3, 3, 150, 7.5), ego = { x = 5, y = RIGHT2, psi = 0, v = 0 } })
+  w:engage('fsd', 'standard')
+  w:run(4)
+  w.planner:requestLaneChange('left')
+  local maxY, turnedAt = -99, nil
+  w:run(60, function(ww)
+    local x, y = ww:refPos()
+    if y > maxY then maxY = y end
+    if not turnedAt and y > 20 then turnedAt = x end
+    return y > 60
+  end)
+  check(w:saw('laneChange', function(e) return e.reason == 'driver' end) == nil or maxY > 60, 'signal with a junction ahead: turns rather than just changing lanes')
+  check(maxY > 60 and turnedAt and math.abs(turnedAt - 150) < 15, string.format('turns left at the junction ahead (x %s, y %.0f)', tostring(turnedAt), maxY))
+end)
+
+-- P while FSD drives: pull over and park; taking over cancels it and keeps the trip
+scenario('parkPullOver', function()
+  local w = W.new({ nodes = straight(0, 5000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 15 } })
+  w.planner:setRoute({ 3000, LANE1, 0 }, nil, 'Driveway')
+  w:engage('fsd', 'standard')
+  w:run(3)
+  local x0 = w:refPos()
+  check(w.planner:pullOverNow(w:snapshot().ego), 'P while driving: starts pulling over')
+  w:run(40, function(ww) return ww:saw('arrived') ~= nil end)
+  local x, y = w:refPos()
+  check(w:saw('arrived') ~= nil and w.ego.gear == 'P' and w.planner.mode == 'off', 'pulled over, in P, FSD off')
+  check(y < LANE1 - 1.0 and y > -5 + 1.3, string.format('at the side of the road (y %.2f)', y))
+  check(x - x0 < 120, string.format('stopped soon after (%.0f m)', x - x0))
+  -- cancelled by a takeover: trip kept
+  local w2 = W.new({ nodes = straight(0, 5000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 15 } })
+  w2.planner:setRoute({ 3000, LANE1, 0 }, nil, 'Driveway')
+  w2:engage('fsd', 'standard')
+  w2:run(2)
+  w2.planner:pullOverNow(w2:snapshot().ego)
+  w2:run(1)
+  w2.planner:disengage('steer')
+  check(w2.planner.dest and w2.planner.dest[1] == 3000, 'taking over mid pull-over keeps the original trip')
 end)
 
 print(string.format('%d passed, %d failed', passes, failures))

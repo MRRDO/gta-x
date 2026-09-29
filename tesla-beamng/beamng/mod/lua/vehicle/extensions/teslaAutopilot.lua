@@ -376,6 +376,14 @@ local function ffbGiveBack()
   end
   if type(hydros.setFFBConfig) == 'function' then pcall(hydros.setFFBConfig, cfg) end
   id = hydrosId()
+  if id and id < 0 and cfg then
+    -- hydros may skip a config it already has: hand it a fresh copy
+    local function copy(t) local o = {}; for k, v in pairs(t) do o[k] = type(v) == 'table' and copy(v) or v end; return o end
+    local c2 = copy(cfg)
+    if c2.steering and ffb.id and ffb.id >= 0 then c2.steering.FFBID = ffb.id end
+    applyCfg(c2)
+    id = hydrosId()
+  end
   return id == nil or id >= 0
 end
 
@@ -842,7 +850,8 @@ handlers.throttleOverride = function(cmd)
 end
 
 handlers.wheel = function(cmd)
-  if cmd.strength ~= nil then ffb.strength = math.max(0, math.min(1, tonumber(cmd.strength) or ffb.strength)) end
+  -- strength above 1 boosts past the game's FFB limit (a wheel set weak in the game's options)
+  if cmd.strength ~= nil then ffb.strength = math.max(0, math.min(2, tonumber(cmd.strength) or ffb.strength)) end
   if cmd.rangeDeg ~= nil then ffb.rangeDeg = math.max(180, math.min(1080, tonumber(cmd.rangeDeg) or ffb.rangeDeg)) end
   if cmd.helper ~= nil then
     ffb.helper = cmd.helper and true or false

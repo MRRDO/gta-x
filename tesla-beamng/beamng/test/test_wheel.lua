@@ -31,6 +31,7 @@ local function run(opts)
     seen[#seen + 1] = p
     local pos = seen[math.max(1, #seen - delay)]
     local f, grip = s:update(dt, target, pos, 1, 1)
+    if t > (opts.chatterFrom or 1e9) then log.chatter = (log.chatter or 0) + math.abs(f - force) end
     force = f
     if grip and not log.gripAt then log.gripAt = t end
     for _ = 1, sub do
@@ -101,6 +102,18 @@ do
     T = 3,
   })
   check(r.gripAt ~= nil and r.gripAt < 1.6, 'detects a grip, at ' .. tostring(r.gripAt))
+end
+
+do
+  -- in-game: "the wheel moves but it's shaky". Holding a steady turn with FSD's target
+  -- arriving in 10 Hz steps (plus a little noise), the motor force must not chatter.
+  local log = run({ T = 5, chatterFrom = 2, target = function(t)
+    local base = 0.25
+    local step = math.floor(t * 10) / 10 -- planner updates at 10 Hz
+    return base + 0.01 * math.sin(step * 7.3)
+  end })
+  check((log.chatter or 0) < 1.0, string.format('steady turn: motor force barely chatters (sum |dF| %.2f over 3 s)', log.chatter or 0))
+  check(errAfter(log, 2) < 0.03, string.format('steady turn: holds the angle (err %.3f)', errAfter(log, 2)))
 end
 
 print(string.format('%d passed, %d failed', passes, failures))

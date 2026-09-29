@@ -61,6 +61,11 @@ export type NagState = {
   strikes: number
   maxStrikes: number // 5
   lockedOut: boolean // FSD unavailable for the rest of the drive
+  /** Driver monitoring setting (nagMode) and what's watching right now. */
+  mode?: 'auto' | 'camera' | 'wheel' | 'off'
+  active?: 'camera' | 'wheel'
+  /** Wheel mode: seconds between required hands-on-wheel nudges here (longer on highways and at low speed). */
+  interval?: number
 }
 
 export type WheelState = {
@@ -86,7 +91,7 @@ export type AutopilotState = {
   targetSpeed: number // m/s
   speedLimit: number | null // m/s at the car, from the road graph (or a class default)
   leadGap: number | null // m to the car ahead in our lane
-  control: { kind: 'stop' | 'signal'; dist: number; red: boolean; state?: 'red' | 'yellow' | 'green' | 'stop' | null; id?: string; dot?: number; lat?: number } | null // id, dot (signal dir . our heading), lat: debug
+  control: { kind: 'stop' | 'signal' | 'crosswalk'; dist: number; red: boolean; state?: 'red' | 'yellow' | 'green' | 'stop' | null; id?: string; dot?: number; lat?: number } | null // id, dot (signal dir . our heading), lat: debug
   nextTurn: { dir: 'left' | 'right' | 'straight'; dist: number; road: string } | null
   remaining: number | null // m to destination
   lastDisengage: { reason: DisengageReason; time: number } | null
@@ -99,7 +104,7 @@ export type AutopilotState = {
   setSpeed?: number | null // m/s, TACC / Autosteer
   lane?: { index: number; count: number; changing?: { dir: 'left' | 'right'; reason: 'route' | 'pass' | 'merge' | 'return' | 'driver' | 'moveOver' | 'madMax' | 'evasion'; phase: 'signal' | 'moving' } }
   creeping?: boolean // "Creeping for visibility"
-  waitingFor?: 'gap' | 'crossTraffic' | 'emergencyVehicle' | null
+  waitingFor?: 'gap' | 'crossTraffic' | 'emergencyVehicle' | 'pedestrian' | null
   goAround?: boolean // going around a stopped car
   emergencyVehicle?: 'pullOver' | 'yield' | 'moveOver' | null
   schoolBus?: boolean
@@ -160,7 +165,7 @@ export type ParkingSpots = {
 export type Minimap = { t: 'minimap'; url: string; offset?: number[]; size?: number[] }
 
 export type EventKind =
-  | 'disengage' | 'engaged' | 'reengaged' | 'arrived' | 'vehicleChanged' | 'levelLoaded' | 'error' | 'settings'
+  | 'disengage' | 'engaged' | 'reengaged' | 'arrived' | 'vehicleChanged' | 'levelLoaded' | 'levelUnloaded' | 'error' | 'settings'
   // FSD behavior
   | 'laneChange' | 'creeping' | 'nudge' | 'goAround' | 'emergencyVehicle' | 'schoolBus' | 'maneuver' | 'summon'
   | 'phantomBrake' | 'yellowHesitation' | 'collisionEvasion'
@@ -180,6 +185,8 @@ export type EventKind =
   | 'collision'        // the car was hit (see autopilot.alert)
   | 'signalStuck'      // a red that never changed for 90 s, treated as an all-way stop
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
+  | 'pullOver'         // P pressed while FSD drives: pulling over ({dist}); take over to cancel
+  | 'monitoring'       // camera mode: detail 'cameraUnavailable' (using the wheel) | 'camera' (back)
 
 export type Event = {
   t: 'event'
@@ -201,7 +208,7 @@ export type Debug = { t: 'debug'; ge: Record<string, unknown>; vehicle?: Record<
 export type ActionName =
   | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'disengage' | 'voiceNote' | 'nudge'
   | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
-  | 'followCloser' | 'followFarther' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop'
+  | 'followCloser' | 'followFarther' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
 
 export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'toggleFSD', label: 'Start / stop FSD' },
@@ -219,6 +226,7 @@ export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'followCloser', label: 'Follow closer' },
   { name: 'followFarther', label: 'Follow farther' },
   { name: 'autopark', label: 'Autopark' },
+  { name: 'park', label: 'Park (FSD driving: pull over and park)' },
   { name: 'summonForward', label: 'Summon forward' },
   { name: 'summonReverse', label: 'Summon reverse' },
   { name: 'summonStop', label: 'Stop summon' },
@@ -277,6 +285,12 @@ export type Command =
       autoShift?: boolean
       /** Unresponsive driver: 'park' = drive to a free spot within 500 m and park; 'pullOver' (default) = pull over and stop. */
       unresponsive?: 'park' | 'pullOver'
+      /**
+       * Driver monitoring: 'off' (no nags), 'camera' (the iPad cabin camera; falls back to the
+       * wheel with a 'monitoring' event when the camera stops), 'wheel' (hands-on-wheel nudges,
+       * less often on highways and at low speed), 'auto' (default: camera while it reports).
+       */
+      nagMode?: 'auto' | 'camera' | 'wheel' | 'off'
       /** Swerve Assist while you drive (default on). */
       swerveAssist?: boolean }
   | { t: 'attention'; state: 'ok' | 'phone' | 'eyesOff' | 'unknown' } // from the app's cabin camera, ~2-5 Hz

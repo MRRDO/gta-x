@@ -370,6 +370,8 @@ function onGameLine(line: string) {
       broadcast(msg)
       return
     case 'event':
+      // back to the menu / level change: a new app must not get the old world's state or route
+      if (msg.kind === 'levelUnloaded') { lastState = null; lastRoute = null }
       log('event', msg.kind, msg.detail ?? '')
       recentEvents.push({ ...msg, at: new Date().toISOString() })
       if (recentEvents.length > 100) recentEvents.shift()

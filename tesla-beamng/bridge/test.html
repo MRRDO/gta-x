@@ -149,7 +149,17 @@
         <button id="applySettings">Apply</button>
       </div>
       <div class="row">
-        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="camBackup" checked> backup camera in R</label>
+        <span style="color:var(--dim)">driver monitoring</span>
+        <select id="nagMode"><option value="auto" selected>auto</option><option value="camera">cabin camera</option><option value="wheel">steering wheel</option><option value="off">off</option></select>
+        <span style="color:var(--dim)">unresponsive driver</span>
+        <select id="unresponsive"><option value="pullOver" selected>pull over</option><option value="park">park nearby</option></select>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="autoShift"> Auto Shift out of P</label>
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="swerveAssist" checked> Swerve Assist</label>
+        <span style="color:var(--dim)">wheel force</span><input id="wheelStrength" type="number" min="0" max="2" step="0.1" value="1" style="width:52px">
+        <span id="nagInfo" class="pill"></span>
+      </div>
+      <div class="row">
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="camBackup"> backup camera in R (can flash the screen on D3D11)</label>
         <span style="color:var(--dim)">quality</span>
         <select id="camQuality"><option value="low" selected>low 320×180</option><option value="medium">medium 480×270</option><option value="high">high 640×360</option></select>
         <span style="color:var(--dim)">fps</span><input id="camFps" type="number" min="1" max="10" value="5" style="width:48px">
@@ -271,6 +281,10 @@ function onMsg(m) {
     case 'pong': $('pingOut').textContent = `${(performance.now() - pingAt).toFixed(0)} ms round trip`; break
   }
 }
+setInterval(() => {
+  const n = state && state.autopilot && state.autopilot.nag
+  if (n) $('nagInfo').textContent = `monitoring: ${n.mode ?? 'auto'} → ${n.active ?? '?'}${n.interval ? ` · nudge every ~${n.interval}s` : ''}`
+}, 1000)
 setInterval(() => { $('rate').textContent = `${stateCount} Hz` + (state && state.fps ? ` · game ${state.fps} fps` : ''); stateCount = 0 }, 1000)
 
 // ------------------------------------------------------------------ state
@@ -457,7 +471,9 @@ $('applySettings').onclick = () => {
   $('safetyToggles').querySelectorAll('input').forEach((i) => (safety[i.dataset.key] = i.checked))
   const num = (id) => ($(id).value === '' ? null : Number($(id).value))
   send({ t: 'settings', quirks, safety, speedOffsetMph: num('offset'), followDistance: num('followDist'),
+    nagMode: $('nagMode').value, unresponsive: $('unresponsive').value, autoShift: $('autoShift').checked, swerveAssist: $('swerveAssist').checked,
     camera: { backup: $('camBackup').checked, quality: $('camQuality').value, fps: num('camFps') ?? 5 } })
+  send({ t: 'wheel', strength: num('wheelStrength') ?? 1 })
 }
 
 // voice note from this device's mic (the wheel button does the same through the game)

@@ -155,7 +155,14 @@ try {
   camWs = new WebSocket(`ws://127.0.0.1:${PORT}/cam/rear`)
   camWs.on('message', (d, isBinary) => { if (isBinary) camBinary++ })
   send({ t: 'hello', app: 'e2e', version: 'test' })
-  // --- backup camera: shift to R -> small off-screen frames stream to the app; out of R -> off
+  // --- backup camera (off by default since it flashes the screen on D3D11): nothing in R
+  // until the app turns it on; then shift to R -> small off-screen frames; out of R -> off
+  send({ t: 'gear', gear: 'R' })
+  await sleep(1200)
+  check('backup camera off by default (no frames in R)', camFrames.length === 0, `${camFrames.length} frames`)
+  send({ t: 'gear', gear: 'N' })
+  send({ t: 'settings', camera: { backup: true } })
+  await sleep(300)
   send({ t: 'gear', gear: 'R' })
   check('backup camera streams in R', await until('cam', () => camFrames.length >= 3, 6000), `${camFrames.length} frames`)
   {
@@ -417,6 +424,12 @@ try {
     events.length = 0
     playerInput('shifter N')
     check('H-shifter moved under FSD: put back in D, FSD stays on', await until('gear back', () => st().gear === 'D' && events.some((e) => e.kind === 'notice'), 4000) && st().autopilot.engaged,
+      `gear ${st().gear}, engaged ${st().autopilot.engaged}, ` + events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    // P while FSD drives: pull over (FSD stays on until it's parked; a takeover cancels)
+    await until('moving again', () => st().speed > 3, 8000)
+    events.length = 0
+    send({ t: 'gear', gear: 'P' })
+    check('P while FSD drives: pulls over instead of slamming into Park', await until('pullOver', () => events.some((e) => e.kind === 'pullOver'), 3000) && st().autopilot.engaged && st().gear !== 'P',
       `gear ${st().gear}, engaged ${st().autopilot.engaged}, ` + events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
     playerInput('')
     send({ t: 'autopilot', mode: 'off' })

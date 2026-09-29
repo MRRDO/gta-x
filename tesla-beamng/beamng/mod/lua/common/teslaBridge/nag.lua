@@ -15,6 +15,19 @@ M.MAX_STRIKES = MAX_STRIKES
 local CAMERA_GRACE = { sloth = 5, chill = 5, standard = 4, hurry = 3, madmax = 2.5 }
 -- with no camera: seconds between required wheel nudges
 local NUDGE_INTERVAL = { sloth = 45, chill = 45, standard = 30, hurry = 25, madmax = 20 }
+-- Driver monitoring modes (setting nagMode): 'off' | 'camera' (the iPad cabin camera
+-- watches your eyes) | 'wheel' (a hands-on-wheel nudge every once in a while) | 'auto'
+-- (camera while it reports, else wheel). In wheel mode the interval depends on the road:
+local function wheelFactor(ctx)
+  local v, lim = ctx and ctx.v or 0, ctx and ctx.limit
+  if v < 8.9 then return 2.0 end                                    -- under ~20 mph: traffic, lots
+  if (lim and lim >= 22.3) or (ctx and ctx.highway) then return 1.6 end -- freeway / 50+ mph roads
+  if v >= 11 and v <= 20.2 then return 0.7 end                      -- city streets, 25-45 mph
+  return 1.0
+end
+M.wheelFactor = wheelFactor
+local CAMERA_LOST = 5 -- s without camera reports in camera mode -> fall back to the wheel
+
 local STEP = 5        -- seconds per escalation level
 local FORCE_AFTER = 5 -- seconds at level 3 before the car stops itself
 
@@ -25,13 +38,15 @@ function M.new()
   return setmetatable({
     level = 0, reason = nil, strikes = 0, lockedOut = false,
     badSince = nil, lastNudge = 0, level3Since = nil, forcing = false,
-    enabled = true,
+    enabled = true, mode = 'auto', jitter = 1, rng = math.random,
+    active = 'wheel', interval = nil, cameraLost = false,
   }, Nag)
 end
 
 -- A wheel nudge / "I'm here" tap. Clears levels 1-2 (not 3: you must take over).
 function Nag:nudge(t)
   self.lastNudge = t
+  self.jitter = 0.8 + 0.4 * self.rng() -- "every once in a while", not a metronome
   if self.level < 3 then self.level, self.reason, self.badSince = 0, nil, nil end
 end
 
@@ -48,16 +63,29 @@ end
 
 -- att = { state = 'ok'|'phone'|'eyesOff'|'unknown', t = time of the report }
 -- Returns { level, reason, events = {...}, forceStop = bool, strike = bool }
-function Nag:tick(t, engaged, profile, att)
+function Nag:tick(t, engaged, profile, att, ctx)
   local out = { events = {} }
-  if not engaged or not self.enabled then
+  if not engaged or not self.enabled or self.mode == 'off' then
     self.badSince, self.level3Since, self.forcing = nil, nil, false
     if self.level ~= 0 then self.level, self.reason = 0, nil; out.events[#out.events + 1] = { kind = 'nag', level = 0 } end
     self.lastNudge = t
     out.level = 0
     return out
   end
-  local camera = att and att.state and att.state ~= 'unknown' and (t - (att.t or -1e9)) < 3
+  local fresh = att and att.state and att.state ~= 'unknown' and (t - (att.t or -1e9)) < 3
+  local camera = fresh
+  if self.mode == 'wheel' then camera = false end
+  if self.mode == 'camera' then
+    -- camera only; if it stops reporting for a while, fall back to the wheel and say so
+    local lost = not fresh and (t - (att and att.t or -1e9)) > CAMERA_LOST
+    if lost ~= self.cameraLost then
+      self.cameraLost = lost
+      out.events[#out.events + 1] = { kind = 'monitoring', state = lost and 'cameraUnavailable' or 'camera' }
+      if lost then self.lastNudge = t end
+    end
+    camera = fresh
+  end
+  self.active = camera and 'camera' or 'wheel'
   local target, reason = 0, nil
   if camera then
     if att.state == 'phone' or att.state == 'eyesOff' then
@@ -75,7 +103,9 @@ function Nag:tick(t, engaged, profile, att)
     if att.state == 'ok' then self.lastNudge = t end
   else
     self.badSince = nil
-    local interval = NUDGE_INTERVAL[profile] or 30
+    local interval = (NUDGE_INTERVAL[profile] or 30) * (self.jitter or 1)
+    if self.mode == 'wheel' or self.mode == 'camera' then interval = interval * wheelFactor(ctx) end
+    self.interval = interval
     local since = t - self.lastNudge
     if since > interval then
       target = math.min(3, 1 + math.floor((since - interval) / (STEP * 2)))
@@ -113,7 +143,9 @@ function Nag:strike()
 end
 
 function Nag:status()
-  return { level = self.level, reason = self.reason, strikes = self.strikes, maxStrikes = MAX_STRIKES, lockedOut = self.lockedOut }
+  return { level = self.level, reason = self.reason, strikes = self.strikes, maxStrikes = MAX_STRIKES, lockedOut = self.lockedOut,
+    mode = (not self.enabled) and 'off' or self.mode, active = self.active,
+    interval = self.active == 'wheel' and self.interval and math.floor(self.interval + 0.5) or nil }
 end
 
 return M

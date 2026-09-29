@@ -78,6 +78,7 @@ function M.new(opts)
     wiggleUntil = -1, phantom = nil, lastOverhead = false,
     arrivalMemory = {},
   }, Planner)
+  self.nag.rng = self.rng
   self.degree = {}
   if g then
     for id, adj in pairs(g.adj) do
@@ -103,7 +104,9 @@ function Planner:configure(s)
       self.settings[k] = v
     end
   end
-  self.nag.enabled = self.settings.nags ~= false
+  self.nag.enabled = self.settings.nags ~= false and self.settings.nagMode ~= 'off'
+  local nm = self.settings.nagMode
+  self.nag.mode = (nm == 'camera' or nm == 'wheel' or nm == 'off') and nm or 'auto'
 end
 
 function Planner:prof() return P.PROFILES[self.profile] or P.PROFILES.standard end
@@ -454,6 +457,12 @@ function Planner:disengage(reason, detail)
   self.activity = 'drive'
   self.maneuver = nil
   self.lastDisengage = { reason = reason, time = self.t }
+  if self.pullingOver then
+    -- taken over mid pull-over: keep the original trip (arrived: it's done)
+    local sv = self.pullingOver.saved
+    self.pullingOver = nil
+    if reason ~= 'arrived' then self.dest, self.stops, self.arrival, self.path = sv.dest, sv.stops, sv.arrival, nil end
+  end
   self.nag:onDisengage()
   self:emit('disengage', { reason = reason, detail = detail })
 end
@@ -585,14 +594,14 @@ end
 -- Driver asked to go left/right and there's no lane that way: turn at the next junction
 -- that has a road that way (far enough ahead to do it calmly), then carry on to the
 -- destination (or keep following the road).
-function Planner:turnAtNext(dir, sCar, v)
+function Planner:turnAtNext(dir, sCar, v, maxAhead, quiet)
   local path, g = self.path, self.graph
   if not path or not g then return false end
   local minAhead = max(25, v * 2.5)
   for i = 2, #path.pts do
     local p = path.pts[i]
     local ahead = path.s[i] - sCar
-    if ahead > 400 then break end
+    if ahead > (maxAhead or 400) then break end
     if p.node and ahead > minAhead and (self.degree[p.node] or 0) >= 3 then
       local prev = path.pts[i - 1]
       local hx, hy = p.x - prev.x, p.y - prev.y
@@ -629,8 +638,25 @@ function Planner:turnAtNext(dir, sCar, v)
       end
     end
   end
-  self:emit('turnRequest', { dir = dir, none = true })
+  if not quiet then self:emit('turnRequest', { dir = dir, none = true }) end
   return false
+end
+
+-- P pressed while FSD drives: pull over to the side of the road a little ahead, stop, P.
+-- Grabbing the wheel, the brake or the accelerator cancels it (normal takeover).
+function Planner:pullOverNow(ego)
+  if self.mode == 'off' or not self.path then return false end
+  local path = self.path
+  local pr = P.project(path, ego.x, ego.y)
+  if not pr then return false end
+  local v = max(0, ego.v or 0)
+  local sAt = min(path.s[#path.s] - 1, pr.s + max(35, v * 4))
+  local qx, qy, qz = P.pointAt(path, sAt, pr.i)
+  self.pullingOver = { saved = { dest = self.dest, stops = self.stops, arrival = self.arrival } }
+  self.dest, self.stops, self.arrival, self.turnVia, self.chosenSpot = { qx, qy, qz or 0 }, nil, 'Pull Over', nil, nil
+  self.replanNow = true
+  self:emit('pullOver', { dist = floor(sAt - pr.s) })
+  return true
 end
 
 -- Driver's turn-signal stalk while engaged: lane change that way.
@@ -778,7 +804,9 @@ function Planner:tick(snap)
   local out = { commands = {} }
 
   -- supervision
-  local nagOut = self.nag:tick(t, self.mode ~= 'off' and self.mode ~= 'tacc' and self.activity ~= 'summon', self.profile, ego.attention)
+  local lim = self.status and self.status.speedLimit
+  local nagOut = self.nag:tick(t, self.mode ~= 'off' and self.mode ~= 'tacc' and self.activity ~= 'summon', self.profile, ego.attention,
+    { v = ego.v or 0, limit = lim, highway = self.onHighway })
   for _, ev in ipairs(nagOut.events) do self:emit(ev.kind, ev) end
   if ego.handsNudgeT and ego.handsNudgeT > (self.lastNudgeSeen or -1) then
     self.lastNudgeSeen = ego.handsNudgeT
@@ -813,6 +841,7 @@ function Planner:tick(snap)
   local st = self.status
   st.remaining = (not path.openEnded) and remaining or nil
   st.speedLimit = path.limit[pr.i]
+  self.onHighway = ((path.pts[pr.i].r or 0) >= 9) or nil -- wide multi-lane road
 
   if self.turnVia and (ego.x - self.turnVia.x) ^ 2 + (ego.y - self.turnVia.y) ^ 2 < 12 * 12 then
     self.turnVia = nil -- made the turn: later replans go straight to the destination
@@ -1188,9 +1217,19 @@ function Planner:tick(snap)
     maxSpeed = maxSpeed, wiggle = wiggle or nil,
     urgent = (self.urgentUntil and t < self.urgentUntil) or nil,
     mode = self.mode,
+    maneuver = self.pullingOver and 'pullOver' or nil,
   }
   st.maxSpeed = maxSpeed
   return self:finish(out)
+end
+
+-- someone on foot (a small, slow road user) within r m of a point
+function Planner:pedestrianNear(x, y, cars, r)
+  for _, c in ipairs(cars or {}) do
+    local small = (c.w or 2) < 1.2 and (c.l or 4) < 1.5
+    if small and abs(c.v or 0) < 3 and (c.x - x) ^ 2 + (c.y - y) ^ 2 < r * r then return true end
+  end
+  return false
 end
 
 -- the junction a sign/light guards (cached)
@@ -1340,6 +1379,17 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
     self.redWait[sg.id] = nil
   end
 
+  -- a signal in a stop state ('basicstop') with no stop sign near it is a painted line or a
+  -- crosswalk: Quentin's rule is no full stop there, only for a pedestrian in the way
+  if stt == 'stop' and sg.signNear == false then
+    control.kind, control.red = 'crosswalk', false
+    if self:pedestrianNear(sg.x, sg.y, cars, 7) then
+      control.red = true
+      return s, control, 'pedestrian'
+    end
+    return nil, control, waitingFor
+  end
+
   -- stop signs, and signals showing an all-way stop (flashing red / stop state)
   if sg.kind == 'stop' or stt == 'stop' then
     control.kind = 'stop'
@@ -1465,12 +1515,16 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   end
   if not want and lane.k > minN - 1 then want, reason = minN - 1, 'merge' end
   if not want and self.driverLaneRequest and t - self.driverLaneRequest.t < 1 then
-    local d = self.driverLaneRequest.dir == 'left' and 1 or -1
+    local dir = self.driverLaneRequest.dir
+    local d = dir == 'left' and 1 or -1
     local k = lane.k + d
-    if k >= 0 and k <= minN - 1 then want, reason = k, 'driver'
-    elseif fsd then
+    local routeTurnsThatWay = nextTurn and nextTurn.dir == dir and nextTurn.s - sCar < 200
+    if fsd and not routeTurnsThatWay and self:turnAtNext(dir, sCar, v, 150, true) then
+      -- the turn signal means "turn there": a junction with a road that way coming up
+    elseif k >= 0 and k <= minN - 1 then want, reason = k, 'driver'
+    elseif fsd and not routeTurnsThatWay then
       -- no lane that way (and never into oncoming traffic): take the next turn that way
-      self:turnAtNext(self.driverLaneRequest.dir, sCar, v)
+      self:turnAtNext(dir, sCar, v)
     end
     self.driverLaneRequest = nil
   end

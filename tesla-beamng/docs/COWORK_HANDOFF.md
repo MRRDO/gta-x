@@ -94,9 +94,14 @@ If something fails:
    - **centering spring off**
    - force feedback 100%
 3. **BeamNG → Options → Controls → the G29:**
-   - force feedback **on** for steering
+   - force feedback **on** for steering, strength at least the default (the FSD spring
+     uses the game's FFB limit; if the wheel feels weak under FSD, raise it, or set
+     "wheel force" above 1 on the test page)
    - steering lock 1:1
    - pedals on separate axes
+   - **paddles = turn signals only:** in Bindings, remove *Shift up* / *Shift down* from the
+     two paddles and bind them to *Left turn signal* / *Right turn signal*. Under FSD a
+     signal asks for the turn at the junction ahead (or a lane change); gears never change.
 4. Start BeamNG → **West Coast USA** → any car. Then double-click **Tesla Bridge** on the
    desktop. It opens:
    - the relay window, with the QR code
