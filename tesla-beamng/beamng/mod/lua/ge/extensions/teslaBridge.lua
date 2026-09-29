@@ -62,6 +62,7 @@ local safetySettings = {}
 local safety = Sf.new()
 local sentMode = 'off'
 local plannerStatus = {}
+local spotsSentFor = nil
 local safetyStatus = {}
 local lastAssist = nil
 local attention = nil        -- { state, t } from the app's cabin camera
@@ -168,6 +169,8 @@ local function flush()
 end
 
 local handleCommand -- forward
+local parkingSpotsMsg -- forward
+local autoShift -- forward
 
 -- BeamNG 0.39's plain 'socket' module is a stripped copy with no bind/tcp; the game's own
 -- code loads the full LuaSocket as 'socket.socket'. Take the first one that can listen.
@@ -340,7 +343,25 @@ local function findSignals()
       end
     end
   end
-  logI(string.format('signals: %d from traffic system, %d stop-sign props', found.ts or 0, found.props or 0))
+  -- traffic-system "stop" points with no stop-sign prop nearby are crosswalks / painted lines,
+  -- not stop signs (Quentin's rule: only real stop signs). Kept when the level has no props
+  -- at all (we couldn't tell the real ones apart).
+  local dropped = 0
+  if (found.props or 0) > 0 then
+    local keep = {}
+    for _, sg in ipairs(signals) do
+      local ok = true
+      if sg.kind == 'stop' and not sg.prop then
+        ok = false
+        for _, pp in ipairs(signals) do
+          if pp.prop and (pp.x - sg.x) ^ 2 + (pp.y - sg.y) ^ 2 < 20 * 20 then ok = true; break end
+        end
+      end
+      if ok then keep[#keep + 1] = sg else dropped = dropped + 1 end
+    end
+    signals = keep
+  end
+  logI(string.format('signals: %d from traffic system, %d stop-sign props, %d sign-less stops dropped', found.ts or 0, found.props or 0, dropped))
 end
 
 local function findParking()
@@ -665,6 +686,15 @@ local function applyPlannerOut(veh, out)
   for _, cmd in ipairs(out.commands or {}) do cmd.fromPlanner = true; toVehicle(veh, 'command', cmd) end
   if out.route then send(out.route) end
   plannerStatus = out.status or plannerStatus
+  -- approaching the destination: send the parking spots around it once (the app shows them
+  -- when "show parking spots" is on; tapping one sends { t = 'autopark', spot = id })
+  if planner.dest and plannerStatus.remaining and plannerStatus.remaining < 200 then
+    local key = math.floor(planner.dest[1]) .. ',' .. math.floor(planner.dest[2])
+    if spotsSentFor ~= key then
+      spotsSentFor = key
+      pcall(function() send(parkingSpotsMsg(planner.dest[1], planner.dest[2], 80)) end)
+    end
+  end
   syncVehicleMode(veh)
   if out.plan and planner.mode ~= 'off' then
     -- round for a smaller message
@@ -735,6 +765,47 @@ local function vehicleInfo(veh)
   return { id = veh:getID(), name = name, model = jb }
 end
 
+-- Red/blue alert card for the app (crash, take over now, attention).
+--  crash: the car's damage jumps by > 1500 within a second (a real hit, not a scrape); stays
+--         until the car is repaired/reset. FSD lets go and the hazards go on.
+--  takeover: FSD over 80 mph where the limit is under 55.
+--  attention: the nag at level 2+.
+local crash = { hist = {}, active = nil }
+local function damageOf(vid)
+  local mo = map and map.objects and map.objects[vid]
+  return mo and tonumber(mo.damage) or nil
+end
+
+local function computeAlert(vid, st, ps, nag)
+  local dmg = damageOf(vid)
+  if dmg then
+    local h = crash.hist
+    h[#h + 1] = { t = realTime, d = dmg }
+    while #h > 1 and realTime - h[1].t > 1 do table.remove(h, 1) end
+    if crash.active and dmg < math.max(50, crash.active.base * 0.5) then crash.active = nil end -- repaired / reset
+    if not crash.active and dmg - h[1].d > 1500 then
+      crash.active = { t = realTime, base = h[1].d + 1 }
+      relayEvent({ kind = 'collision', detail = string.format('damage +%.0f', dmg - h[1].d) })
+      local veh = vehicleById(vid)
+      if planner and planner.mode ~= 'off' then
+        planner:disengage('error', 'collision')
+        if veh then syncVehicleMode(veh) end
+      end
+      if veh then toVehicle(veh, 'command', { t = 'signal', dir = 'hazard' }) end
+    end
+  end
+  if crash.active then return { kind = 'crash', message = 'Pull over immediately', level = 3 } end
+  local engaged = st.autopilot and st.autopilot.engaged
+  local lim = ps.speedLimit
+  if engaged and planner and planner.mode == 'fsd' and (st.speed or 0) > 35.8 and lim and lim < 24.6 then
+    return { kind = 'takeover', message = 'Take over immediately', level = 3 }
+  end
+  if engaged and (nag.level or 0) >= 2 then
+    return { kind = 'attention', message = (nag.level or 0) >= 3 and 'Take over immediately' or 'Pay attention to the road', level = nag.level }
+  end
+  return nil
+end
+
 -- Called from the vehicle extension (vehicle VM) at 20 Hz.
 function M.onVehicleState(vid, json)
   lastVehState[vid] = realTime
@@ -773,7 +844,8 @@ function M.onVehicleState(vid, json)
     speedLimit = ps.speedLimit and num(ps.speedLimit) or nil,
     setSpeed = ps.setSpeed and num(ps.setSpeed) or nil,
     leadGap = ps.leadGap and num(ps.leadGap, 1) or nil,
-    control = ps.control and { kind = ps.control.kind, dist = num(ps.control.dist, 1), red = ps.control.red, state = ps.control.state } or nil,
+    control = ps.control and { kind = ps.control.kind, dist = num(ps.control.dist, 1), red = ps.control.red, state = ps.control.state,
+      id = ps.control.id, dot = ps.control.dot and num(ps.control.dot, 2) or nil, lat = ps.control.lat and num(ps.control.lat, 1) or nil } or nil,
     nextTurn = ps.nextTurn and { dir = ps.nextTurn.dir, dist = num(ps.nextTurn.dist, 0), road = ps.nextTurn.road } or nil,
     remaining = ps.remaining and num(ps.remaining, 0) or nil,
     lane = ps.lane,
@@ -791,6 +863,8 @@ function M.onVehicleState(vid, json)
     steerGain = va.steerGain, steerSign = va.steerSign,
   }
   st.safety = safetyStatus
+  local okA, alert = pcall(computeAlert, vid, st, ps, nag)
+  st.autopilot.alert = okA and alert or nil
   -- the car reports once per frame at most, so below 20 fps the state rate = the game's fps
   st.fps = num(fpsAvg, 0)
   send(st, true)
@@ -824,6 +898,14 @@ function M.onVehicleEvent(vid, json)
     send({ t = 'debug', ge = M.diagnostics(), vehicle = vehDiag })
   elseif ev.kind == 'nudge' then
     nudgeT = gameTime
+  elseif ev.kind == 'brakeInPark' then
+    if veh then pcall(autoShift, veh) end
+  elseif ev.kind == 'driverSignal' then
+    -- the driver flicked the turn signal (wheel paddles / stalk) while FSD or Autosteer
+    -- drives: change lanes that way, or turn at the next junction if there's no lane
+    if planner and (planner.mode == 'fsd' or planner.mode == 'autosteer') and (ev.dir == 'left' or ev.dir == 'right') then
+      planner:requestLaneChange(ev.dir)
+    end
   else
     send({ t = 'event', kind = ev.kind or 'error', detail = ev.detail })
   end
@@ -832,6 +914,38 @@ end
 ---------------------------------------------------------------------------
 -- commands
 ---------------------------------------------------------------------------
+
+-- Parking spots near a point for the app's map ("show parking spots"; tap one to Autopark).
+parkingSpotsMsg = function(x, y, radius)
+  local list = planner and planner:spotsNear(x, y, radius, trafficList()) or {}
+  local spots = {}
+  for _, sp in ipairs(list) do
+    spots[#spots + 1] = { id = sp.id, pos = { num(sp.x), num(sp.y), num(sp.z) }, dir = { num(sp.dx or 0, 3), num(sp.dy or 1, 3) }, free = sp.free }
+  end
+  return { t = 'parkingSpots', near = { num(x), num(y) }, spots = spots }
+end
+
+-- Auto Shift out of Park (setting autoShift): the driver presses the brake in P and the car
+-- picks D or R itself: a wall, curb or car right in front (and room behind) -> R, else D.
+autoShift = function(veh)
+  if not plannerSettings.autoShift or not planner or planner.mode ~= 'off' then return end
+  local ego = egoSnapshot(veh)
+  local rays = sampleRays(ego)
+  local front, rear = rays.front, rays.rear -- metres to a wall/curb, or nil
+  local carAhead, carBehind = false, false
+  for _, c in ipairs(trafficList()) do
+    local dx, dy = c.x - ego.x, c.y - ego.y
+    local along = dx * ego.hx + dy * ego.hy
+    local side = math.abs(-dx * ego.hy + dy * ego.hx)
+    if side < 1.8 and along > 0 and along < 5.5 then carAhead = true end
+    if side < 1.8 and along < 0 and along > -5.5 then carBehind = true end
+  end
+  local blockedAhead = (front and front < 2.0) or carAhead
+  local blockedBehind = (rear and rear < 2.0) or carBehind
+  local gear = (blockedAhead and not blockedBehind) and 'R' or 'D'
+  toVehicle(veh, 'command', { t = 'gear', gear = gear })
+  relayEvent({ kind = 'autoShift', detail = gear })
+end
 
 local function engageFromApp(mode, profile)
   local veh = playerVehicle()
@@ -1014,6 +1128,7 @@ handleCommand = function(msg)
       elseif c.quality == 'high' then cam.settings.width, cam.settings.height = 640, 360 end
     end
     if planner then planner:configure(plannerSettings) end
+    if msg.swerveAssist ~= nil and veh then toVehicle(veh, 'command', { t = 'swerveAssist', on = msg.swerveAssist and true or false }) end
     if type(msg.safety) == 'table' then
       for k, v in pairs(msg.safety) do safetySettings[k] = v end
       safety:configure(safetySettings)
@@ -1029,9 +1144,27 @@ handleCommand = function(msg)
     syncVehicleMode(veh)
   elseif t == 'autopark' then
     if not planner or not veh then return end
-    local ok, err = planner:autopark(egoSnapshot(veh), trafficList())
-    if not ok then event('error', 'autopark: ' .. tostring(err)) end
+    local ego, cars = egoSnapshot(veh), trafficList()
+    if msg.spot then
+      -- a spot tapped on the map
+      local ok, err, how = planner:parkAtSpot(tonumber(msg.spot), ego, cars)
+      if not ok then event('error', 'autopark: ' .. tostring(err)); return end
+      if how == 'route' and planner.mode == 'off' then
+        local okP = planner:planPath(ego, cars)
+        if okP then send(planner:routeMessage()); planner.routeDirty = false end
+      end
+      relayEvent({ kind = 'autopark', detail = how == 'now' and 'parking now' or 'parking at destination' })
+    else
+      local ok, err = planner:autopark(ego, cars)
+      if not ok then event('error', 'autopark: ' .. tostring(err)) end
+    end
     syncVehicleMode(veh)
+  elseif t == 'requestParkingSpots' then
+    if not planner then return end
+    local ego = veh and egoSnapshot(veh)
+    local near = type(msg.near) == 'table' and msg.near or (ego and { ego.x, ego.y }) or nil
+    if not near then return end
+    send(parkingSpotsMsg(near[1], near[2], tonumber(msg.radius) or 80))
   elseif t == 'camera' then
     -- { on = true } shows the backup camera for 15 s (a preview button); { inline = true } comes
     -- from the relay when it can't read the frames from disk itself
@@ -1185,6 +1318,9 @@ function M.diagnostics()
     if #raws > 12 and #types > 12 then break end
   end
   d.signalStates = { raw = { unpack(raws, 1, 12) }, types = { unpack(types, 1, 12) } }
+  -- which way BeamNG's signal dir points, learned from this level (1 = travel direction,
+  -- -1 = facing the driver, nil = not enough signals to tell)
+  if planner then d.signalStates.dirConvention = planner:signalDirConvention() end
   if planner then d.nag = planner.nag:status() end
   return d
 end

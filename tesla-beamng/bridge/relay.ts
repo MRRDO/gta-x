@@ -304,6 +304,9 @@ function normalize_(msg: any): any {
     case 'route':
       msg.points = asArray(msg.points)
       return msg
+    case 'parkingSpots':
+      msg.spots = asArray(msg.spots)
+      return msg
     default:
       return msg
   }

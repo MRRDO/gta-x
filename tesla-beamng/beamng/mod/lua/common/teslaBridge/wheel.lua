@@ -23,7 +23,7 @@ function M.new(opts)
     confirmed = false,         -- sign proven by the wheel converging
     flips = 0,
     disabled = false,
-    stiffness = opts.stiffness or 0.12, -- raw error that asks for full force
+    stiffness = opts.stiffness or 0.09, -- raw error that asks for full force
     damping = opts.damping or 0.2,      -- seconds (Kd / Kp)
     ramp = 0, vel = 0, lastPos = nil,
     wrongT = 0, goodT = 0, gripT = 0,
@@ -76,13 +76,17 @@ function Spring:update(dt, target, pos, fcap, strength)
     end
   end
 
-  -- grip: far from target, force saturated, not closing in -> the driver is holding it
-  if self.ramp >= 1 and abs(e) > 0.1 and abs(f) > 0.6 * cap and not (converging and abs(self.vel) > 0.1) then
+  -- grip: far from target, force saturated, not closing in -> the driver is holding it.
+  -- Also resisting: the spring pushes hard but the wheel stays still (held against FSD);
+  -- a wheel that's just lagging in a quick turn is moving toward the target, so it's not that.
+  local held = abs(e) > 0.1 and abs(f) > 0.6 * cap and not (converging and abs(self.vel) > 0.1)
+  local resisting = abs(e) > 0.06 and abs(f) > 0.5 * cap and abs(self.vel) < 0.05
+  if self.ramp >= 1 and (held or resisting) then
     self.gripT = self.gripT + dt
   else
     self.gripT = max(0, self.gripT - dt * 2)
   end
-  return self.sign * f, self.gripT > 0.35, e
+  return self.sign * f, self.gripT > (resisting and not held and 0.45 or 0.35), e
 end
 
 M.Spring = Spring

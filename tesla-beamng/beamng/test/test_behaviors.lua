@@ -244,6 +244,27 @@ scenario('backInParking', function()
   check(w.ego.gear == 'P' and w.planner.mode == 'off', 'in Park, FSD off')
 end)
 
+-- "Street" arrival: find the free gap between two parked cars and parallel park in it
+scenario('parallelPark', function()
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 } })
+  local curbY = -(5 - 1.1)
+  -- parked cars at the curb: one blocks the spot nearest the destination, a gap behind it
+  for _, px in ipairs({ 286, 266 }) do
+    w:addCar({ id = px, pts = { { x = px, y = curbY }, { x = px + 1, y = curbY } }, speedFn = function() return 0 end, s0 = 0 })
+  end
+  w.planner:setRoute({ 300, -3, 0 }, nil, 'Street')
+  check(w:engage('fsd', 'standard'), 'engage for street parking')
+  w:run(150, function(ww) return ww:saw('arrived') ~= nil end)
+  local x, y = w:refPos()
+  check(w:saw('maneuver', function(e) return e.what == 'parallel' end) ~= nil, 'parallel parks')
+  check(x > 268 and x < 284, string.format('in the gap between the parked cars (x %.1f)', x))
+  check(math.abs(y - curbY) < 0.8, string.format('at the curb (y %.2f, curb %.2f)', y, curbY))
+  local psi = (w.ego.psi + math.pi) % (2 * math.pi) - math.pi
+  check(math.abs(psi) < math.rad(10), 'parallel to the road, heading ' .. string.format('%.1f', math.deg(psi)))
+  check(not w.collided, 'no collision while parallel parking')
+  check(w.ego.gear == 'P' and w.planner.mode == 'off', 'in Park, FSD off (street)')
+end)
+
 scenario('backOut', function()
   local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 100, y = 9 - 1.4, psi = math.pi / 2, v = 0, gear = 'P' } })
   w.planner:setRoute({ 500, LANE1, 0 }, nil, 'Driveway')
@@ -313,6 +334,31 @@ scenario('nag', function()
   check(w3:saw('lockout') ~= nil, 'five strikes -> locked out')
   local ok = w3:engage('fsd', 'standard')
   check(not ok, 'cannot engage FSD when locked out')
+end)
+
+-- unresponsive driver: pull over to the curb (default), or with the setting on, drive to a
+-- free parking spot nearby and park; either way P, hazards, a strike, FSD off
+scenario('unresponsive', function()
+  local w = W.new({ nodes = straight(0, 20000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 15 } })
+  w:engage('fsd', 'standard')
+  w.attention = { state = 'phone', t = 0 }
+  w:run(90, function(ww) ww.attention.t = ww.t; return ww:saw('strike') ~= nil end)
+  local _, y = w:refPos()
+  check(w:saw('unresponsive', function(e) return e.action == 'pullOver' end) ~= nil, 'unresponsive: starts pulling over')
+  check(y < LANE1 - 1.0, string.format('pulled over toward the curb (y %.2f, lane %.2f)', y, LANE1))
+  check(y > -5 + 1.3, string.format('...without leaving the road (y %.2f)', y))
+  check(w:saw('strike') ~= nil and w.planner.mode == 'off' and w.ego.v < 0.5, 'stopped, strike, FSD off')
+
+  local w2 = W.new({ nodes = straight(0, 20000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 15 },
+    parking = { { x = 420, y = 9, z = 0, dx = 0, dy = 1 } } })
+  w2.planner:configure({ unresponsive = 'park' })
+  w2:engage('fsd', 'standard')
+  w2.attention = { state = 'phone', t = 0 }
+  w2:run(160, function(ww) ww.attention.t = ww.t; return ww:saw('strike') ~= nil end)
+  local x2, y2 = w2:refPos()
+  check(w2:saw('unresponsive', function(e) return e.action == 'park' end) ~= nil, 'unresponsive + park setting: heads for the parking spot')
+  check(math.sqrt((x2 - 420) ^ 2 + (y2 - 9) ^ 2) < 2.5, string.format('parked in the spot (%.1f, %.1f)', x2, y2))
+  check(w2:saw('strike') ~= nil and w2.planner.mode == 'off', 'parked: strike, FSD off')
 end)
 
 scenario('aeb', function()
@@ -385,6 +431,8 @@ scenario('farSideSignal', function()
     signals = {
       { id = 'ours', x = 141, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return 'green' end },
       { id = 'theirs', x = 159, y = 7, kind = 'signal', dirx = -1, diry = 0, get = function() return 'red' end },
+      { id = 'north', x = 157, y = -9, kind = 'signal', dirx = 0, diry = 1, get = function() return 'red' end },
+      { id = 'south', x = 143, y = 9, kind = 'signal', dirx = 0, diry = -1, get = function() return 'red' end },
     } })
   w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
   check(w:engage('fsd', 'standard'), 'engage (far-side signal)')
@@ -396,6 +444,23 @@ scenario('farSideSignal', function()
   end)
   check(minV > 2, 'does not stop in the junction for the far-side red (min ' .. string.format('%.1f', minV) .. ' m/s)')
   check(w:saw('arrived') ~= nil, 'arrives past the far-side red')
+  check(w.planner:signalDirConvention() == 1, 'learns that signal dir = travel direction (' .. tostring(w.planner:signalDirConvention()) .. ')')
+end)
+
+-- a stop-sign prop standing beside the cross street (props have no direction) is theirs, not ours
+scenario('crossStreetProp', function()
+  local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+    signals = { { id = 'theirStop', x = 156, y = -12, z = 0, kind = 'stop', prop = true } } })
+  w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  check(w:engage('fsd', 'standard'), 'engage (cross-street prop)')
+  local minV = 99
+  w:run(60, function(ww)
+    local x = ww:refPos()
+    if x > 110 and x < 160 then minV = math.min(minV, ww.ego.v) end
+    return ww:saw('arrived')
+  end)
+  check(minV > 2, 'does not stop for the cross street\'s stop sign (min ' .. string.format('%.1f', minV) .. ' m/s)')
+  check(w:saw('arrived') ~= nil, 'arrives (cross-street prop)')
 end)
 
 -- a signal whose state reads "stop" (stop-sign controller / flashing red): stop, then go
@@ -499,6 +564,33 @@ scenario('driverStalk', function()
   w:run(10, function(ww) local _, y = ww:refPos(); if math.abs(y - LEFT2) < 0.5 then reached = true end end)
   check(w:saw('laneChange', function(e) return e.reason == 'driver' end) ~= nil, 'turn-signal stalk starts a lane change')
   check(reached, 'reaches the left lane')
+end)
+
+-- paddle left on a one-lane road (no lane that way): turn left at the next junction instead,
+-- never into oncoming traffic; with a destination, carry on there afterwards
+scenario('paddleTurn', function()
+  local function run(withDest)
+    local w = W.new({ nodes = grid(3, 3, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 } })
+    if withDest then w.planner:setRoute({ 450, LANE1, 0 }, nil, 'Driveway') end
+    w:engage('fsd', 'standard')
+    w:run(3)
+    w.planner:requestLaneChange('left')
+    local maxY, turnedAt = -99, nil
+    w:run(90, function(ww)
+      local x, y = ww:refPos()
+      if y > maxY then maxY = y end
+      if not turnedAt and y > 20 then turnedAt = x end
+      if withDest then return ww:saw('arrived') end
+      return y > 60
+    end)
+    return w, maxY, turnedAt
+  end
+  local w, maxY, at = run(false)
+  check(w:saw('turnRequest', function(e) return not e.none end) ~= nil, 'no lane on the left: plans the next left turn')
+  check(maxY > 60 and at and math.abs(at - 150) < 15, 'turns left at the next junction (x ' .. tostring(at) .. ', y ' .. string.format('%.0f', maxY) .. ')')
+  local w2, maxY2 = run(true)
+  check(maxY2 > 20, 'with a destination: takes the left turn first (' .. string.format('%.0f', maxY2) .. ')')
+  check(w2:saw('arrived') ~= nil, '...then still gets to the destination')
 end)
 
 print(string.format('%d passed, %d failed', passes, failures))

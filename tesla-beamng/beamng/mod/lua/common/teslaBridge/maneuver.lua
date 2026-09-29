@@ -3,6 +3,7 @@
 --   backOut  - reverse out of a parking spot onto the road, ending aligned with traffic
 --   kTurn    - three-point turn to face the other way on a road
 --   backIn   - pull past a spot, then reverse into it (ends facing out)
+--   parallel - pull alongside past a curb gap, then reverse into it
 -- A maneuver is a list of segments { dir = 1 | -1, pts = {{x,y,z}...}, maxSpeed }.
 -- The planner drives them one by one: stop at the end of each, shift, go on.
 -- Pure Lua (tested in beamng/test/).
@@ -153,6 +154,33 @@ function M.backIn(spot, road, rmin)
   -- reverse: start moving along -road dir, finish moving into the spot (-out)
   local pts, k = feasibleBezier(q, -dx, -dy, spot, -ox, -oy, rmin)
   return q, { dir = -1, pts = pts, maxSpeed = 1.3, kind = 'backIn', curvature = k }
+end
+
+--- Parallel park into a curb spot (FSD's "Street" arrival).
+-- spot = { x, y, z (spot centre at the curb) }, road = { dx, dy (driving direction), off (m from
+-- the lane centre to the spot centre, to the right) }.
+-- Returns the stop point q (in the lane, past the spot) and the segments: reverse S-curve in,
+-- then a short pull forward to centre the car in the gap.
+function M.parallel(spot, road, rmin)
+  rmin = rmin or 6
+  local dx, dy = norm(road.dx, road.dy)
+  local rx, ry = dy, -dx -- right of the driving direction
+  local off = road.off or 2.5
+  local lane = { x = spot.x - rx * off, y = spot.y - ry * off, z = spot.z }
+  local deep = { x = spot.x - dx * 1.0, y = spot.y - dy * 1.0, z = spot.z } -- 1 m behind centre
+  local best, bestK, bestQ
+  for L = 7, 15 do
+    local q = { x = lane.x + dx * L, y = lane.y + dy * L, z = spot.z }
+    local pts, k = feasibleBezier(q, -dx, -dy, deep, -dx, -dy, rmin)
+    if not bestK or k < bestK then best, bestK, bestQ = pts, k, q end
+    if k <= 1 / rmin then break end
+  end
+  local fwd = {}
+  for d = 0, 4 do fwd[#fwd + 1] = { x = deep.x + dx * d * 0.25, y = deep.y + dy * d * 0.25, z = spot.z } end
+  return bestQ, {
+    { dir = -1, pts = best, maxSpeed = 1.2, kind = 'parallel', curvature = bestK },
+    { dir = 1, pts = fwd, maxSpeed = 0.6, kind = 'parallel' },
+  }
 end
 
 -- Length of a polyline.

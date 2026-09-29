@@ -229,5 +229,23 @@ do
   check(approx(q.x, 135, 0.5) and approx(q.y, -12, 0.5), 'parking path ends in the spot')
 end
 
+do
+  -- in-game bug: a 0.2 mi trip drove > 1 km. A destination between a local street (17 m away)
+  -- and a one-way highway (13 m away, reachable only far around) snapped to the highway.
+  local nodes = {}
+  for x = 0, 400, 100 do nodes['L' .. x] = { pos = { x = x, y = 0, z = 0 }, radius = 4, links = {} } end
+  for x = 0, 400, 100 do if x < 400 then nodes['L' .. x].links['L' .. (x + 100)] = { drivability = 1, oneWay = false } end end
+  for x = 0, 2000, 250 do nodes['H' .. x] = { pos = { x = x, y = 30, z = 0 }, radius = 8, links = {} } end
+  for x = 250, 2000, 250 do nodes['H' .. x].links['H' .. (x - 250)] = { drivability = 1, oneWay = true } end -- westbound only
+  nodes['L400'].links['F'] = { drivability = 1, oneWay = false }
+  nodes['F'] = { pos = { x = 2000, y = 0, z = 0 }, radius = 4, links = { H2000 = { drivability = 1, oneWay = false } } }
+  local g = P.buildGraph(nodes)
+  P.buildIndex(g)
+  local rt = P.route(g, { x = 0, y = 0, hx = 1, hy = 0 }, { x = 300, y = 17 })
+  local path = rt and P.buildPath(g, rt)
+  local len = path and path.s[#path.s] or 1e9
+  check(len < 450, string.format('destination between a street and a far-around highway: short route (%.0f m)', len))
+end
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

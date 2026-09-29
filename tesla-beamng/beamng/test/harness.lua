@@ -180,7 +180,25 @@ do
   local FFBID = (NO_WHEEL or HELPER_SIM) and -1 or 7
   local FFmax = 10
   V.hydros = { enableFFB = true, wheelFFBForceLimit = 2 }
-  if os.getenv('HARNESS_FFB_MODE') == 'config' then
+  if os.getenv('HARNESS_FFB_MODE') == '039' then
+    -- BeamNG 0.39: hydros exposes getFFBID()/getFFBConfig(); onFFBConfigChanged(cfg) binds the
+    -- device only while enableFFB is on; the sandbox blocks debug.setupvalue; and
+    -- obj:sendForceFeedback needs all five arguments (fewer: silently ignored)
+    local cfg = { steering = { FFBID = (NO_WHEEL or HELPER_SIM) and -1 or 7, ff_max_force = 10 } }
+    local bound = cfg.steering.FFBID
+    V.hydros.getFFBID = function() return bound end
+    V.hydros.getFFBConfig = function() return cfg end
+    V.hydros.onFFBConfigChanged = function(c)
+      cfg = c or cfg
+      bound = (V.hydros.enableFFB and cfg.steering and cfg.steering.FFBID) or -1
+    end
+    V.hydros.update = function()
+      WHEEL.fromGame = true
+      if bound >= 0 then V.obj:sendForceFeedback(bound, math.max(-10, math.min(10, -(4 + 1.2 * math.abs(player.v)) * WHEEL.p)), 0, 0, 0) end
+      WHEEL.fromGame = false
+    end
+    V.debug = setmetatable({ setupvalue = function() error('function not allowed by sandbox') end }, { __index = debug })
+  elseif os.getenv('HARNESS_FFB_MODE') == 'config' then
     -- a hydros that keeps the device id only inside its config table (no FFBID local):
     -- the mod has to use the config route (enableFFB=false + onFFBConfigChanged)
     local ffbConfig = { steering = { FFBID = NO_WHEEL and -1 or 7, ff_max_force = 10 } }
@@ -214,7 +232,10 @@ do
     getDirectionVectorXYZ = function() return math.cos(player.psi), math.sin(player.psi), 0 end,
     getVelocityXYZ = function() return math.cos(player.psi) * player.v, math.sin(player.psi) * player.v, 0 end,
     queueGameEngineLua = function(_, code) geQueue[#geQueue + 1] = code end,
-    sendForceFeedback = function(_, id, force) if id == 7 then WHEEL.force = WHEEL.fromGame and force * FFB_SIGN or force end end,
+    sendForceFeedback = function(_, id, force, damp, inertia, friction)
+      if os.getenv('HARNESS_FFB_MODE') == '039' and friction == nil then return end -- 0.39: 2-arg call does nothing
+      if id == 7 then WHEEL.force = WHEEL.fromGame and force * FFB_SIGN or force end
+    end,
   }
   -- obj methods are called with ':' so shift the arguments
   for k, f in pairs(V.obj) do
@@ -248,7 +269,12 @@ G.getPlayerVehicle = function() return playerObj end
 G.getAllVehicles = function() return { playerObj, leadObj } end
 G.getObjectByID = function(id) if id == player.id then return playerObj elseif id == lead.id then return leadObj end end
 G.getMissionFilename = function() return '/levels/harness_city/main.level.json' end
-G.map = { getMap = function() return { nodes = mapNodes } end }
+G.map = { getMap = function() return { nodes = mapNodes } end, objects = { [1001] = { damage = 0 } } }
+-- one parking spot beside the y=150 road (for the tap-to-park checks)
+gameplay_parking = { getParkingSpots = function()
+  return { objects = { { pos = { x = 75, y = 158, z = 0 }, dirVec = { x = 0, y = -1, z = 0 } } } }
+end }
+G.gameplay_parking = gameplay_parking -- the mod looks it up with rawget(_G, ...)
 G.core_trafficSignals = { getSignalsDict = function() return { instances = signalInstances } end }
 G.scenetree = { findClassObjects = function() return {} end, findObject = function() return nil end }
 G.jsonReadFile = function() return nil end
@@ -427,8 +453,25 @@ local function readCtrl(dt)
   f:close()
   if line == ctrlLast then return end
   ctrlLast = line
-  local what, val = line:match('^(%a+)%s+([%d%.]+)')
-  if what then hlog('player input: ' .. what .. ' ' .. val); V.input.event(what, tonumber(val), 0) end
+  local what, val = line:match('^(%a+)%s+(%-?[%d%.]+)')
+  if what == 'crash' then what = nil end
+  if what then hlog('player input: ' .. what .. ' ' .. val); V.input.event(what, tonumber(val), 0); return end
+  -- actions that don't go through input.event: a paddle bound to toggle_left_signal, an H-shifter
+  local act, arg = line:match('^(%a+)%s+(%a+)')
+  local dmg = line:match('^crash%s+(%d+)')
+  if dmg then
+    hlog('crash: damage +' .. dmg)
+    G.map.objects[1001].damage = G.map.objects[1001].damage + tonumber(dmg)
+  elseif line == 'repair' then
+    G.map.objects[1001].damage = 0
+  elseif act == 'paddle' then
+    hlog('player paddle: ' .. arg)
+    if arg == 'left' then V.electrics.toggle_left_signal() else V.electrics.toggle_right_signal() end
+  elseif act == 'shifter' then
+    hlog('player H-shifter: ' .. arg)
+    V.electrics.values.gear = arg
+    V.electrics.values.gearIndex = arg == 'N' and 0 or (arg == 'R' and -1 or 2)
+  end
 end
 
 local SCENARIO = os.getenv('HARNESS_SCENARIO')

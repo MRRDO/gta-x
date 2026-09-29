@@ -58,6 +58,7 @@ let camWs: WebSocket | null = null
 let camBinary = 0
 let camOff = 0
 const buttonPresses: number[] = []
+let parkingSpots: any = null
 
 async function connectApp(): Promise<WebSocket> {
   for (let i = 0; i < 60; i++) {
@@ -82,6 +83,7 @@ ws.on('message', (d) => {
   else if (m.t === 'cameras') camerasMsg = m
   else if (m.t === 'camera') { if (m.off) camOff++; else camFrames.push(m) }
   else if (m.t === 'wheelButton' && m.down) buttonPresses.push(m.button)
+  else if (m.t === 'parkingSpots') parkingSpots = m
 })
 const send = (m: unknown) => ws.send(JSON.stringify(m))
 // the app's cabin camera reports the driver's attention a few times a second
@@ -270,6 +272,10 @@ try {
   }
   if (process.env.HARNESS_NO_WHEEL !== '1') {
   check('wheel handed back to the game after disengage', await until('available', () => st().wheel?.status === 'available', 3000), st().wheel?.status)
+  // 0.39 bug: after a takeover the game's own force feedback stayed off (device id -1)
+  if (st().wheel?.gameId !== undefined) {
+    check('game force feedback is back on after the takeover', await until('gameFFB', () => (st().wheel?.gameId ?? -1) >= 0, 3000), JSON.stringify(st().wheel))
+  }
 
   // --- the driver grabs the wheel (harness does it 3 s into the third engagement)
   await sleep(500)
@@ -396,6 +402,93 @@ try {
     playerInput('brake 0.7')
     check('a new brake press still takes over', await until('brake takeover', () => events.some((e) => e.kind === 'disengage' && e.detail === 'brake'), 5000),
       events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('brake 0')
+  }
+
+  // --- wheel paddles (bound to the turn signals) and the H-shifter while FSD drives
+  {
+    send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
+    await until('fsd', () => st().autopilot.engaged, 4000)
+    await until('moving', () => st().speed > 4, 10000)
+    events.length = 0
+    playerInput('paddle left')
+    check('paddle (turn signal) asks FSD for a lane change or the next turn', await until('paddle', () => events.some((e) => (e.kind === 'laneChange' && /driver/.test(JSON.stringify(e))) || e.kind === 'turnRequest'), 5000),
+      events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    events.length = 0
+    playerInput('shifter N')
+    check('H-shifter moved under FSD: put back in D, FSD stays on', await until('gear back', () => st().gear === 'D' && events.some((e) => e.kind === 'notice'), 4000) && st().autopilot.engaged,
+      `gear ${st().gear}, engaged ${st().autopilot.engaged}, ` + events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('')
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off', () => !st().autopilot.engaged, 3000)
+  }
+
+  // --- parking spots on the map + tap one to park there
+  {
+    parkingSpots = null
+    send({ t: 'requestParkingSpots', near: [75, 150], radius: 60 })
+    check('parking spots near a point come back for the map', await until('spots', () => Array.isArray(parkingSpots?.spots) && parkingSpots.spots.length > 0, 3000), JSON.stringify(parkingSpots))
+    const spot = parkingSpots?.spots?.[0]
+    events.length = 0
+    route = null
+    send({ t: 'autopark', spot: spot?.id })
+    check('tapping a far spot makes it the destination (route to it)', await until('route to spot', () => events.some((e) => e.kind === 'autopark') && !!route && route.points.length > 1, 4000),
+      events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    send({ t: 'cancelRoute' })
+  }
+
+  // --- Auto Shift out of Park: press the brake in P, the car picks D (nothing in front)
+  {
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off', () => !st().autopilot.engaged, 3000)
+    await until('stopped', () => st().speed < 0.3, 15000)
+    send({ t: 'gear', gear: 'P' })
+    await until('P', () => st().gear === 'P', 3000)
+    send({ t: 'settings', autoShift: true })
+    await sleep(300)
+    events.length = 0
+    playerInput('brake 0.6')
+    check('Auto Shift: brake in Park picks a gear by itself', await until('autoshift', () => events.some((e) => e.kind === 'autoShift') && st().gear === 'D', 4000),
+      `gear ${st().gear} ` + events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('brake 0')
+    send({ t: 'settings', autoShift: false })
+  }
+
+  // --- a crash: damage jumps -> red alert "Pull over immediately", FSD lets go, hazards
+  {
+    send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
+    await until('fsd', () => st().autopilot.engaged, 4000)
+    await sleep(1500)
+    events.length = 0
+    playerInput('crash 3000')
+    check('crash: red alert, FSD off, hazards on', await until('crash', () => st().autopilot.alert?.kind === 'crash' && !st().autopilot.engaged && st().signal === 'hazard', 4000),
+      JSON.stringify(st().autopilot.alert) + ` engaged ${st().autopilot.engaged} signal ${st().signal}`)
+    playerInput('repair')
+    check('...and the alert clears once the car is repaired', await until('repaired', () => !st().autopilot.alert, 3000), JSON.stringify(st().autopilot.alert))
+    send({ t: 'signal', dir: 'none' })
+  }
+
+  // --- Swerve Assist while the driver drives: yank the wheel back and forth at ~50 mph
+  if (process.env.HARNESS_NO_WHEEL !== '1') {
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off', () => !st().autopilot.engaged, 3000)
+    send({ t: 'gear', gear: 'D' })
+    playerInput('throttle 1')
+    const fast = await until('50 mph', () => st().speed > 21.5, 30000)
+    events.length = 0
+    for (let k = 0; k < 8 && !events.some((e) => e.kind === 'swerveAssist'); k++) {
+      playerInput(`steering ${k % 2 ? -0.6 : 0.6}`)
+      await sleep(450)
+    }
+    check('Swerve Assist steps in when the driver swerves at speed', fast && await until('swerve', () => events.some((e) => e.kind === 'swerveAssist' && e.detail === 'stabilizing'), 3000),
+      `speed ${st().speed.toFixed(1)} ` + events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('steering 0')
+    await sleep(300)
+    playerInput('throttle 0')
+    check('...and hands the car back once it settles', await until('swerve done', () => events.some((e) => e.kind === 'swerveAssist' && e.detail === 'done'), 8000),
+      events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('brake 1')
+    await until('stopped', () => st().speed < 0.5, 20000)
     playerInput('brake 0')
   }
 

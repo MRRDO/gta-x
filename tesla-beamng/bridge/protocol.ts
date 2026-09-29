@@ -73,6 +73,10 @@ export type WheelState = {
   force: number // -1..1 of max
   ratio: number // steering input per raw wheel unit (learned)
   calibrated: boolean // motor direction confirmed (first turn of a session proves it)
+  /** Device id the game's own force feedback drives (>= 0 = normal game FFB is on; only while FSD isn't holding the wheel). */
+  gameId?: number
+  /** The physical wheel's rotation in degrees (G29: 900); the wheel is turned 1:1 with the car's steering wheel. */
+  rangeDeg?: number
 }
 
 export type AutopilotState = {
@@ -82,7 +86,7 @@ export type AutopilotState = {
   targetSpeed: number // m/s
   speedLimit: number | null // m/s at the car, from the road graph (or a class default)
   leadGap: number | null // m to the car ahead in our lane
-  control: { kind: 'stop' | 'signal'; dist: number; red: boolean; state?: 'red' | 'yellow' | 'green' | null } | null
+  control: { kind: 'stop' | 'signal'; dist: number; red: boolean; state?: 'red' | 'yellow' | 'green' | 'stop' | null; id?: string; dot?: number; lat?: number } | null // id, dot (signal dir . our heading), lat: debug
   nextTurn: { dir: 'left' | 'right' | 'straight'; dist: number; road: string } | null
   remaining: number | null // m to destination
   lastDisengage: { reason: DisengageReason; time: number } | null
@@ -103,6 +107,12 @@ export type AutopilotState = {
   weather?: { rain: number; fog: number } | null
   maneuver?: { kind: string; step: number; total: number; dir: 1 | -1 } | null
   nag?: NagState
+  /**
+   * Alert card: 'crash' (damage jump, FSD let go, hazards on: "Pull over immediately"),
+   * 'takeover' (FSD > 80 mph where the limit is < 55), 'attention' (nag level 2+).
+   * Red card + alarm for crash/takeover, blue for attention. Absent when there's nothing.
+   */
+  alert?: { kind: 'crash' | 'takeover' | 'attention'; message: string; level: number } | null
   /** Learned steering calibration, for debugging. */
   steerSign?: number
   steerGain?: number
@@ -136,6 +146,16 @@ export type Route = {
   parkingPin?: { pos: Vec3 }
 }
 
+/**
+ * Parking spots near a point: sent once when FSD gets within 200 m of the destination, and on
+ * { t: 'requestParkingSpots' }. Show them on the map; tapping one sends { t: 'autopark', spot: id }.
+ */
+export type ParkingSpots = {
+  t: 'parkingSpots'
+  near: [number, number]
+  spots: { id: number; pos: Vec3; dir: [number, number]; free: boolean }[]
+}
+
 /** Relay -> app when the minimap image arrives. */
 export type Minimap = { t: 'minimap'; url: string; offset?: number[]; size?: number[] }
 
@@ -150,6 +170,16 @@ export type EventKind =
   | 'fcw' | 'aeb' | 'blindSpotWarning' | 'laneDeparture' | 'obstacleAwareAccel'
   // voice notes: the wheel button asks the app to start/stop recording; the relay confirms saving
   | 'voiceNote' | 'voiceNoteSaved'
+  // driver + trip
+  | 'turnRequest'      // paddle/stalk with no lane that way: FSD will turn at the next junction ({dir, dist} or {none})
+  | 'notice'           // informational, e.g. "gear change ignored while FSD drives"
+  | 'autoShift'        // Auto Shift out of Park picked a gear (detail: 'D' | 'R')
+  | 'autopark'         // a tapped spot was accepted (detail: 'parking now' | 'parking at destination')
+  | 'unresponsive'     // unresponsive driver: {action: 'pullOver' | 'park' | 'pulledOver' | 'parked' | 'cancelled'}
+  | 'swerveAssist'     // manual driving: stabilizing a swerve (detail: 'stabilizing' | 'done')
+  | 'collision'        // the car was hit (see autopilot.alert)
+  | 'signalStuck'      // a red that never changed for 90 s, treated as an all-way stop
+  | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
 
 export type Event = {
   t: 'event'
@@ -225,7 +255,7 @@ export type CameraFrame = {
  */
 export type Cameras = { t: 'cameras'; cams: { id: 'rear'; width: number; height: number; fps: number }[] }
 
-export type GameMessage = Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame
+export type GameMessage = Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame | ParkingSpots
 
 // ---------------------------------------------------------------------------
 // App -> game
@@ -241,12 +271,19 @@ export type Command =
   | { t: 'navigate'; to: Vec3 | { node: string }; stops?: Vec3[]; arrival?: Arrival }
   | { t: 'cancelRoute' }
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
-  | { t: 'wheel'; spring?: boolean; strength?: number; helper?: boolean } // FFB wheel spring on/off, strength 0..1 (default on, 0.6); helper: the SDL wheel helper drives the wheel
-  | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean; camera?: CameraSettings }
+  | { t: 'wheel'; spring?: boolean; strength?: number; helper?: boolean; rangeDeg?: number } // FFB wheel spring on/off, strength 0..1 (default on, 1.0); helper: the SDL wheel helper drives the wheel; rangeDeg: the wheel's rotation (default 900)
+  | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean; camera?: CameraSettings
+      /** Auto Shift out of Park: press the brake in P and the car picks D or R (default off). */
+      autoShift?: boolean
+      /** Unresponsive driver: 'park' = drive to a free spot within 500 m and park; 'pullOver' (default) = pull over and stop. */
+      unresponsive?: 'park' | 'pullOver'
+      /** Swerve Assist while you drive (default on). */
+      swerveAssist?: boolean }
   | { t: 'attention'; state: 'ok' | 'phone' | 'eyesOff' | 'unknown' } // from the app's cabin camera, ~2-5 Hz
   | { t: 'nudge' } // "hands on wheel" (e.g. a button for keyboard players)
   | { t: 'summon'; dir: 'forward' | 'reverse' | null } // Dumb Summon (null stops)
-  | { t: 'autopark' }
+  | { t: 'autopark'; spot?: number } // spot: an id from parkingSpots (tapped on the map); none = the nearest free spot beside the car
+  | { t: 'requestParkingSpots'; near?: [number, number]; radius?: number }
   | { t: 'resetStrikes' }
   | { t: 'voiceNote'; audio: string; mime: string; durationSec?: number; text?: string } // base64 audio; saved by the relay
   | { t: 'action'; name: ActionName } // do what a wheel button would
@@ -271,7 +308,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots',
 ])
 
 export const MPH = 0.44704

@@ -298,9 +298,55 @@ end
 -- A* between two points on the graph.
 -- start: { x, y, hx, hy } (heading used to avoid U-turns). goal: { x, y }.
 -- Returns { nodes = {id...}, startEdge, startT, goalEdge, goalT, startPt, goalPt } or nil, err.
+-- Roads near a point, nearest first: up to k edges within `slack` m of the nearest one
+-- (a destination between roads, e.g. a parking lot, could belong to any of them).
+function M.nearEdges(g, x, y, k, slack)
+  local list = {}
+  for _, e in ipairs(candidateEdges(g, x, y, 200)) do
+    local a, b = g.nodes[e.a], g.nodes[e.b]
+    local ex, ey = b.x - a.x, b.y - a.y
+    local l2 = ex * ex + ey * ey
+    local t = 0
+    if l2 > 1e-9 then t = clamp(((x - a.x) * ex + (y - a.y) * ey) / l2, 0, 1) end
+    local d = len2(x - (a.x + ex * t), y - (a.y + ey * t))
+    if d < 200 and e.drv >= 0.1 then list[#list + 1] = { e = e, t = t, d = d } end
+  end
+  table.sort(list, function(p, q) return p.d < q.d end)
+  local out = {}
+  for _, c in ipairs(list) do
+    if #out >= (k or 4) or c.d > list[1].d + (slack or 40) then break end
+    -- one candidate per road stretch is enough
+    local dup = false
+    for _, o in ipairs(out) do if o.e.a == c.e.a or o.e.b == c.e.b or o.e.a == c.e.b or o.e.b == c.e.a then dup = true end end
+    if not dup then out[#out + 1] = c end
+  end
+  return out
+end
+
 function M.route(g, start, goal)
+  local best, bestScore, lastErr
+  local cands = goal.exact and {} or M.nearEdges(g, goal.x, goal.y, 4, 40)
+  if #cands == 0 then
+    local ge, gt, gd = M.nearestEdge(g, goal.x, goal.y)
+    if ge then cands = { { e = ge, t = gt, d = gd or 0 } } end
+  end
+  for _, c in ipairs(cands) do
+    local rt, err = M.routeToEdge(g, start, c.e, c.t)
+    if rt then
+      -- trip time plus the walk from the road to the destination (a road right next to it
+      -- wins unless reaching it takes far longer)
+      local score = (rt.cost or 0) + c.d * 0.6
+      if not bestScore or score < bestScore then best, bestScore = rt, score end
+    else
+      lastErr = err
+    end
+  end
+  if not best then return nil, lastErr or ('no road near ' .. (#cands > 0 and 'start' or 'destination')) end
+  return best
+end
+
+function M.routeToEdge(g, start, ge, gt)
   local se, st = M.nearestEdge(g, start.x, start.y, start.hx, start.hy)
-  local ge, gt = M.nearestEdge(g, goal.x, goal.y)
   if not se or not ge then return nil, 'no road near ' .. (se and 'destination' or 'start') end
 
   local function edgePoint(e, t)
@@ -316,7 +362,8 @@ function M.route(g, start, goal)
 
   -- Same edge, goal ahead: drive straight there.
   if se == ge and ((fwdIsB and gt >= st) or (not fwdIsB and gt <= st)) then
-    return { nodes = {}, startEdge = se, startT = st, goalEdge = ge, goalT = gt, startPt = startPt, goalPt = goalPt }
+    return { nodes = {}, startEdge = se, startT = st, goalEdge = ge, goalT = gt, startPt = startPt, goalPt = goalPt,
+      cost = abs(gt - st) * se.len / edgeSpeed(g, se) }
   end
 
   local UTURN = 300 -- seconds of penalty: only if nothing else works
@@ -392,7 +439,8 @@ end
 
 -- Greedy "keep going straight" node list, for autosteer / FSD with no destination.
 -- Starts at the edge nearest (x,y) heading (hx,hy); returns a route table like M.route.
-function M.followRoad(g, x, y, hx, hy, length)
+-- force = { at = nodeId, to = nodeId }: at that junction take that road (driver asked to turn)
+function M.followRoad(g, x, y, hx, hy, length, force)
   local se, st = M.nearestEdge(g, x, y, hx, hy)
   if not se then return nil, 'no road here' end
   local a, b = g.nodes[se.a], g.nodes[se.b]
@@ -416,6 +464,7 @@ function M.followRoad(g, x, y, hx, hy, length)
         if turn < 2.2 and score < bestScore then best, bestScore = other, score end
       end
     end
+    if force and cur == force.at and force.to ~= prev and g.adj[cur][force.to] then best = force.to end
     if not best then break end
     dist = dist + g.adj[cur][best].len
     prev, cur = cur, best
@@ -800,7 +849,7 @@ function M.pullOver(path, dist, side)
       local a, b = pts[max(1, i - 1)], pts[min(#pts, i + 1)]
       local tx, ty = norm2(b.x - a.x, b.y - a.y)
       local lane = p.ow and 0 or min((p.r or 3) * 0.5, 1.8)
-      local extra = max(0, (p.r or 3) - 1.2 - lane) * w * side
+      local extra = max(0, (p.r or 3) - 1.5 - lane) * w * side -- stay ~0.5 m off the edge (guardrails)
       q.x, q.y = p.x + ty * extra, p.y - tx * extra
     end
     shifted[i] = q

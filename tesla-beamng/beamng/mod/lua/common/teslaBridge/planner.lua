@@ -133,6 +133,7 @@ end
 
 -- Best free parking spot near the destination (FSD v14: nearer, and not taken).
 function Planner:pickSpot(dest, cars)
+  if self.chosenSpot and not spotOccupied(self.chosenSpot, cars) then return self.chosenSpot end
   local best, bestScore
   for _, sp in ipairs(self.parking) do
     local d = sqrt((sp.x - dest[1]) ^ 2 + (sp.y - dest[2]) ^ 2)
@@ -179,6 +180,7 @@ function Planner:planPath(ego, cars)
   self.uturnNeeded = false
   if self.dest then
     local legs = {}
+    if self.turnVia then legs[1] = { self.turnVia.x, self.turnVia.y } end
     for _, s in ipairs(self.stops or {}) do legs[#legs + 1] = s end
     legs[#legs + 1] = self.dest
     local sx, sy = ego.x, ego.y
@@ -241,19 +243,31 @@ function Planner:planPath(ego, cars)
         path.pts = cut
         path.s = P.cumulative(cut)
         path.afterManeuver = { rev }
+        path.afterKind = 'backIn'
         path.arrivalKind = 'parking'
       else
         P.appendParking(path, spot.x, spot.y, spot.z, spot.dx, spot.dy)
         path.arrivalKind = 'parking'
       end
+    elseif kind == 'Street' and self:parallelPark(path, cars) then
+      path.arrivalKind = 'parking'
     elseif kind ~= 'Driveway' then
       P.pullOver(path, 30)
       path.arrivalKind = 'curb'
     end
   else
-    local rt, err = P.followRoad(g, ego.x, ego.y, hx, hy, 1500)
+    local rt, err = P.followRoad(g, ego.x, ego.y, hx, hy, 1500, self.turnVia)
     if not rt then return false, err end
     path = P.buildPath(g, rt)
+  end
+  if self.dest then
+    -- tell the report when a trip comes out far longer than the straight line (why: U-turns
+    -- avoided, one-ways, the destination snapping to another road)
+    local straight = sqrt((self.dest[1] - ego.x) ^ 2 + (self.dest[2] - ego.y) ^ 2)
+    local len = path.s[#path.s]
+    if len > 3 * straight + 300 then
+      self:emit('longRoute', { length = floor(len), straight = floor(straight), uturnAvoided = self.uturnNeeded or nil })
+    end
   end
   prependBack(path, 150)
   local prof = self:prof()
@@ -267,6 +281,78 @@ function Planner:planPath(ego, cars)
   self.arrived = false
   self.routeDirty = true
   return true
+end
+
+-- "Street" arrival: find a free curb gap near the end of the route (not at a junction, clear
+-- of parked cars), stop in the lane past it, then parallel park. Returns true when set up.
+function Planner:parallelPark(path, cars)
+  local pts, S = path.pts, path.s
+  local n = #pts
+  if n < 4 then return false end
+  local sEnd = S[n]
+  local CAR_L, GAP = 4.8, 7.2
+  local function sample(sq)
+    local lo = 1
+    while lo < n - 1 and S[lo + 1] < sq do lo = lo + 1 end
+    local a, b = pts[lo], pts[lo + 1]
+    local u = (sq - S[lo]) / max(1e-6, S[lo + 1] - S[lo])
+    local tx, ty = b.x - a.x, b.y - a.y
+    local tl = sqrt(tx * tx + ty * ty)
+    if tl < 1e-6 then return nil end
+    return { x = a.x + (b.x - a.x) * u, y = a.y + (b.y - a.y) * u, z = (a.z or 0) + ((b.z or 0) - (a.z or 0)) * u,
+      dx = tx / tl, dy = ty / tl, r = a.r or 4, ow = a.ow, i = lo }
+  end
+  -- nearest the destination first, backing up the road
+  for back = 10, 45, 2 do
+    local c = sample(sEnd - back)
+    if c and c.r >= 3.5 then
+      -- route points run down the lane centre; the spot centre sits 1.1 m in from the road edge
+      local lane = c.ow and 0 or min(c.r * 0.5, 1.8)
+      local curb = c.r - 1.1 -- spot centre from the road's centreline
+      local rx, ry = c.dy, -c.dx
+      local spot = { x = c.x + rx * (curb - lane), y = c.y + ry * (curb - lane), z = c.z }
+      local ok = true
+      -- not in a junction
+      for i = max(1, c.i - 8), min(n, c.i + 8) do
+        local p = pts[i]
+        if p.node and (self.degree[p.node] or 0) >= 3 and (p.x - c.x) ^ 2 + (p.y - c.y) ^ 2 < 18 * 18 then ok = false; break end
+      end
+      -- the gap is free of cars
+      if ok then
+        for _, o in ipairs(cars or {}) do
+          local ox, oy = o.x - spot.x, o.y - spot.y
+          local along = ox * c.dx + oy * c.dy
+          local side = ox * rx + oy * ry
+          if abs(along) < GAP * 0.5 + CAR_L * 0.5 - 0.3 and abs(side) < 2.2 then ok = false; break end
+        end
+      end
+      if ok then
+        local q, segs = Mv.parallel(spot, { dx = c.dx, dy = c.dy, off = curb - lane }, 6)
+        -- run the route on (in the lane) to q, then do the maneuver
+        local pr = P.project(path, c.x, c.y)
+        local cut = {}
+        for i = 1, pr.i do cut[i] = pts[i] end
+        local base = pts[pr.i]
+        local qx, qy = q.x, q.y -- in the lane, past the gap
+        local steps = max(1, floor(sqrt((qx - base.x) ^ 2 + (qy - base.y) ^ 2) / 2))
+        for k = 1, steps do
+          local u = k / steps
+          local p = {}
+          for kk, vv in pairs(base) do p[kk] = vv end
+          p.x, p.y, p.node = base.x + (qx - base.x) * u, base.y + (qy - base.y) * u, nil
+          p.lim = 5
+          cut[#cut + 1] = p
+        end
+        path.pts = cut
+        path.s = P.cumulative(cut)
+        path.afterManeuver = segs
+        path.afterKind = 'parallel'
+        self.spot = { x = spot.x, y = spot.y, z = spot.z, dx = c.dx, dy = c.dy }
+        return true
+      end
+    end
+  end
+  return false
 end
 
 -- Route preview for the app (and the parking pin).
@@ -291,12 +377,13 @@ end
 
 function Planner:setRoute(dest, stops, arrival)
   self.dest, self.stops, self.arrival = dest, stops, arrival
+  self.turnVia, self.chosenSpot = nil, nil
   self.path = nil
   self.spot = nil
 end
 
 function Planner:cancelRoute()
-  self.dest, self.stops, self.arrival, self.spot = nil, nil, nil, nil
+  self.dest, self.stops, self.arrival, self.spot, self.turnVia, self.chosenSpot = nil, nil, nil, nil, nil, nil
   self.path = nil
 end
 
@@ -392,12 +479,63 @@ function Planner:summon(dir, ego)
   return true
 end
 
--- Autopark into the nearest free spot beside us.
-function Planner:autopark(ego, cars)
+-- Stopped (parked / pulled over) for an unresponsive driver: P, hazards on, a strike, FSD off.
+function Planner:finishUnresponsive(out)
+  if not self.unresponsive then return false end
+  local kind = self.unresponsive.kind
+  self.unresponsive = nil
+  self.chosenSpot = nil
+  out.commands[#out.commands + 1] = { t = 'signal', dir = 'hazard' }
+  for _, ev in ipairs(self.nag:strike()) do self:emit(ev.kind, ev) end
+  self:emit('unresponsive', { action = kind == 'park' and 'parked' or 'pulledOver' })
+  self:disengage('attention', 'driver did not respond')
+  self.dest, self.path = nil, nil
+  out.route = self:routeMessage()
+  return true
+end
+
+-- Parking spots near a point, for the app's map (id = index in the level's list).
+function Planner:spotsNear(x, y, radius, cars)
+  local out = {}
+  for i, sp in ipairs(self.parking) do
+    local d = sqrt((sp.x - x) ^ 2 + (sp.y - y) ^ 2)
+    if d < (radius or 80) then
+      out[#out + 1] = { id = i, x = sp.x, y = sp.y, z = sp.z or 0, dx = sp.dx, dy = sp.dy, free = not spotOccupied(sp, cars), d = d }
+    end
+  end
+  table.sort(out, function(a, b) return a.d < b.d end)
+  while #out > 40 do out[#out] = nil end
+  return out
+end
+
+-- The driver tapped a parking spot on the map: park there. Close by: Autopark now. On a
+-- trip: make it the destination (FSD parks there on arrival). Returns ok, err, how.
+function Planner:parkAtSpot(id, ego, cars)
+  local sp = self.parking[id]
+  if not sp then return false, 'no such parking spot' end
+  if spotOccupied(sp, cars) then return false, 'that spot is taken' end
+  local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
+  if d < 40 and (ego.v or 0) < 3 then
+    local ok, err = self:autopark(ego, cars, sp)
+    return ok, err, 'now'
+  end
+  self.chosenSpot = sp
+  self.dest, self.stops, self.arrival = { sp.x, sp.y, sp.z or 0 }, nil, 'Parking Lot'
+  self.turnVia = nil
+  if self.mode ~= 'off' then self.replanNow = true else self.path = nil end
+  return true, nil, 'route'
+end
+
+-- Autopark into the nearest free spot beside us (or the one given).
+function Planner:autopark(ego, cars, want)
   local best, bd
-  for _, sp in ipairs(self.parking) do
-    local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-    if d < 25 and not spotOccupied(sp, cars) and (not bd or d < bd) then best, bd = sp, d end
+  if want then
+    best = (not spotOccupied(want, cars)) and want or nil
+  else
+    for _, sp in ipairs(self.parking) do
+      local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
+      if d < 25 and not spotOccupied(sp, cars) and (not bd or d < bd) then best, bd = sp, d end
+    end
   end
   if not best then return false, 'no free parking spot nearby' end
   local loc = P.locate(self.graph, ego.x, ego.y, ego.hx, ego.hy, 20)
@@ -442,6 +580,57 @@ function Planner:evade(side, shift, ego, cars)
   self.urgentUntil = self.t + 2.5
   self:emit('collisionEvasion', { side = side > 0 and 'left' or 'right' })
   return true
+end
+
+-- Driver asked to go left/right and there's no lane that way: turn at the next junction
+-- that has a road that way (far enough ahead to do it calmly), then carry on to the
+-- destination (or keep following the road).
+function Planner:turnAtNext(dir, sCar, v)
+  local path, g = self.path, self.graph
+  if not path or not g then return false end
+  local minAhead = max(25, v * 2.5)
+  for i = 2, #path.pts do
+    local p = path.pts[i]
+    local ahead = path.s[i] - sCar
+    if ahead > 400 then break end
+    if p.node and ahead > minAhead and (self.degree[p.node] or 0) >= 3 then
+      local prev = path.pts[i - 1]
+      local hx, hy = p.x - prev.x, p.y - prev.y
+      local hl = sqrt(hx * hx + hy * hy)
+      if hl > 1e-6 then
+        hx, hy = hx / hl, hy / hl
+        local nextNode
+        for j = i + 1, min(#path.pts, i + 40) do if path.pts[j].node then nextNode = path.pts[j].node; break end end
+        local best, bestScore
+        local cn = g.nodes[p.node]
+        for other, e in pairs(g.adj[p.node] or {}) do
+          if other ~= nextNode and P.canTraverse(e, p.node) and e.drv >= 0.3 then
+            local on = g.nodes[other]
+            local ox, oy = on.x - cn.x, on.y - cn.y
+            local ol = sqrt(ox * ox + oy * oy)
+            if ol > 1e-6 then
+              ox, oy = ox / ol, oy / ol
+              local cross = hx * oy - hy * ox -- + = left
+              local dot = hx * ox + hy * oy
+              if (dir == 'left' and cross > 0.5) or (dir == 'right' and cross < -0.5) then
+                local score = abs(dot) -- closest to a square turn
+                if not bestScore or score < bestScore then best, bestScore = { other = other, ox = ox, oy = oy, len = ol }, score end
+              end
+            end
+          end
+        end
+        if best then
+          local d = min(20, best.len * 0.5)
+          self.turnVia = { at = p.node, to = best.other, x = cn.x + best.ox * d, y = cn.y + best.oy * d, dir = dir }
+          self.replanNow = true
+          self:emit('turnRequest', { dir = dir, dist = ahead })
+          return true
+        end
+      end
+    end
+  end
+  self:emit('turnRequest', { dir = dir, none = true })
+  return false
 end
 
 -- Driver's turn-signal stalk while engaged: lane change that way.
@@ -625,8 +814,12 @@ function Planner:tick(snap)
   st.remaining = (not path.openEnded) and remaining or nil
   st.speedLimit = path.limit[pr.i]
 
-  if path.openEnded and remaining < 400 then
-    self:planPath(ego, cars)
+  if self.turnVia and (ego.x - self.turnVia.x) ^ 2 + (ego.y - self.turnVia.y) ^ 2 < 12 * 12 then
+    self.turnVia = nil -- made the turn: later replans go straight to the destination
+  end
+  if self.replanNow or (path.openEnded and remaining < 400) then
+    self.replanNow = nil
+    if not self:planPath(ego, cars) then self.turnVia = nil; self:planPath(ego, cars) end
     out.route = self:routeMessage()
     return self:finish(out)
   end
@@ -905,14 +1098,43 @@ function Planner:tick(snap)
   ---------------------------------------------------------------- forced stop (ignored nag)
   local hazard = false
   if nagOut.forceStop then
-    cap(0)
+    -- unresponsive driver: hazards and alarm (the app beeps on the alert), slow down, then
+    --  setting unresponsive = 'park' and a free spot within 500 m: drive there, park, P
+    --  otherwise (or 'pullOver'): pull over to the curb a little ahead, stop, P
     hazard = true
-    if v < 0.3 then
-      for _, ev in ipairs(self.nag:strike()) do self:emit(ev.kind, ev) end
-      self:disengage('attention', 'driver did not respond')
-      out.commands[#out.commands + 1] = { t = 'signal', dir = 'hazard' }
-      return self:finish(out)
+    if not self.unresponsive then
+      self.unresponsive = { t = t, saved = { dest = self.dest, stops = self.stops, arrival = self.arrival } }
+      local kind = 'pullOver'
+      if self.settings.unresponsive == 'park' then
+        local sp, bd
+        for _, cand in ipairs(self.parking) do
+          local d = sqrt((cand.x - ego.x) ^ 2 + (cand.y - ego.y) ^ 2)
+          if d < 500 and not spotOccupied(cand, cars) and (not bd or d < bd) then sp, bd = cand, d end
+        end
+        if sp then
+          kind = 'park'
+          self.chosenSpot = sp
+          self.dest, self.stops, self.arrival = { sp.x, sp.y, sp.z or 0 }, nil, 'Parking Lot'
+        end
+      end
+      if kind == 'pullOver' then
+        local sAt = min(S[#S] - 1, sCar + max(50, v * 5))
+        local qx, qy, qz = P.pointAt(path, sAt, pr.i)
+        self.dest, self.stops, self.arrival = { qx, qy, qz or 0 }, nil, 'Pull Over'
+      end
+      self.turnVia = nil
+      self.unresponsive.kind = kind
+      self.replanNow = true
+      self:emit('unresponsive', { action = kind })
     end
+    cap(11) -- ~25 mph
+  elseif self.unresponsive then
+    -- the driver answered: back to the original trip
+    local sv = self.unresponsive.saved
+    self.unresponsive = nil
+    self.dest, self.stops, self.arrival, self.chosenSpot = sv.dest, sv.stops, sv.arrival, nil
+    self.replanNow = true
+    self:emit('unresponsive', { action = 'cancelled' })
   end
 
   ---------------------------------------------------------------- arrival
@@ -922,12 +1144,13 @@ function Planner:tick(snap)
     if path.afterManeuver then
       local segs = path.afterManeuver
       path.afterManeuver = nil
-      self:startManeuver(segs, 'park', 'backIn')
+      self:startManeuver(segs, 'park', path.afterKind or 'backIn')
       return self:finish(out)
     end
     if not self.arrived then
       self.arrived = true
       out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+      if self:finishUnresponsive(out) then return self:finish(out) end
       self:emit('arrived', { detail = path.arrivalKind })
       self:disengage('arrived')
       self.dest, self.path = nil, nil
@@ -970,15 +1193,67 @@ function Planner:tick(snap)
   return self:finish(out)
 end
 
--- Where to stop for a sign/light: before the edge of the junction it guards (our nose
--- lands ~0.5 m short of the crossing road), else at the sign itself. Also where to creep to.
-function Planner:stopLine(sg, win, sSign)
+-- the junction a sign/light guards (cached)
+function Planner:signalJunction(sg)
   self.sigJunction = self.sigJunction or {}
   local j = self.sigJunction[sg.id]
   if j == nil then
     j = self:junctionNear(sg.x, sg.y, 35) or false
     self.sigJunction[sg.id] = j
   end
+  return j or nil
+end
+
+-- Which way does BeamNG's signal dir point: +1 = the direction traffic drives (toward the
+-- junction), -1 = the way the light faces (toward drivers). Learned from the level: a
+-- signal stands before its junction, so dir . (junction - signal) tells us. nil = unknown.
+function Planner:signalDirConvention()
+  if self.sigConv ~= nil then return self.sigConv or nil end
+  local votes, n = 0, 0
+  for _, sg in ipairs(self.signals) do
+    if sg.dirx and not sg.prop then
+      local j = self:signalJunction(sg)
+      if j then
+        local jx, jy = j.x - sg.x, j.y - sg.y
+        local jl = sqrt(jx * jx + jy * jy)
+        if jl > 3 then
+          local d = (sg.dirx * jx + sg.diry * jy) / jl
+          if abs(d) > 0.5 then votes = votes + (d > 0 and 1 or -1); n = n + 1 end
+        end
+      end
+    end
+  end
+  -- a clear majority of at least 3 signals, else keep accepting both directions
+  if n >= 3 and abs(votes) >= 0.6 * n then self.sigConv = votes > 0 and 1 or -1 else self.sigConv = false end
+  return self.sigConv or nil
+end
+
+-- Stop-sign props have no direction: skip one that stands beside a road crossing ours
+-- (it's for the cross street) rather than beside our own road.
+function Planner:propFacesCrossRoad(sg, tx, ty, distOurs)
+  self.propDir = self.propDir or {}
+  local d = self.propDir[sg.id]
+  if d == nil then
+    local e, _, ed = P.nearestEdge(self.graph, sg.x, sg.y, nil, nil, 25)
+    if e then
+      local a, b = self.graph.nodes[e.a], self.graph.nodes[e.b]
+      local ex, ey = b.x - a.x, b.y - a.y
+      local el = sqrt(ex * ex + ey * ey)
+      d = el > 1e-6 and { ex / el, ey / el, ed } or false
+    else
+      d = false
+    end
+    self.propDir[sg.id] = d
+  end
+  if not d then return false end
+  -- its nearest road runs across ours (> 60 deg) and is clearly nearer than ours
+  return abs(d[1] * tx + d[2] * ty) < 0.5 and d[3] + 3 < (distOurs or 1e9)
+end
+
+-- Where to stop for a sign/light: before the edge of the junction it guards (our nose
+-- lands ~0.5 m short of the crossing road), else at the sign itself. Also where to creep to.
+function Planner:stopLine(sg, win, sSign)
+  local j = self:signalJunction(sg)
   if not j then return sSign, sSign + 3 end
   local pr = P.project(win, j.x, j.y)
   if not pr or pr.dist > 12 or pr.s < sSign - 25 or pr.s > sSign + 35 then return sSign, sSign + 3 end
@@ -1000,12 +1275,27 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
         local r = (win.pts[pr.i] and win.pts[pr.i].r) or 4
         local okLat = pr.dist < r + 5
         if sg.kind == 'stop' and sg.prop then okLat = pr.lat < 1 and pr.dist < r + 6 end
+        local a = win.pts[pr.i]; local b = win.pts[min(#win.pts, pr.i + 1)]
+        local tx, ty = b.x - a.x, b.y - a.y
+        local tl = sqrt(tx * tx + ty * ty)
+        if tl > 1e-6 then tx, ty = tx / tl, ty / tl end
+        local dot
         if okLat and sg.dirx then
-          local a = win.pts[pr.i]; local b = win.pts[min(#win.pts, pr.i + 1)]
-          local tx, ty = b.x - a.x, b.y - a.y
-          local tl = sqrt(tx * tx + ty * ty)
-          if tl > 1e-6 then okLat = abs((tx * sg.dirx + ty * sg.diry) / tl) > 0.6 end
+          dot = tx * sg.dirx + ty * sg.diry
+          -- facing our way only (once we know which way BeamNG's signal dir points)
+          local conv = self:signalDirConvention()
+          okLat = conv and (conv * dot > 0.6) or abs(dot) > 0.6
         end
+        if okLat and sg.prop and self:propFacesCrossRoad(sg, tx, ty, pr.dist + 2) then okLat = false end
+        if okLat then
+          -- a light or sign past the centre of its junction belongs to the other direction
+          local j = self:signalJunction(sg)
+          if j then
+            local pj = P.project(win, j.x, j.y)
+            if pj and pj.dist < 12 and pr.s > pj.s + 1 then okLat = false end
+          end
+        end
+        sg.dbg = { dot = dot, lat = pr.lat }
         local fsm = self.stopFsm[sg.id]
         local waiting = fsm and fsm.state ~= 'done' and fsm.state ~= 'approach'
         local relevant = okLat and (pr.s > sCar - 3 or waiting)
@@ -1031,7 +1321,8 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   local sg, sSign = best.sg, best.s
   local s, creepS, jn = self:stopLine(sg, win, sSign)
   local dist = s - sCar
-  local control = { kind = sg.kind, dist = dist, red = false }
+  local control = { kind = sg.kind, dist = dist, red = false, id = sg.id,
+    dot = sg.dbg and sg.dbg.dot, lat = sg.dbg and sg.dbg.lat }
   local stopS
   local stt = sg.kind == 'signal' and sg.get and sg.get() or nil
 
@@ -1176,7 +1467,11 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   if not want and self.driverLaneRequest and t - self.driverLaneRequest.t < 1 then
     local d = self.driverLaneRequest.dir == 'left' and 1 or -1
     local k = lane.k + d
-    if k >= 0 and k <= minN - 1 then want, reason = k, 'driver' end
+    if k >= 0 and k <= minN - 1 then want, reason = k, 'driver'
+    elseif fsd then
+      -- no lane that way (and never into oncoming traffic): take the next turn that way
+      self:turnAtNext(self.driverLaneRequest.dir, sCar, v)
+    end
     self.driverLaneRequest = nil
   end
   if not want and self.moveOverRequest and lane.k < minN - 1 then want, reason = lane.k + 1, 'moveOver' end
@@ -1254,6 +1549,7 @@ function Planner:tickManeuver(ego, cars, out)
         self.activity = 'drive'
         if mv.after == 'park' then
           out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+          if self:finishUnresponsive(out) then self.dest, self.path = nil, nil; out.route = self:routeMessage(); return end
           self:emit('arrived', { detail = 'parking' })
           self:disengage('arrived')
           self.dest, self.path = nil, nil
