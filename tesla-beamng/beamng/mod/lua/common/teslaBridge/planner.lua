@@ -28,11 +28,14 @@ local MPH = 0.44704
 
 -- per-profile behavior (speed offset, curves, gap and throttle come from pathing.PROFILES)
 M.BEHAVIOR = {
-  sloth    = { pass = nil,       gapLeft = 8, keepLeft = false, crossEta = 6 },
-  chill    = { pass = 8 * MPH,   gapLeft = 7, keepLeft = false, crossEta = 5.5 },
-  standard = { pass = 5 * MPH,   gapLeft = 6, keepLeft = false, crossEta = 5 },
-  hurry    = { pass = 3 * MPH,   gapLeft = 5, keepLeft = false, crossEta = 4.5 },
-  madmax   = { pass = 2 * MPH,   gapLeft = 4, keepLeft = true,  crossEta = 4 },
+  -- leftAbove: at this speed (m/s) it lives in the fast (left) lane; cut: scale on the gap it needs
+  -- to change lanes (1 = normal); signalDelay: seconds of blinker before it moves over
+  sloth    = { pass = nil,       gapLeft = 8, keepLeft = false, crossEta = 6,   cut = 1.2,  signalDelay = 1.6 },
+  chill    = { pass = 8 * MPH,   gapLeft = 7, keepLeft = false, crossEta = 5.5, cut = 1.1,  signalDelay = 1.4 },
+  standard = { pass = 5 * MPH,   gapLeft = 6, keepLeft = false, crossEta = 5,   cut = 1,    signalDelay = 1.2 },
+  hurry    = { pass = 3 * MPH,   gapLeft = 5, keepLeft = false, leftAbove = 22, crossEta = 4.5, cut = 0.8, signalDelay = 0.9 },
+  madmax   = { pass = 2 * MPH,   gapLeft = 4, keepLeft = true,  leftAbove = 14, crossEta = 4,   cut = 0.6, signalDelay = 0.7 },
+  furious  = { pass = 0.5 * MPH, gapLeft = 3, keepLeft = true,  leftAbove = 8,  crossEta = 3,   cut = 0.4, signalDelay = 0.4 },
 }
 
 M.DEFAULT_SETTINGS = {
@@ -46,7 +49,7 @@ M.DEFAULT_SETTINGS = {
   confidenceFloor = 0.55, -- below this FSD asks the driver to take over (and keeps driving)
 }
 -- how long FSD sits at a stop sign before going, per profile (seconds; Tesla is brief)
-local STOP_DWELL = { sloth = 1.6, chill = 1.3, standard = 1.0, hurry = 0.7, madmax = 0.4 }
+local STOP_DWELL = { sloth = 1.6, chill = 1.3, standard = 1.0, hurry = 0.7, madmax = 0.4, furious = 0.2 }
 
 local Planner = {}
 Planner.__index = Planner
@@ -756,15 +759,16 @@ function Planner:carsOnPath(win, cars, egoPt)
 end
 
 -- Is target lane k clear for a lane change at our position?
-function Planner:laneClear(k, onPath, sCar, v, egoLen)
+function Planner:laneClear(k, onPath, sCar, v, egoLen, cut)
+  cut = cut or 1
   for _, o in ipairs(onPath) do
     if o.dot > 0.3 and abs(o.lat - k * o.laneW) < o.laneW * 0.5 + (o.c.w or 1.9) * 0.5 - 0.2 then
       local rel = o.s - sCar
       local half = ((o.c.l or 4.6) + (egoLen or 4.6)) * 0.5
       if rel >= 0 then
-        if rel - half < max(8, (v - o.vAlong) * 3 + 6) then return false, o end
+        if rel - half < max(8, (v - o.vAlong) * 3 + 6) * cut then return false, o end
       else
-        if -rel - half < max(6, (o.vAlong - v) * 3 + 6) then return false, o end
+        if -rel - half < max(6, (o.vAlong - v) * 3 + 6) * cut then return false, o end
       end
     end
   end
@@ -1302,7 +1306,7 @@ function Planner:tick(snap)
   end
   self.seq = self.seq + 1
   local gap = prof.gap * learnGap
-  if self.mode ~= 'fsd' and self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
+  if self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
   out.plan = {
     seq = self.seq, pts = flat, vcap = vcap, dir = 1,
     stopS = stopS and (stopS - sBase) or nil,
@@ -1575,8 +1579,8 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   local ch = lane.change
   if ch then
     if ch.phase == 'signal' then
-      if t - ch.t > 1.2 then
-        local ok = self:laneClear(ch.to, onPath, sCar, v, egoLen)
+      if t - ch.t > beh.signalDelay then
+        local ok = self:laneClear(ch.to, onPath, sCar, v, egoLen, beh.cut)
         if ok then
           ch.phase = 'moving'
           ch.s0 = sCar + v * 0.3
@@ -1631,9 +1635,10 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     local cruise = path.vcap[iCar] or v
     if beh.pass and lead and lead.s - sCar < 80 and lead.v < cruise - beh.pass and lane.k < minN - 1 then
       want, reason = lane.k + 1, 'pass'
-    elseif beh.keepLeft and minN >= 2 and v > 20 and lane.k < minN - 1 and (not nextTurn or nextTurn.s - sCar > 1000) then
+    elseif beh.leftAbove and minN >= 2 and v > beh.leftAbove and lane.k < minN - 1 and (not nextTurn or nextTurn.s - sCar > 1000) then
+      -- hurry / Mad Max live in the fast lane at speed (still checked for a safe gap below)
       want, reason = lane.k + 1, 'madMax'
-    elseif lane.k > 0 and not beh.keepLeft then
+    elseif lane.k > 0 and not (beh.leftAbove and v > beh.leftAbove * 0.8) then
       -- back to the right lane once clear (and not passing someone slower there)
       local slowerRight = false
       for _, o in ipairs(onPath) do
@@ -1646,7 +1651,7 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     local to = lane.k + (want > lane.k and 1 or -1)
     -- no lane changes right at a junction
     if nextTurn and nextTurn.s - sCar < 25 and reason ~= 'route' then return end
-    if self:laneClear(to, onPath, sCar, v, egoLen) or reason == 'merge' or reason == 'route' then
+    if self:laneClear(to, onPath, sCar, v, egoLen, beh.cut) or reason == 'merge' or reason == 'route' then
       lane.change = { from = lane.k, to = to, reason = reason, phase = 'signal', t = t }
     end
   end

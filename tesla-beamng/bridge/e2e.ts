@@ -85,8 +85,10 @@ ws.on('message', (d) => {
   else if (m.t === 'wheelButton' && m.down) buttonPresses.push(m.button)
   else if (m.t === 'parkingSpots') parkingSpots = m
   else if (m.t === 'media') mediaMsgs.push(m.action)
+  else if (m.t === 'dial') dialMsgs.push(`${m.mode}${m.dir ? ':' + m.dir : ''}`)
 })
 const mediaMsgs: string[] = []
+const dialMsgs: string[] = []
 const send = (m: unknown) => ws.send(JSON.stringify(m))
 // the app's cabin camera reports the driver's attention a few times a second
 let attn: 'ok' | 'phone' | 'eyesOff' | null = 'ok'
@@ -393,6 +395,20 @@ try {
     send({ t: 'wheelButton', button: 31, down: true })
     check('G29 dial mapped to volumeUp reaches the app as media', await until('media', () => mediaMsgs.includes('volumeUp'), 3000), mediaMsgs.join(','))
     send({ t: 'setButton', action: 'volumeUp', button: null })
+    // the dial: turn = volume until its button is clicked, then it controls follow distance
+    send({ t: 'setButton', action: 'dialUp', button: 32 })
+    send({ t: 'setButton', action: 'dialDown', button: 33 })
+    send({ t: 'setButton', action: 'dialClick', button: 34 })
+    await until('dial mapped', () => buttonMap?.map?.dialClick === 34, 3000)
+    mediaMsgs.length = 0
+    send({ t: 'wheelButton', button: 32, down: true })
+    check('dial turn = volume by default', await until('dial vol', () => mediaMsgs.includes('volumeUp') && dialMsgs.includes('volume:up'), 3000), dialMsgs.join(','))
+    send({ t: 'wheelButton', button: 34, down: true })
+    check('dial click switches to follow distance', await until('dial mode', () => dialMsgs.includes('distance'), 3000), dialMsgs.join(','))
+    events.length = 0
+    send({ t: 'wheelButton', button: 33, down: true })
+    check('dial turn now changes the follow distance (not the volume)', await until('dial dist', () => events.some((e: any) => e.kind === 'settings' && /follow distance/.test(e.detail ?? '')) && !mediaMsgs.includes('volumeDown'), 3000), dialMsgs.join(','))
+    for (const a of ['dialUp', 'dialDown', 'dialClick']) send({ t: 'setButton', action: a, button: null })
     send({ t: 'setButton', action: 'toggleFSD', button: null })
     check('clear a button', await until('cleared', () => buttonMap?.map?.toggleFSD === undefined, 3000))
   }

@@ -183,6 +183,9 @@ local learn = nil -- light on-line learning of his driving style (teslaBridge/le
 local tLearnSave = 0
 local loadLearn, saveLearn -- forward
 local Lr = require('teslaBridge/learn')
+local Sc = require('teslaBridge/score')
+local tripScore = Sc.new() -- trip stats, Safety Score, hard-braking hazards
+local tripT, tripHazardSent, tripWasMoving = nil, false, false
 local tAids = 0
 local handoverSent = false -- the car was told a takeover is being requested (gas = take over)
 local function loadSocket()
@@ -816,6 +819,19 @@ local function driveAidsTick(veh)
   else
     drive.limitHere = nil
   end
+  -- time gap to the car ahead in our lane (Safety Score's "following distance", and learning)
+  do
+    local gapT
+    for _, c in ipairs(trafficList()) do
+      local dx, dy = c.x - ego.x, c.y - ego.y
+      local along = dx * ego.hx + dy * ego.hy
+      if along > 3 and along < 80 and math.abs(-dx * ego.hy + dy * ego.hx) < 2 and ego.v > 3 then
+        local t = along / ego.v
+        if not gapT or t < gapT then gapT = t end
+      end
+    end
+    drive.gapT = gapT
+  end
   -- learning (a few multiplies, twice a second)
   if learn and plannerSettings.learning ~= false and drive.limitHere then
     if (not planner or planner.mode == 'off') and lastVehSt.gear == 'D' then
@@ -940,6 +956,29 @@ function M.onVehicleState(vid, json)
   if not ok or type(st) ~= 'table' then return end
   lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil,
     lights = st.lights, accelOverride = st.autopilot and st.autopilot.accelOverride or false }
+  -- trip stats / Safety Score / emergency-braking hazards
+  do
+    local dtS = tripT and (realTime - tripT) or 0
+    tripT = realTime
+    if dtS > 0 and dtS < 0.5 then
+      tripScore:update(dtS, { v = st.speed or 0, yawRate = yawState.rate, gap = drive and drive.gapT,
+        fsd = st.autopilot and st.autopilot.engaged and st.autopilot.mode == 'fsd' })
+    end
+    if tripScore.hazard ~= tripHazardSent and veh then
+      tripHazardSent = tripScore.hazard
+      toVehicle(veh, 'command', tripScore.hazard and { t = 'signal', dir = 'hazard' } or { t = 'signal' })
+      if tripScore.hazard then relayEvent({ kind = 'notice', detail = 'hazards on: emergency braking' }) end
+    end
+    if (st.speed or 0) > 2 then tripWasMoving = true end
+    if st.gear == 'P' and tripWasMoving and (st.speed or 0) < 0.5 then
+      tripWasMoving = false
+      if tripScore.dist >= 300 then
+        relayEvent({ kind = 'tripSummary', detail = tostring(tripScore:score()), data = tripScore:summary() })
+      end
+      tripScore:reset()
+      tripHazardSent = false
+    end
+  end
   -- backup camera: on in R, and for 2 s after leaving it (like the real thing)
   if st.gear == 'R' then cam.reverseUntil = realTime + 2 end
   if (st.handsNudges or 0) > nudgeCount then nudgeCount = st.handsNudges; nudgeT = gameTime end
@@ -993,6 +1032,7 @@ function M.onVehicleState(vid, json)
   -- the road's speed limit right here, FSD on or off (Tesla shows it all the time)
   st.speedLimit = drive.limitHere and num(drive.limitHere, 1) or nil
   st.speedWarning = drive.warning or nil
+  st.trip = { score = tripScore:score(), km = num(tripScore.dist / 1000, 2), fsdPercent = num(tripScore.dist > 0 and tripScore.fsdDist / tripScore.dist * 100 or 0, 0), hardBrakes = tripScore.hardBrakes }
   local okA, alert = pcall(computeAlert, vid, st, ps, nag)
   st.autopilot.alert = okA and alert or nil
   -- while FSD is asking for a takeover, tapping the accelerator hands the car over
@@ -1016,6 +1056,7 @@ function M.onVehicleEvent(vid, json)
     if learn and drive.limitHere and (ev.reason == 'brake' or ev.reason == 'steer') and (lastVehSt.speed or 0) > drive.limitHere * 0.95 then
       learn:feedback(drive.limitHere, 'slower') -- he took over while going at / over the limit
     end
+    if ev.reason == 'brake' or ev.reason == 'steer' or ev.reason == 'throttle' then tripScore:takeover() end
     if planner and planner.mode ~= 'off' then
       planner:disengage(ev.reason or 'error', ev.detail)
       sentMode = 'off' -- the car already let go

@@ -7,7 +7,8 @@
 
 export type Vec3 = [number, number, number]
 export type Gear = 'P' | 'R' | 'N' | 'D'
-export type Profile = 'sloth' | 'chill' | 'standard' | 'hurry' | 'madmax'
+/** 'furious' = hold Max / Service mode: cuts in, tails and speeds; the safety layer still brakes. Not in the dial's profile cycle. */
+export type Profile = 'sloth' | 'chill' | 'standard' | 'hurry' | 'madmax' | 'furious'
 /** fsd: drives everything · autosteer: steers + cruise (Tesla Autosteer) · tacc: cruise only, you steer */
 export type AutopilotMode = 'off' | 'autosteer' | 'fsd' | 'tacc'
 export type SignalDir = 'left' | 'right' | 'hazard' | null
@@ -50,6 +51,8 @@ export type State = {
   speedWarning?: boolean
   /** Vehicle Hold is holding the car (stopping mode 'hold'): the "H" icon. */
   hold?: boolean
+  /** This trip so far (resets when you park after driving 300 m or more): Safety Score 0..100 and stats. */
+  trip?: { score: number; km: number; fsdPercent: number; hardBrakes: number }
 }
 
 export type SafetyState = {
@@ -197,6 +200,7 @@ export type EventKind =
   | 'arrivalChoice'    // the choice was applied
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
   | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
+  | 'tripSummary'      // parked after a drive of 300 m+: detail = Safety Score, data {km, minutes, fsdPercent, hardBrakes, hardTurns, takeovers, tailgatePercent, topSpeed, score}
   | 'pullOver'         // P pressed while FSD drives: pulling over ({dist}); take over to cancel
   | 'monitoring'       // camera mode: detail 'cameraUnavailable' (using the wheel) | 'camera' (back)
 
@@ -221,6 +225,7 @@ export type ActionName =
   | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'disengage' | 'voiceNote' | 'nudge'
   | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
   | 'followCloser' | 'followFarther' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
+  | 'dialUp' | 'dialDown' | 'dialClick' // the G29 red dial: turn = up/down, click cycles what it controls (DIAL_MODES)
   | 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' // media keys: the relay tells the app ({t:'media'}), not the game
 
 export const ACTIONS: { name: ActionName; label: string }[] = [
@@ -240,6 +245,9 @@ export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'followFarther', label: 'Follow farther' },
   { name: 'autopark', label: 'Autopark' },
   { name: 'park', label: 'Park (FSD driving: pull over and park)' },
+  { name: 'dialUp', label: 'Dial turn up (volume / follow distance / speed / profile)' },
+  { name: 'dialDown', label: 'Dial turn down' },
+  { name: 'dialClick', label: 'Dial button (cycles what the dial controls)' },
   { name: 'volumeUp', label: 'Volume up (media, on the iPad)' },
   { name: 'volumeDown', label: 'Volume down (media, on the iPad)' },
   { name: 'mute', label: 'Mute / unmute (media)' },
@@ -285,7 +293,13 @@ export type Cameras = { t: 'cameras'; cams: { id: 'rear'; width: number; height:
 /** Relay -> app when a wheel button mapped to a media action is pressed (the G29's dial = volume). */
 export type Media = { t: 'media'; action: 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' }
 
-export type GameMessage = Media | Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame | ParkingSpots
+/** What the red dial controls; its button cycles through them. */
+export const DIAL_MODES = ['volume', 'distance', 'speed', 'profile'] as const
+export type DialMode = (typeof DIAL_MODES)[number]
+/** Relay -> app: the dial's mode changed or it was turned (show a bubble: "Follow distance", etc.). */
+export type Dial = { t: 'dial'; mode: DialMode; dir?: 'up' | 'down' }
+
+export type GameMessage = Dial | Media | Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame | ParkingSpots
 
 // ---------------------------------------------------------------------------
 // App -> game

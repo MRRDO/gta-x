@@ -52,7 +52,7 @@ function vehiclePatch(s: State, prev: AnyState): AnyState {
 const FSD_KEYS = ['fsd', 'fsdEngaged', 'fsdOn', 'fsdActive', 'autopilotEngaged']
 const PROFILE_KEYS = ['profile', 'fsdProfile', 'speedProfile']
 const ARRIVAL_KEYS = ['arrivalPark', 'arrival']
-const PROFILE_LABEL: Record<Profile, string> = { sloth: 'Sloth', chill: 'Chill', standard: 'Standard', hurry: 'Hurry', madmax: 'Mad Max' }
+const PROFILE_LABEL: Record<Profile, string> = { sloth: 'Sloth', chill: 'Chill', standard: 'Standard', hurry: 'Hurry', madmax: 'Mad Max', furious: 'Furious' }
 const ARRIVALS: Arrival[] = ['Parking Lot', 'Street', 'Driveway', 'Parking Garage', 'Curbside']
 
 /** 'Mad Max' / 'madMax' / 'MADMAX' -> 'madmax' (null if it isn't a profile) */

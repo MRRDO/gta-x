@@ -862,5 +862,40 @@ scenario('arrivalChoice', function()
   check(select(1, w2.planner:setArrival('nonsense')) == false, 'bad choice rejected')
 end)
 
+scenario('fastLane', function()
+  -- empty two-lane highway at 55 mph: standard stays right, hurry / Mad Max take the fast lane
+  local function endLane(profile, v0)
+    local w = W.new({ nodes = straight(0, 4000, 7.5, 25), ego = { x = 0, y = RIGHT2, psi = 0, v = v0 } })
+    w:engage('fsd', profile)
+    w:run(40)
+    local _, y = w:refPos()
+    return y, w
+  end
+  local y = endLane('standard', 24)
+  check(math.abs(y - RIGHT2) < 0.8, 'standard keeps right on an empty highway (y ' .. string.format('%.1f', y) .. ')')
+  y = endLane('hurry', 24)
+  check(math.abs(y - LEFT2) < 0.8, 'hurry moves to the fast lane at highway speed (y ' .. string.format('%.1f', y) .. ')')
+  local y2, w2 = endLane('madmax', 20)
+  check(math.abs(y2 - LEFT2) < 0.8 and not w2.collided, 'Mad Max in the fast lane, no collision')
+end)
+
+scenario('cutIn', function()
+  -- a car in the left lane a little ahead of us, going a bit slower: standard waits for a real gap,
+  -- furious squeezes in
+  local function firstChange(profile)
+    local w = W.new({ nodes = straight(0, 3000, 7.5, 25), ego = { x = 0, y = RIGHT2, psi = 0, v = 20 } })
+    w:addCar({ id = 1, pts = line(90, RIGHT2, 3000, RIGHT2), speed = 12 })
+    w:addCar({ id = 2, pts = line(-30, LEFT2, 3000, LEFT2), s0 = 12, speed = 19 })
+    w:engage('fsd', profile)
+    w:run(15)
+    return w:saw('laneChange'), w
+  end
+  local tS = firstChange('standard')
+  local tF, wF = firstChange('furious')
+  check(tF ~= nil, 'furious takes a tight gap')
+  check(tS == nil or (tF and tF < tS), 'standard waits longer than furious for the lane change')
+  check(not wF.collided, 'furious cut-in without a collision')
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

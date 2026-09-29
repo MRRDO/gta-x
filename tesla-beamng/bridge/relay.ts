@@ -15,7 +15,7 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import qrcode from 'qrcode-terminal'
-import { ACTIONS, COMMAND_TYPES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
+import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -185,6 +185,23 @@ function assignButton(action: ActionName, button: number | null) {
   saveButtons()
 }
 /** Relay-side handling of button messages. Returns true when handled. */
+let dialIdx = 0
+const DIAL_ACTIONS: Record<string, [ActionName, ActionName]> = {
+  volume: ['volumeUp', 'volumeDown'], distance: ['followFarther', 'followCloser'],
+  speed: ['speedUp', 'speedDown'], profile: ['profileNext', 'profilePrev'],
+}
+/** The dial's turn/click become the action of its current mode. Returns the action to run, or null. */
+function dialAction(name: string): ActionName | null {
+  if (name === 'dialClick') {
+    dialIdx = (dialIdx + 1) % DIAL_MODES.length
+    broadcast({ t: 'dial', mode: DIAL_MODES[dialIdx] })
+    return null
+  }
+  const mode = DIAL_MODES[dialIdx]
+  const dir = name === 'dialUp' ? 'up' : 'down'
+  broadcast({ t: 'dial', mode, dir })
+  return DIAL_ACTIONS[mode][dir === 'up' ? 0 : 1]
+}
 const MEDIA_ACTIONS = new Set<string>(['volumeUp', 'volumeDown', 'mute', 'playPause', 'nextTrack', 'prevTrack'])
 
 function handleButtons(ws: WebSocket, msg: any): boolean {
@@ -220,8 +237,11 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
       }
       const action = (Object.keys(buttonMap) as ActionName[]).find((k) => buttonMap[k] === button)
       if (action) {
-        if (MEDIA_ACTIONS.has(action)) broadcast({ t: 'media', action }) // volume etc. go to the iPad, not the game
-        else if (!sendGame({ t: 'action', name: action })) broadcast({ t: 'event', kind: 'error', detail: 'game not connected' })
+        const act = action.startsWith('dial') ? dialAction(action) : action
+        if (!act) return true
+        if (MEDIA_ACTIONS.has(act)) broadcast({ t: 'media', action: act }) // volume etc. go to the iPad, not the game
+        else if (!sendGame({ t: 'action', name: act })) broadcast({ t: 'event', kind: 'error', detail: 'game not connected' })
+        return true
       }
       return true
     }

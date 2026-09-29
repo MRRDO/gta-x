@@ -12,9 +12,9 @@ local MAX_STRIKES = 5
 M.MAX_STRIKES = MAX_STRIKES
 
 -- seconds of inattention before level 1, per profile (Hurry / Mad Max ask for more attention)
-local CAMERA_GRACE = { sloth = 5, chill = 5, standard = 4, hurry = 3, madmax = 2.5 }
+local CAMERA_GRACE = { sloth = 5, chill = 5, standard = 4, hurry = 3, madmax = 2.5, furious = 2.5 }
 -- with no camera: seconds between required wheel nudges
-local NUDGE_INTERVAL = { sloth = 45, chill = 45, standard = 30, hurry = 25, madmax = 20 }
+local NUDGE_INTERVAL = { sloth = 45, chill = 45, standard = 30, hurry = 25, madmax = 20, furious = 20 }
 -- Driver monitoring modes (setting nagMode): 'off' | 'camera' (the iPad cabin camera
 -- watches your eyes) | 'wheel' (a hands-on-wheel nudge every once in a while) | 'auto'
 -- (camera while it reports, else wheel). In wheel mode the interval depends on the road:

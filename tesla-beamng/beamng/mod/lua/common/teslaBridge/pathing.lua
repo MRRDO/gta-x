@@ -58,6 +58,8 @@ M.PROFILES = {
   standard = { offset =  2 * MPH, aLat = 2.4, gap = 2.0, throttle = 0.6, decel = 1.4, rise = 1.1 },
   hurry    = { offset =  5 * MPH, aLat = 2.7, gap = 1.6, throttle = 0.7, decel = 1.9, rise = 1.5 },
   madmax   = { offset =  8 * MPH, aLat = 3.0, gap = 1.2, throttle = 0.9, decel = 2.5, rise = 2.2 },
+  -- Furious: hold Max / Service mode. Cuts in, tails, well over the limit; the safety layer still brakes.
+  furious  = { offset = 15 * MPH, aLat = 4.0, gap = 0.8, throttle = 1.0, decel = 3.5, rise = 3.5 },
 }
 
 ---------------------------------------------------------------------------
