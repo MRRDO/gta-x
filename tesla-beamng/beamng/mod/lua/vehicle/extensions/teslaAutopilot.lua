@@ -778,7 +778,12 @@ local function disengage(reason, detail)
   inject('throttle', rawValue('throttle') or 0)
   inject('brake', rawValue('brake') or 0)
   inject('parkingbrake', 0)
-  if reason ~= 'steer' then inject('steering', rawValue('steering') or 0) end
+  if reason == 'arrived' then
+    -- parked: straighten the front wheels (like the real car), then give the wheel back to the player
+    allowLocal({ 'steering' }, false)
+    inject('steering', 0)
+    ap.straightUntil, ap.straightRaw = now + 1.8, rawValue('steering') or 0
+  elseif reason ~= 'steer' then inject('steering', rawValue('steering') or 0) end
   if ap.lastSignal then
     pcall(electrics.set_warn_signal, 0)
     ap.lastSignal = nil
@@ -1313,6 +1318,15 @@ local function updateGFX(dt)
   if next(closing) then pcall(watchClosing) end
   local s = sense(dt)
   override.active = (now - override.t) < 0.5
+  if ap.straightUntil then
+    local r = rawValue('steering') or 0
+    if ap.engaged or now >= ap.straightUntil or abs(r - (ap.straightRaw or 0)) > 0.12 then
+      ap.straightUntil = nil
+      if not ap.engaged then allowLocal({ 'steering' }, true); inject('steering', r) end
+    else
+      inject('steering', 0)
+    end
+  end
   -- A paddle turns a signal on; the game's own paddle binding may still shift the gear (it can reach the gearbox by
   -- routes we can't wrap), so put the gear back if it moved just after a paddle press.
   do

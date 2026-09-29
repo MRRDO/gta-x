@@ -1050,5 +1050,37 @@ scenario('laneCountFlap', function()
   check(n <= 4, 'wobbling road width does not cause lane hopping: ' .. n)
 end)
 
+scenario('angledSpot', function()
+  -- a spot whose painted lines are 20 degrees off the road's perpendicular: park parallel to the lines
+  local a = math.rad(20)
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 },
+    parking = { { x = 300, y = 9, z = 0, dx = -math.sin(a), dy = math.cos(a), known = true } } })
+  w.planner:setRoute({ 300, 5, 0 }, nil, 'Parking Lot')
+  w:engage('fsd', 'standard')
+  w:run(140, function(ww) return ww:saw('arrived') ~= nil end)
+  local _, ev = w:saw('arrived')
+  check(ev ~= nil, 'arrives')
+  -- the nose should point out of the spot along its axis: (sin a, -cos a)
+  local want = math.atan2(-math.cos(a), math.sin(a))
+  local d = (w.ego.psi - want + math.pi) % (2 * math.pi) - math.pi
+  check(math.abs(d) < math.rad(8), string.format('parked parallel to the spot lines (off by %.1f deg)', math.deg(d)))
+  check(ev and ev.err ~= nil and math.abs(ev.err.lat) < 1.0, 'reports where it ended up: ' .. (ev and ev.err and string.format('lat %.2f lon %.2f head %.1f', ev.err.lat, ev.err.lon, ev.err.headingDeg) or 'nothing'))
+  check(not w.collided, 'no collision')
+end)
+
+scenario('turnIntoBusiness', function()
+  -- the destination is 40 m off the road (a business): FSD turns in and drives up to it instead of stopping at the curb
+  for _, arrival in ipairs({ 'Parking Lot', 'Driveway' }) do
+    local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 } })
+    w.planner:setRoute({ 400, 40, 0 }, nil, arrival)
+    w:engage('fsd', 'standard')
+    w:run(150, function(ww) return ww:saw('arrived') ~= nil end)
+    local x, y = w:refPos()
+    check(w:saw('arrived') ~= nil, arrival .. ': arrives')
+    check(math.sqrt((x - 400) ^ 2 + (y - 40) ^ 2) < 8, string.format('%s: ends at the business, not on the road (%.0f, %.0f)', arrival, x, y))
+    check(not w.collided, arrival .. ': no collision')
+  end
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -146,6 +146,24 @@ local function spotOccupied(spot, cars)
 end
 
 -- Best free parking spot near the destination (FSD v14: nearer, and not taken).
+-- A spot's own axis (from the level's parking data) refines "opens toward the road": the car should end
+-- parallel to the painted lines. The axis may be the spot's length or its width (and either sign), so take
+-- whichever of the four directions is closest to the road-derived one, if that is within 35 degrees.
+local function snapToSpotAxis(spot, ox, oy)
+  if not spot.known then return ox, oy end
+  local ax, ay = spot.dx or 0, spot.dy or 0
+  local l = sqrt(ax * ax + ay * ay)
+  if l < 0.5 then return ox, oy end
+  ax, ay = ax / l, ay / l
+  local best, bd
+  for _, c in ipairs({ { ax, ay }, { -ax, -ay }, { -ay, ax }, { ay, -ax } }) do
+    local d = c[1] * ox + c[2] * oy
+    if not bd or d > bd then best, bd = c, d end
+  end
+  if bd and bd > math.cos(math.rad(35)) then return best[1], best[2] end
+  return ox, oy
+end
+
 function Planner:pickSpot(dest, cars)
   if self.chosenSpot and not spotOccupied(self.chosenSpot, cars) then return self.chosenSpot end
   local best, bestScore
@@ -183,6 +201,14 @@ local function prependBack(path, len)
   local off = n * 2
   for _, t in ipairs(path.turns or {}) do t.s = t.s + off end
   path.backLen = off
+end
+
+-- Is the destination well off the road the route ends on (a business, a car park)? 10..150 m away.
+function Planner:destOffRoad(path)
+  local e = path.pts[#path.pts]
+  if not e or not self.dest then return false end
+  local d = sqrt((self.dest[1] - e.x) ^ 2 + (self.dest[2] - e.y) ^ 2)
+  return d > 10 and d < 150
 end
 
 -- Build self.path from the ego pose (route to dest via stops, or follow the road).
@@ -236,6 +262,7 @@ function Planner:planPath(ego, cars)
       local ol = sqrt(ox * ox + oy * oy)
       if ol > 1e-6 then ox, oy = ox / ol, oy / ol end
       local perpendicular = abs(ox * rdy - oy * rdx) > 0.8 and ol > 3
+      if perpendicular then ox, oy = snapToSpotAxis(spot, ox, oy) end
       self.spot = spot
       if perpendicular then
         -- FSD backs into perpendicular spots: stop past it, then reverse in
@@ -264,6 +291,12 @@ function Planner:planPath(ego, cars)
         path.arrivalKind = 'parking'
       end
     elseif kind == 'Street' and self:parallelPark(path, cars) then
+      path.arrivalKind = 'parking'
+    elseif (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto' or kind == 'Driveway') and self:destOffRoad(path) then
+      -- the destination isn't on a road (a business, a lot with no mapped aisles): turn in and drive up to it
+      local e = path.pts[#path.pts]
+      local ux, uy = self.dest[1] - e.x, self.dest[2] - e.y
+      P.appendParking(path, self.dest[1], self.dest[2], e.z, ux, uy)
       path.arrivalKind = 'parking'
     elseif kind ~= 'Driveway' and kind ~= 'Take Over' then
       P.pullOver(path, 30)
@@ -578,6 +611,7 @@ function Planner:autopark(ego, cars, want)
   -- spot opens toward the road: use our side
   local lat = -(best.x - ego.x) * rdy + (best.y - ego.y) * rdx
   local ox, oy = rdy * (lat > 0 and 1 or -1), -rdx * (lat > 0 and 1 or -1)
+  ox, oy = snapToSpotAxis(best, ox, oy)
   local lon = (best.x - ego.x) * rdx + (best.y - ego.y) * rdy
   local beside = { x = ego.x + rdx * lon, y = ego.y + rdy * lon, z = ego.z }
   local q, rev = Mv.backIn({ x = best.x, y = best.y, z = best.z, outx = ox, outy = oy }, { x = beside.x, y = beside.y, z = beside.z, dx = rdx, dy = rdy }, 6)
@@ -1755,7 +1789,26 @@ function Planner:tickManeuver(ego, cars, out)
         if mv.after == 'park' then
           out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
           if self:finishUnresponsive(out) then self.dest, self.path = nil, nil; out.route = self:routeMessage(); return end
-          self:emit('arrived', { detail = 'parking' })
+          -- where did we end up, against where the maneuver meant to (and the spot's own data)?
+          local last = mv.segs[#mv.segs]
+          local n = last and #last.pts or 0
+          local err
+          if n >= 2 then
+            local a, b = last.pts[n - 1], last.pts[n]
+            local tx, ty = b.x - a.x, b.y - a.y
+            local tl = sqrt(tx * tx + ty * ty)
+            if tl > 1e-6 then
+              tx, ty = tx / tl, ty / tl
+              local rx, ry = ego.x - b.x, ego.y - b.y
+              local hxw, hyw = (last.dir or 1) * tx, (last.dir or 1) * ty -- the way the nose should point
+              local dot = clamp(ego.hx * hxw + ego.hy * hyw, -1, 1)
+              err = { lon = rx * tx + ry * ty, lat = -rx * ty + ry * tx, headingDeg = math.deg(math.acos(dot)) }
+            end
+          end
+          local sp = self.spot
+          self:emit('arrived', { detail = 'parking', err = err,
+            spot = sp and { x = sp.x, y = sp.y, dx = sp.dx, dy = sp.dy, known = sp.known } or nil,
+            car = { x = ego.x, y = ego.y, hx = ego.hx, hy = ego.hy } })
           self:disengage('arrived')
           self.dest, self.path = nil, nil
           out.route = self:routeMessage()

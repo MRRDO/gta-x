@@ -407,7 +407,7 @@ end
 local function findParking()
   parking = {}
   local function add(p, fx, fy)
-    if p then parking[#parking + 1] = { x = p.x, y = p.y, z = p.z, dx = fx or 0, dy = fy or 1 } end
+    if p then parking[#parking + 1] = { x = p.x, y = p.y, z = p.z, dx = fx or 0, dy = fy or 1, known = fx ~= nil and fy ~= nil } end
   end
   local gp = rawget(_G, 'gameplay_parking')
   if gp and type(gp.getParkingSpots) == 'function' then
