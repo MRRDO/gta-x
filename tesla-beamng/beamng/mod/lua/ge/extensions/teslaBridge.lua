@@ -184,6 +184,7 @@ local tLearnSave = 0
 local loadLearn, saveLearn -- forward
 local Lr = require('teslaBridge/learn')
 local tAids = 0
+local handoverSent = false -- the car was told a takeover is being requested (gas = take over)
 local function loadSocket()
   for _, name in ipairs({ 'socket.socket', 'socket' }) do
     local ok, s = pcall(require, name)
@@ -920,6 +921,10 @@ local function computeAlert(vid, st, ps, nag)
   if engaged and (nag.level or 0) >= 2 then
     return { kind = 'attention', message = (nag.level or 0) >= 3 and 'Take over immediately' or 'Pay attention to the road', level = nag.level }
   end
+  -- FSD isn't sure (confidence under 55 %): asks for a takeover but keeps driving until you act
+  if engaged and ps.lowConfidence then
+    return { kind = 'lowConfidence', message = 'Take over? FSD is unsure', level = 1, confidence = ps.confidence and num(ps.confidence, 2) or nil }
+  end
   return nil
 end
 
@@ -979,6 +984,7 @@ function M.onVehicleState(vid, json)
     maneuver = ps.maneuver,
     nag = { level = nag.level or 0, reason = nag.reason, strikes = nag.strikes or 0, maxStrikes = nag.maxStrikes or 5, lockedOut = nag.lockedOut or false,
       mode = nag.mode, active = nag.active, interval = nag.interval },
+    confidence = ps.confidence and num(ps.confidence, 2) or nil,
     lastDisengage = planner and planner.lastDisengage or nil,
     accelOverride = va.accelOverride or false,
     steerGain = va.steerGain, steerSign = va.steerSign,
@@ -989,6 +995,13 @@ function M.onVehicleState(vid, json)
   st.speedWarning = drive.warning or nil
   local okA, alert = pcall(computeAlert, vid, st, ps, nag)
   st.autopilot.alert = okA and alert or nil
+  -- while FSD is asking for a takeover, tapping the accelerator hands the car over
+  local wantHandover = st.autopilot.alert and (st.autopilot.alert.kind == 'takeover' or st.autopilot.alert.kind == 'lowConfidence'
+    or (st.autopilot.alert.kind == 'attention' and (st.autopilot.alert.level or 0) >= 3)) or false
+  if wantHandover ~= handoverSent and veh then
+    handoverSent = wantHandover
+    toVehicle(veh, 'command', { t = 'handover', on = wantHandover })
+  end
   -- the car reports once per frame at most, so below 20 fps the state rate = the game's fps
   st.fps = num(fpsAvg, 0)
   send(st, true)

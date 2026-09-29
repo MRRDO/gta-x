@@ -42,7 +42,11 @@ M.DEFAULT_SETTINGS = {
   followDistance = nil,  -- 1..7 (TACC); nil = profile gap
   laneChanges = true,
   nags = true,
+  unresponsive = 'park',  -- no answer to the last nag: park nearby if there's a spot, else pull over
+  confidenceFloor = 0.55, -- below this FSD asks the driver to take over (and keeps driving)
 }
+-- how long FSD sits at a stop sign before going, per profile (seconds; Tesla is brief)
+local STOP_DWELL = { sloth = 1.6, chill = 1.3, standard = 1.0, hurry = 0.7, madmax = 0.4 }
 
 local Planner = {}
 Planner.__index = Planner
@@ -1124,6 +1128,39 @@ function Planner:tick(snap)
     st.setSpeed = set
   end
 
+  ---------------------------------------------------------------- confidence
+  -- How sure FSD is right now (0..1): unreadable lights, busy junctions, going around things,
+  -- bad weather, emergency vehicles, sharp curves taken too fast, being off its path.
+  do
+    local conf = 0.95
+    local ctl = st.control
+    if ctl and ctl.kind == 'signal' and ctl.state == nil and ctl.dist and ctl.dist < 45 then conf = conf - 0.45 end
+    if waitingFor == 'crossTraffic' or waitingFor == 'gap' then
+      self.busySince = self.busySince or t
+      conf = conf - min(0.35, 0.1 + 0.04 * (t - self.busySince))
+    else
+      self.busySince = nil
+    end
+    if st.goAround then conf = conf - 0.2 end
+    if st.emergency then conf = conf - 0.15 end
+    if st.schoolBus then conf = conf - 0.15 end
+    if st.creeping then conf = conf - 0.1 end
+    conf = conf - 0.25 * (wx.rain or 0) - 0.3 * (wx.fog or 0)
+    if pr.dist > 3 then conf = conf - min(0.4, 0.1 * (pr.dist - 3)) end
+    local vc = path.vcap[pr.i]
+    if vc and v > vc * 1.25 + 1 then conf = conf - 0.2 end
+    conf = max(0, min(1, conf))
+    self.conf = self.conf and (self.conf + (conf - self.conf) * min(1, 0.1 / 0.4)) or conf
+    if self.conf < (self.settings.confidenceFloor or 0.55) then
+      self.lowSince = self.lowSince or t
+    else
+      self.lowSince = nil
+    end
+    st.confidence = self.conf
+    -- low for 1.5 s: ask the driver to take over (FSD keeps driving if they don't)
+    st.lowConfidence = self.lowSince ~= nil and t - self.lowSince > 1.5 or nil
+  end
+
   ---------------------------------------------------------------- caution (people and parked cars)
   -- Like FSD: slow down for someone on foot near the road ahead, and ease past parked cars
   -- close to the lane (a door could open) instead of driving by at full speed.
@@ -1435,7 +1472,7 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
       if v < 0.3 and (dist < 6 or (dist < 20 and t - fsm.still > 2.5)) then fsm.state, fsm.t = 'stopped', t end
     elseif fsm.state == 'stopped' then
       stopS = s
-      if t - fsm.t >= 2 then
+      if t - fsm.t >= (STOP_DWELL[self.profile] or 1.0) then
         if self.settings.quirks.creep then fsm.state, fsm.t = 'creep', t else fsm.state, fsm.t = 'peek', t end
       end
     elseif fsm.state == 'creep' then
@@ -1444,7 +1481,7 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
       cap(1.3)
       self.status.creeping = true
       if not fsm.noted then fsm.noted = true; self:emit('creeping', {}) end
-      if v < 0.2 and (creepS - 2) - sCar < 1.2 or t - fsm.t > 8 then fsm.state, fsm.t = 'peek', t end
+      if v < 0.2 and (creepS - 2) - sCar < 1.2 or t - fsm.t > 5 then fsm.state, fsm.t = 'peek', t end
     elseif fsm.state == 'peek' then
       stopS = max(s, sCar + 1.8)
       local j = jn or self:junctionNear(sg.x, sg.y, 30)
@@ -1458,7 +1495,7 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
         fsm.clearSince = nil
       else
         fsm.clearSince = fsm.clearSince or t
-        if t - fsm.clearSince > 0.6 then
+        if t - fsm.clearSince > 0.3 then
           fsm.state = 'done'
           self.cleared[sg.id] = true
           self.clearedS = sSign

@@ -1171,6 +1171,8 @@ handlers.drive = function(cmd)
   if cmd.accel == 'chill' or cmd.accel == 'standard' then feel.accel = cmd.accel end
 end
 
+handlers.handover = function(cmd) ap.handover = cmd.on and true or false end
+
 handlers.paddles = function(cmd) ap.paddleSignals = cmd.signals ~= false end
 
 handlers.swerveAssist = function(cmd)
@@ -1215,6 +1217,11 @@ local function updateGFX(dt)
       -- accelerator (your pedal or the app's strip) overrides: go faster while held, never brake
       local pedal = rawSinceEngage('throttle') or 0
       local accel = max(pedal, (override.active and override.value > 0) and override.value or 0)
+      if ap.handover and pedal > 0.25 then
+        -- FSD asked for a takeover: the accelerator is the answer (instead of going faster)
+        disengage('throttle', 'handover')
+        return
+      end
       if plan.maneuver and accel > 0.3 then
         -- summon / autopark / 3-point turn: the accelerator cancels it (like a Tesla), never speeds it up
         disengage('throttle', plan.maneuver .. ' cancelled')

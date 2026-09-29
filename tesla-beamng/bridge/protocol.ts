@@ -123,7 +123,9 @@ export type AutopilotState = {
    * 'takeover' (FSD > 80 mph where the limit is < 55), 'attention' (nag level 2+).
    * Red card + alarm for crash/takeover, blue for attention. Absent when there's nothing.
    */
-  alert?: { kind: 'crash' | 'takeover' | 'attention'; message: string; level: number } | null
+  alert?: { kind: 'crash' | 'takeover' | 'attention' | 'lowConfidence'; message: string; level: number; confidence?: number } | null
+  /** FSD's confidence right now, 0..1. Under 55 % (for 1.5 s) it shows the 'lowConfidence' alert and keeps driving; tapping the accelerator then hands the car over. */
+  confidence?: number
   /** Learned steering calibration, for debugging. */
   steerSign?: number
   steerGain?: number
@@ -291,7 +293,7 @@ export type Command =
   | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean; camera?: CameraSettings
       /** Auto Shift out of Park: press the brake in P and the car picks D or R (default off). */
       autoShift?: boolean
-      /** Unresponsive driver: 'park' = drive to a free spot within 500 m and park; 'pullOver' (default) = pull over and stop. */
+      /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'
       /**
        * Driver monitoring: 'off' (no nags), 'camera' (the iPad cabin camera; falls back to the
@@ -303,6 +305,8 @@ export type Command =
       paddleSignals?: boolean
       /** Light on-line learning of your driving style (default on). */
       learning?: boolean
+      /** Confidence under which FSD asks you to take over (default 0.55). */
+      confidenceFloor?: number
       /** Auto headlights (default on): on when it's dark or raining, off in daylight. */
       autoHeadlights?: boolean
       /** Auto high beams at night above 25 mph, dipped for cars ahead (default off). */

@@ -478,6 +478,51 @@ scenario('caution', function()
   check(parked < 10.5 and parked < free - 1, string.format('caution: eases past a parked car beside the lane (%.1f vs %.1f m/s free)', parked, free))
 end)
 
+-- shorter stop sign dwell (Quentin: "stops a bit too long"), per profile
+scenario('stopDwell', function()
+  local function dwell(profile)
+    local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 5, y = LANE1, psi = 0, v = 0 },
+      signals = { { id = 'stop1', x = 141, y = -7, z = 0, kind = 'stop' } } })
+    w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+    w:engage('fsd', profile)
+    local t0, t1
+    w:run(80, function(ww)
+      local f = ww.planner.stopFsm.stop1
+      if f and f.state == 'stopped' and not t0 then t0 = ww.t end
+      if f and (f.state == 'creep' or f.state == 'peek' or f.state == 'done') and not t1 then t1 = ww.t end
+      return ww:saw('arrived')
+    end)
+    return t0 and t1 and (t1 - t0) or 99
+  end
+  local std, mad, sloth = dwell('standard'), dwell('madmax'), dwell('sloth')
+  check(std < 1.6, string.format('stop sign: standard waits about a second (%.1f s)', std))
+  check(mad < std and sloth > std, string.format('stop sign: Mad Max %.1f s < standard %.1f s < Sloth %.1f s', mad, std, sloth))
+end)
+
+-- confidence: an unreadable light lowers it under 55 %; FSD asks for a takeover but keeps driving
+scenario('confidence', function()
+  local w = W.new({ nodes = straight(0, 2000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 12 },
+    signals = { { id = 'dead', x = 600, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return nil end } } })
+  w:engage('fsd', 'standard')
+  local low, minConf = false, 1
+  local passed = false
+  w:run(60, function(ww)
+    local st = ww.planner.status
+    if st and st.confidence then minConf = math.min(minConf, st.confidence) end
+    if st and st.lowConfidence then low = true end
+    local x = ww:refPos()
+    if x > 650 then passed = true end
+    return passed
+  end)
+  check(low, string.format('confidence: an unreadable light drops it under 55 %% (min %.2f)', minConf))
+  check(passed and w.planner.mode == 'fsd', 'confidence: it keeps driving if the driver does nothing')
+  local calm = W.new({ nodes = straight(0, 2000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 12 } })
+  calm:engage('fsd', 'standard')
+  local calmMin = 1
+  calm:run(20, function(ww) local st = ww.planner.status; if st and st.confidence then calmMin = math.min(calmMin, st.confidence) end end)
+  check(calmMin > 0.85, string.format('confidence: high on an easy road (%.2f)', calmMin))
+end)
+
 scenario('aeb', function()
   local w = W.new({ nodes = straight(0, 2000, 5, 25), ego = { x = 0, y = LANE1, psi = 0, v = 20 },
     safety = { evasion = false } })

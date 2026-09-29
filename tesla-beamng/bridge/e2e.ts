@@ -516,6 +516,26 @@ try {
     send({ t: 'settings', stoppingMode: 'roll', regen: false })
   }
 
+  // --- low confidence: FSD asks for a takeover, keeps driving, and the accelerator hands the car over
+  {
+    send({ t: 'gear', gear: 'D' })
+    send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
+    await until('fsd', () => st().autopilot.engaged, 4000)
+    await until('moving', () => st().speed > 3, 10000)
+    send({ t: 'settings', confidenceFloor: 2 }) // "always unsure"
+    check('low confidence: asks the driver to take over', await until('lowconf', () => st().autopilot.alert?.kind === 'lowConfidence', 6000), JSON.stringify(st().autopilot.alert))
+    await sleep(1500)
+    check('...and keeps driving if nobody touches anything', st().autopilot.engaged && st().speed > 1, `engaged ${st().autopilot.engaged} speed ${st().speed.toFixed(1)}`)
+    events.length = 0
+    playerInput('throttle 0.7')
+    check('...the accelerator then hands the car over', await until('handover', () => events.some((e) => e.kind === 'disengage' && e.detail === 'throttle'), 4000),
+      events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    playerInput('throttle 0')
+    send({ t: 'settings', confidenceFloor: 0.55 })
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off', () => !st().autopilot.engaged, 3000)
+  }
+
   // --- Swerve Assist while the driver drives: yank the wheel back and forth at ~50 mph
   if (process.env.HARNESS_NO_WHEEL !== '1') {
     send({ t: 'autopilot', mode: 'off' })
