@@ -129,7 +129,8 @@ function Driver:update(dt, sense, opts)
   local vt = plan.vcap and P.valueAt(path, plan.vcap, preview, pr.i) or 10
   if plan.stopS then
     local dstop = plan.stopS - s
-    vt = min(vt, sqrt(max(0, 2 * 2.5 * (dstop - 2))))
+    -- Tesla-style: start easing off early and brake at a steady, gentle rate (per profile)
+    vt = min(vt, sqrt(max(0, 2 * (plan.decel or 2.0) * (dstop - 2))))
     out.stopDist = dstop
   end
   if plan.lead then
@@ -153,7 +154,8 @@ function Driver:update(dt, sense, opts)
   local e = vt - v
   if vt < 0.3 and v < 0.6 then
     self.speedI = 0
-    out.throttle, out.brake = 0, 0.5
+    -- soft stop: ease the brake off as the car comes to rest (no lurch), then hold it
+    out.throttle, out.brake = 0, (v > 0.12) and (0.12 + 0.6 * v) or 0.5
     if plan.hold then out.parkingbrake = 1 end
   else
     self.speedI = clamp(self.speedI + e * dt * 0.08, -0.3, 0.4)
@@ -174,6 +176,24 @@ function Driver:update(dt, sense, opts)
       if self.speedI > 0 then self.speedI = 0 end
     end
   end
+  -- smooth pedals (jerk limit): effort builds and releases gradually, like FSD. Emergency
+  -- braking (urgent plans) and the standstill hold are not slowed down.
+  if not plan.urgent and not (vt < 0.3 and v < 0.6) then
+    local up = (plan.rise or 1.1)
+    local pt, pb = self.pThr or 0, self.pBrk or 0
+    local wantThr, wantBrk = out.throttle, out.brake
+    -- full brake is ~9 m/s^2, so 0.45/s of brake is ~4 m/s^3 of jerk: what a passenger calls smooth
+    out.throttle = max(pt - 2.0 * dt, min(pt + up * dt, wantThr))
+    local low = v < 3 and (1 + (3 - v) * 1.2) or 1 -- at walking pace a quick brake is gentle anyway
+    out.brake = max(pb - 1.0 * dt, min(pb + 0.42 * up * low * dt, wantBrk))
+    -- never both: the pedal we don't want lets go at once
+    if wantBrk > 0 then out.throttle = 0 elseif wantThr > 0 then out.brake = 0 end
+    -- a hard stop the plan really needs (stop line coming up fast) can still bite
+    if plan.stopS and plan.stopS - 2 - s > 0.5 and v > 1 and v * v / (2 * (plan.stopS - 2 - s)) > 3 then
+      out.brake = max(out.brake, min(0.8, 0.4 + (v * v / (2 * (plan.stopS - 2 - s)) - 3) * 0.2))
+    end
+  end
+  self.pThr, self.pBrk = out.throttle, out.brake
   if opts.steerOnly then out.throttle, out.brake = 0, (vt < v - 3) and min(0.8, (v - vt) * 0.1) or 0 end
   return out
 end

@@ -274,7 +274,7 @@ function Planner:planPath(ego, cars)
   end
   prependBack(path, 150)
   local prof = self:prof()
-  P.speedProfile(path, { offset = prof.offset, aLat = prof.aLat, endSpeed = (not path.openEnded) and 0 or nil })
+  P.speedProfile(path, { offset = prof.offset, aLat = prof.aLat, decel = prof.decel, endSpeed = (not path.openEnded) and 0 or nil })
   path.limit = {}
   for i, pt in ipairs(path.pts) do path.limit[i] = pt.lim or P.classDefaultSpeed(pt.r, pt.drv) end
   self.path, self.hint = path, nil
@@ -906,7 +906,7 @@ function Planner:tick(snap)
     -- school bus: slow way down when passing a stopped one
     if c.schoolBus and abs(c.v) < 0.5 and rel > -10 and rel < 80 and abs(o.lat) < 12 then
       st.schoolBus = true
-      if rel < 40 then cap(4.5) end
+      if rel < 75 then cap(4.5) end -- start slowing early: comfortable braking needs the room
       if not self.busNoted then self.busNoted = true; self:emit('schoolBus', {}) end
     end
     if fsd and stationary and rel > 5 and rel < 90 and clearance < want and clearance > -((c.w or 1.9) + egoWid) * 0.5 + 0.6 and not c.schoolBus then
@@ -1124,8 +1124,33 @@ function Planner:tick(snap)
     st.setSpeed = set
   end
 
+  ---------------------------------------------------------------- caution (people and parked cars)
+  -- Like FSD: slow down for someone on foot near the road ahead, and ease past parked cars
+  -- close to the lane (a door could open) instead of driving by at full speed.
+  for _, c in ipairs(cars) do
+    if abs(c.v or 0) < 3 then
+      local pj = P.project(win, c.x, c.y)
+      if pj and pj.s > sCar - 2 and pj.s - sCar < 130 then
+        local small = (c.w or 2) < 1.2 and (c.l or 4) < 1.5
+        local latAbs = abs(pj.lat)
+        -- allowed speed at distance d so we can still ease down to `target` at the comfortable rate
+        local function easeTo(target)
+          local d = max(0, pj.s - sCar - 4)
+          return sqrt(target * target + 2 * (prof.decel or 1.8) * d)
+        end
+        if small and latAbs < 6 then
+          cap(easeTo(latAbs < 2.8 and 2.5 or 5.5))     -- pedestrian at / near the road
+          st.pedestrian = true
+        elseif abs(c.v or 0) < 0.5 and latAbs > 1.0 and latAbs < 3.2 and (c.l or 4) > 3 then
+          cap(easeTo(8.9))                              -- parked right beside the lane: <= 20 mph
+        end
+      end
+    end
+  end
+
   ---------------------------------------------------------------- turn signals
-  if not signal and nextTurn and nextTurn.s - sCar < 60 and nextTurn.s - sCar > -5 then signal = nextTurn.dir end
+  -- FSD signals early: about 6 s before the turn, at least 60 m
+  if not signal and nextTurn and nextTurn.s - sCar < max(60, v * 6) and nextTurn.s - sCar > -5 then signal = nextTurn.dir end
   if not signal and path.arrivalKind == 'curb' and remaining < 45 then signal = 'right' end
   if not signal and st.emergency and st.emergency.action == 'pullOver' then signal = 'right' end
   st.nextTurn = nextTurn and { dir = nextTurn.dir, dist = max(0, nextTurn.s - sCar), road = nextTurn.road or '' } or nil
@@ -1219,7 +1244,7 @@ function Planner:tick(snap)
     lead = lead and { s = lead.s - sBase, v = lead.v } or nil,
     signal = signal or false, hazard = hazard,
     hold = hold, openEnded = path.openEnded or false,
-    gapTime = gap, throttleMax = prof.throttle,
+    gapTime = gap, throttleMax = prof.throttle, decel = prof.decel, rise = prof.rise,
     maxSpeed = maxSpeed, wiggle = wiggle or nil,
     urgent = (self.urgentUntil and t < self.urgentUntil) or nil,
     mode = self.mode,

@@ -433,6 +433,51 @@ scenario('aebParked', function()
   check(braked(1.7) == false, 'AEB: no phantom braking for a parked car that only grazes the lane edge')
 end)
 
+-- Tesla feel: smooth pedals (low jerk), gentle steady stops, careful around people and parked cars
+scenario('comfort', function()
+  local w = W.new({ nodes = straight(0, 3000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 0 },
+    signals = { { id = 'stop', x = 500, y = -7, kind = 'stop', prop = true } } })
+  w.planner:setRoute({ 900, LANE1, 0 }, nil, 'Driveway')
+  w:engage('fsd', 'standard')
+  local prevV, prevA, maxJerk, maxDecel, maxAccel = 0, 0, 0, 0, 0
+  local jerkAt, jerkV
+  local last = 0
+  w:run(90, function(ww)
+    if ww.t - last >= 0.25 then
+      local dt = ww.t - last; last = ww.t
+      local a = (ww.ego.v - prevV) / dt
+      if ww.t > 2 and ww.ego.v > 1.5 and prevV > 1.5 then local j = math.abs(a - prevA) / dt; if j > maxJerk then maxJerk, jerkAt, jerkV = j, ww.t, ww.ego.v end end
+      maxDecel = math.min(maxDecel, a); maxAccel = math.max(maxAccel, a)
+      prevV, prevA = ww.ego.v, a
+    end
+    return ww:saw('arrived')
+  end)
+  check(maxAccel < 2.6, string.format('comfort: gentle acceleration (max %.2f m/s^2)', maxAccel))
+  check(-maxDecel < 3.0, string.format('comfort: gentle braking, no lurch (max %.2f m/s^2)', -maxDecel))
+  check(maxJerk < 5.0, string.format('comfort: smooth pedals (max jerk %.1f m/s^3 at t=%.1f v=%.1f)', maxJerk, jerkAt or 0, jerkV or 0))
+  check(w:saw('arrived') ~= nil, 'comfort: still gets there')
+end)
+
+scenario('caution', function()
+  local function maxSpeedPassing(extra)
+    local w = W.new({ nodes = straight(0, 1500, 6, 17), ego = { x = 0, y = LANE1, psi = 0, v = 14 } })
+    if extra then extra(w) end
+    w:engage('fsd', 'standard')
+    local m = 0
+    w:run(40, function(ww)
+      local x = ww:refPos()
+      if x > 196 and x < 206 then m = math.max(m, ww.ego.v) end -- right beside it
+      return x > 260
+    end)
+    return m, w
+  end
+  local free = maxSpeedPassing(nil)
+  local ped = maxSpeedPassing(function(w) w:addCar({ id = 8, x = 200, y = -5.0, dx = 0, dy = 1, l = 0.5, w = 0.5, v = 0 }) end)
+  local parked = maxSpeedPassing(function(w) w:addCar({ id = 9, x = 200, y = -4.6, dx = 1, dy = 0, l = 4.6, w = 1.9 }) end)
+  check(ped < 6.5 and ped < free - 3, string.format('caution: slows right down for a pedestrian at the road edge (%.1f vs %.1f m/s free)', ped, free))
+  check(parked < 10.5 and parked < free - 1, string.format('caution: eases past a parked car beside the lane (%.1f vs %.1f m/s free)', parked, free))
+end)
+
 scenario('aeb', function()
   local w = W.new({ nodes = straight(0, 2000, 5, 25), ego = { x = 0, y = LANE1, psi = 0, v = 20 },
     safety = { evasion = false } })

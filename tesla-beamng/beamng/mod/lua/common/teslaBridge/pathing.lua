@@ -52,11 +52,12 @@ function M.normalizeLimit(v)
 end
 
 M.PROFILES = {
-  sloth    = { offset = -2 * MPH, aLat = 1.8, gap = 3.0, throttle = 0.6 },
-  chill    = { offset =  0,       aLat = 2.1, gap = 2.5, throttle = 0.6 },
-  standard = { offset =  2 * MPH, aLat = 2.4, gap = 2.0, throttle = 0.6 },
-  hurry    = { offset =  5 * MPH, aLat = 2.7, gap = 1.6, throttle = 0.7 },
-  madmax   = { offset =  8 * MPH, aLat = 3.0, gap = 1.2, throttle = 0.9 },
+  -- decel = the comfortable braking FSD plans stops with (m/s^2); jerk = how fast pedal effort may change
+  sloth    = { offset = -2 * MPH, aLat = 1.8, gap = 3.0, throttle = 0.6, decel = 1.0, rise = 0.8 },
+  chill    = { offset =  0,       aLat = 2.1, gap = 2.5, throttle = 0.6, decel = 1.2, rise = 0.9 },
+  standard = { offset =  2 * MPH, aLat = 2.4, gap = 2.0, throttle = 0.6, decel = 1.4, rise = 1.1 },
+  hurry    = { offset =  5 * MPH, aLat = 2.7, gap = 1.6, throttle = 0.7, decel = 1.9, rise = 1.5 },
+  madmax   = { offset =  8 * MPH, aLat = 3.0, gap = 1.2, throttle = 0.9, decel = 2.5, rise = 2.2 },
 }
 
 ---------------------------------------------------------------------------
