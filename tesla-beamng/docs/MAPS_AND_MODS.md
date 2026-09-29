@@ -2,6 +2,13 @@
 
 Honest note: this comes from web search results only. Nobody has installed or driven any of it yet, and the sites that repost mods (modland, modshost and so on) are not vetted by BeamNG. Get mods from beamng.com/resources or the in-game repository when you can. FSD needs AI road data (the bridge reads the map's road graph), so a pretty map with no AI paths will not work with FSD.
 
+## Quentin's laptop: HP ProBook 455 G7, 24 GB RAM
+The ProBook 455 G7 has a Ryzen (4000-series) with integrated Radeon Vega graphics and no separate GPU. The RAM (24 GB) is plenty; the weak spot is the integrated GPU, which is well under BeamNG's minimum (Radeon HD 7750 class). I found no benchmark of BeamNG on this exact laptop, so treat all of this as expectations, not measurements.
+- Stick to the **stock maps** and pick the light ones: Gridmap, Industrial, Small Island, Automation Test Track, Derby/Hirochi Raceway. East Coast USA is heavier but is what the bridge is tested on: try it first, and drop to another map if FPS is bad.
+- **Skip** Los Injurus (needs about 4 GB and a 12 GB GPU), and heavy maps like Italy or West Coast in daylight with lots of traffic.
+- Settings that help most (change them yourself; the bridge never touches graphics): resolution 1280x720 or a lower render scale, shadows and reflections low, draw distance low, no HDR/volumetric clouds (0.39 added D3D12, HDR and volumetric clouds, which cost a lot), close the browser and anything else, plug in the charger and set Windows to Best performance. Keep AI traffic low: FSD only needs a few cars.
+- Lighter maps for FSD testing: Gridmap (flat, no signals, so no traffic-light testing) and the Band1t Highway mod (built for traffic, light). Both need checking for AI road data.
+
 ## Maps (best first for FSD)
 1. **East Coast USA (stock)**: residential and commercial mix, signals, stop signs. Already what the bridge is tested against, so this is the safe default.
 2. **West Coast USA, Italy, Utah (stock)**: real AI roads, towns and highways. Italy has small towns with tight streets.
