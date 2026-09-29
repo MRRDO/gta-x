@@ -840,5 +840,27 @@ scenario('parkPullOver', function()
   check(w3.planner.dest and w3.planner.dest[1] == 4000, 'a new trip picked mid pull-over is kept after a takeover')
 end)
 
+scenario('arrivalChoice', function()
+  local function trip(choice)
+    local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 } })
+    w.planner:setRoute({ 400, LANE1, 0 }, nil, 'Parking Lot')
+    if choice then check(w.planner:setArrival(choice), 'setArrival ' .. choice) end
+    w:engage('fsd', 'standard')
+    w:run(150, function(ww) return ww:saw('arrived') ~= nil end)
+    return w
+  end
+  local w = trip('takeOver')
+  local at, a = w:saw('arrived')
+  check(at ~= nil and a and a.detail == 'takeOver', 'takeOver: arrived with detail takeOver')
+  check(w.ego.gear ~= 'P', 'takeOver: not thrown into Park')
+  check(w.ego.v < 0.5, 'takeOver: stopped at the destination')
+  local n = 0
+  for _, e in ipairs(w.events) do if e.kind == 'arriving' then n = n + 1 end end
+  check(n == 1, 'arriving event fires exactly once (' .. n .. ')')
+  local w2 = trip('pullOver')
+  check(w2:saw('arrived') ~= nil and w2.ego.gear == 'P', 'pullOver: arrives and parks')
+  check(select(1, w2.planner:setArrival('nonsense')) == false, 'bad choice rejected')
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

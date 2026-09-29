@@ -185,6 +185,8 @@ function assignButton(action: ActionName, button: number | null) {
   saveButtons()
 }
 /** Relay-side handling of button messages. Returns true when handled. */
+const MEDIA_ACTIONS = new Set<string>(['volumeUp', 'volumeDown', 'mute', 'playPause', 'nextTrack', 'prevTrack'])
+
 function handleButtons(ws: WebSocket, msg: any): boolean {
   switch (msg.t) {
     case 'companionHello':
@@ -218,7 +220,8 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
       }
       const action = (Object.keys(buttonMap) as ActionName[]).find((k) => buttonMap[k] === button)
       if (action) {
-        if (!sendGame({ t: 'action', name: action })) broadcast({ t: 'event', kind: 'error', detail: 'game not connected' })
+        if (MEDIA_ACTIONS.has(action)) broadcast({ t: 'media', action }) // volume etc. go to the iPad, not the game
+        else if (!sendGame({ t: 'action', name: action })) broadcast({ t: 'event', kind: 'error', detail: 'game not connected' })
       }
       return true
     }

@@ -84,7 +84,9 @@ ws.on('message', (d) => {
   else if (m.t === 'camera') { if (m.off) camOff++; else camFrames.push(m) }
   else if (m.t === 'wheelButton' && m.down) buttonPresses.push(m.button)
   else if (m.t === 'parkingSpots') parkingSpots = m
+  else if (m.t === 'media') mediaMsgs.push(m.action)
 })
+const mediaMsgs: string[] = []
 const send = (m: unknown) => ws.send(JSON.stringify(m))
 // the app's cabin camera reports the driver's attention a few times a second
 let attn: 'ok' | 'phone' | 'eyesOff' | null = 'ok'
@@ -386,6 +388,11 @@ try {
     const before = st().autopilot.profile
     send({ t: 'action', name: 'profileNext' })
     check('action: next profile', await until('profile', () => st().autopilot.profile !== before, 3000), `${before} -> ${st().autopilot.profile}`)
+    send({ t: 'setButton', action: 'volumeUp', button: 31 })
+    await until('vol mapped', () => buttonMap?.map?.volumeUp === 31, 3000)
+    send({ t: 'wheelButton', button: 31, down: true })
+    check('G29 dial mapped to volumeUp reaches the app as media', await until('media', () => mediaMsgs.includes('volumeUp'), 3000), mediaMsgs.join(','))
+    send({ t: 'setButton', action: 'volumeUp', button: null })
     send({ t: 'setButton', action: 'toggleFSD', button: null })
     check('clear a button', await until('cleared', () => buttonMap?.map?.toggleFSD === undefined, 3000))
   }

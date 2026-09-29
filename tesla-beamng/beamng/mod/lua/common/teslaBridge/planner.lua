@@ -258,7 +258,7 @@ function Planner:planPath(ego, cars)
       end
     elseif kind == 'Street' and self:parallelPark(path, cars) then
       path.arrivalKind = 'parking'
-    elseif kind ~= 'Driveway' then
+    elseif kind ~= 'Driveway' and kind ~= 'Take Over' then
       P.pullOver(path, 30)
       path.arrivalKind = 'curb'
     end
@@ -386,8 +386,21 @@ function Planner:setRoute(dest, stops, arrival)
   self.dest, self.stops, self.arrival = dest, stops, arrival
   self.turnVia, self.chosenSpot = nil, nil
   self.pullingOver, self.unresponsive = nil, nil -- a new trip replaces a pull-over in progress
+  self.arrivingFor = nil
   self.path = nil
   self.spot = nil
+end
+
+-- The driver's answer to the 'arriving' prompt: park / street (parallel) / pullOver / driveway / takeOver
+local ARRIVAL_KINDS = { park = 'Parking Lot', street = 'Street', pullOver = 'Pull Over', driveway = 'Driveway', takeOver = 'Take Over' }
+function Planner:setArrival(choice)
+  local kind = ARRIVAL_KINDS[choice]
+  if not kind or not self.dest then return false, 'no such arrival choice' end
+  self.arrival = kind
+  self.chosenSpot = nil
+  if self.mode ~= 'off' then self.replanNow = true else self.path = nil end
+  self:emit('arrivalChoice', { choice = choice })
+  return true
 end
 
 function Planner:cancelRoute()
@@ -847,6 +860,20 @@ function Planner:tick(snap)
   local st = self.status
   st.remaining = (not path.openEnded) and remaining or nil
   st.speedLimit = path.limit[pr.i]
+  -- point-to-point: as the destination comes up, offer the arrival choices (the app shows a
+  -- sheet; if nobody answers FSD does what was picked earlier / its default)
+  if self.dest and not path.openEnded and remaining > 25 and remaining < max(120, v * 10) then
+    local key = floor(self.dest[1] / 25) .. ',' .. floor(self.dest[2] / 25)
+    if self.arrivingFor ~= key then
+      self.arrivingFor = key
+      local free = 0
+      for _, sp in ipairs(self.parking) do
+        if (sp.x - self.dest[1]) ^ 2 + (sp.y - self.dest[2]) ^ 2 < 100 * 100 and not spotOccupied(sp, cars) then free = free + 1 end
+      end
+      self:emit('arriving', { dist = floor(remaining), current = self.arrival or 'auto', freeSpots = free,
+        options = { 'park', 'street', 'pullOver', 'driveway', 'takeOver' } })
+    end
+  end
   self.onHighway = ((path.pts[pr.i].r or 0) >= 9) or nil -- wide multi-lane road
 
   if self.turnVia and (ego.x - self.turnVia.x) ^ 2 + (ego.y - self.turnVia.y) ^ 2 < 12 * 12 then
@@ -1246,9 +1273,10 @@ function Planner:tick(snap)
     end
     if not self.arrived then
       self.arrived = true
-      out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+      local handOver = self.arrival == 'Take Over'
+      if not handOver then out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' } end
       if self:finishUnresponsive(out) then return self:finish(out) end
-      self:emit('arrived', { detail = path.arrivalKind })
+      self:emit('arrived', { detail = handOver and 'takeOver' or path.arrivalKind })
       self:disengage('arrived')
       self.dest, self.path = nil, nil
       out.route = self:routeMessage()

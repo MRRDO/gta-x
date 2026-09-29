@@ -1298,6 +1298,14 @@ handleCommand = function(msg)
     if not planner or not veh then return end
     planner:summon(msg.dir, egoSnapshot(veh))
     syncVehicleMode(veh)
+  elseif t == 'arrivalChoice' then
+    if not planner or not veh then return end
+    local ok, err = planner:setArrival(msg.choice)
+    if not ok then event('error', 'arrival: ' .. tostring(err)); return end
+    if planner.mode == 'off' then
+      local okP = planner:planPath(egoSnapshot(veh), trafficList())
+      if okP then send(planner:routeMessage()); planner.routeDirty = false end
+    end
   elseif t == 'autopark' then
     if not planner or not veh then return end
     local ego, cars = egoSnapshot(veh), trafficList()

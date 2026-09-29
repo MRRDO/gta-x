@@ -193,6 +193,8 @@ export type EventKind =
   | 'collision'        // the car was hit (see autopilot.alert)
   | 'signalStuck'      // a red that never changed for 90 s, treated as an all-way stop
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
+  | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver}; answer with {t:'arrivalChoice'}
+  | 'arrivalChoice'    // the choice was applied
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
   | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
   | 'pullOver'         // P pressed while FSD drives: pulling over ({dist}); take over to cancel
@@ -219,6 +221,7 @@ export type ActionName =
   | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'disengage' | 'voiceNote' | 'nudge'
   | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
   | 'followCloser' | 'followFarther' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
+  | 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' // media keys: the relay tells the app ({t:'media'}), not the game
 
 export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'toggleFSD', label: 'Start / stop FSD' },
@@ -237,6 +240,12 @@ export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'followFarther', label: 'Follow farther' },
   { name: 'autopark', label: 'Autopark' },
   { name: 'park', label: 'Park (FSD driving: pull over and park)' },
+  { name: 'volumeUp', label: 'Volume up (media, on the iPad)' },
+  { name: 'volumeDown', label: 'Volume down (media, on the iPad)' },
+  { name: 'mute', label: 'Mute / unmute (media)' },
+  { name: 'playPause', label: 'Play / pause (media)' },
+  { name: 'nextTrack', label: 'Next track (media)' },
+  { name: 'prevTrack', label: 'Previous track (media)' },
   { name: 'summonForward', label: 'Summon forward' },
   { name: 'summonReverse', label: 'Summon reverse' },
   { name: 'summonStop', label: 'Stop summon' },
@@ -273,7 +282,10 @@ export type CameraFrame = {
  */
 export type Cameras = { t: 'cameras'; cams: { id: 'rear'; width: number; height: number; fps: number }[] }
 
-export type GameMessage = Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame | ParkingSpots
+/** Relay -> app when a wheel button mapped to a media action is pressed (the G29's dial = volume). */
+export type Media = { t: 'media'; action: 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' }
+
+export type GameMessage = Media | Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame | ParkingSpots
 
 // ---------------------------------------------------------------------------
 // App -> game
@@ -326,6 +338,7 @@ export type Command =
   | { t: 'attention'; state: 'ok' | 'phone' | 'eyesOff' | 'unknown' } // from the app's cabin camera, ~2-5 Hz
   | { t: 'nudge' } // "hands on wheel" (e.g. a button for keyboard players)
   | { t: 'summon'; dir: 'forward' | 'reverse' | null } // Dumb Summon (null stops)
+  | { t: 'arrivalChoice'; choice: 'park' | 'street' | 'pullOver' | 'driveway' | 'takeOver' } // answer to the 'arriving' event
   | { t: 'autopark'; spot?: number } // spot: an id from parkingSpots (tapped on the map); none = the nearest free spot beside the car
   | { t: 'requestParkingSpots'; near?: [number, number]; radius?: number }
   | { t: 'resetStrikes' }
@@ -352,7 +365,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice',
 ])
 
 export const MPH = 0.44704
