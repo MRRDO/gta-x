@@ -17,7 +17,7 @@ local function run(opts)
   local tmax = opts.tmax or 1.3
   local fric = opts.fric or 0.12
   local devSign = opts.devSign or 1
-  local s = W.new()
+  local s = W.new({ gripScale = opts.gripScale })
   local dt = 1 / 60
   local sub = 20
   local p, w = opts.p0 or 0, 0 -- raw pos, raw/s
@@ -114,6 +114,43 @@ do
   end })
   check((log.chatter or 0) < 1.0, string.format('steady turn: motor force barely chatters (sum |dF| %.2f over 3 s)', log.chatter or 0))
   check(errAfter(log, 2) < 0.03, string.format('steady turn: holds the angle (err %.3f)', errAfter(log, 2)))
+end
+
+-- 5. light touch vs firm turn (takeover level)
+do
+  local function hold(at, level)
+    return run({
+      gripScale = W.takeoverLimit(level) / 0.15,
+      target = function(t) return t > 0.5 and 0.2 or 0 end,
+      hand = function(t, p, w) if t < 1 then return 0 end return -40 * (p - at) * RAD_PER_RAW - 1.5 * w * RAD_PER_RAW end,
+      T = 4,
+    })
+  end
+  check(hold(0.12, 'light').gripAt ~= nil, 'light level: a modest push (0.08 off) counts as taking over')
+  check(hold(0.12, 'normal').gripAt == nil, 'normal level: the same light push is only a nudge')
+  check(hold(0.0, 'normal').gripAt ~= nil, 'normal level: holding the wheel well away takes over')
+  check(hold(0.0, 'firm').gripAt ~= nil, 'firm level: a real grip still takes over')
+  check(W.nudgeBias(0.02, 0.25) == 0, 'no nudge inside the dead zone')
+  check(W.nudgeBias(0.12, 0.25) > 0 and W.nudgeBias(-0.12, 0.25) < 0, 'a light push steers the car a little, either way')
+  check(W.nudgeBias(0.3, 0.25) == 0, 'past the limit it is a takeover, not a nudge')
+  check(W.nudgeBias(0.2, 0.25) <= 0.12, 'the nudge is small')
+end
+
+do
+  local bound = true
+  for i = 0, 400 do
+    local t = i / 30
+    for _, hp in ipairs({ -1, -0.2, 0, 0.3, 1 }) do
+      local x = W.roadTexture(hp, 20, t, 2)
+      if math.abs(x) > 0.7 + 1e-9 then bound = false end
+    end
+  end
+  check(bound, 'road texture stays bounded (max 0.35 * gain)')
+  check(W.roadTexture(0.4, 20, 0.3, 0) == 0, 'road feel 0 = off')
+  local calm, rough = 0, 0
+  for i = 0, 300 do calm = math.max(calm, math.abs(W.roadTexture(0.01, 20, i / 30, 1))); rough = math.max(rough, math.abs(W.roadTexture(0.6, 20, i / 30, 1))) end
+  check(rough > calm * 2, string.format('a bump is felt much more than a smooth road (%.3f vs %.3f)', rough, calm))
+  check(W.roadTexture(0, 0, 0.1, 1) == 0 or math.abs(W.roadTexture(0, 0, 0.1, 1)) < 0.01, 'standing still: no texture')
 end
 
 print(string.format('%d passed, %d failed', passes, failures))

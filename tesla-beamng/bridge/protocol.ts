@@ -52,6 +52,8 @@ export type State = {
   /** Vehicle Hold is holding the car (stopping mode 'hold'): the "H" icon. */
   hold?: boolean
   /** This trip so far (resets when you park after driving 300 m or more): Safety Score 0..100 and stats. */
+  /** Climate settings the app last sent ({t:'climate'}). Nothing in the game reacts to them; hardware bridges (fan, heater) can read this. */
+  climate?: Record<string, unknown>
   trip?: { score: number; km: number; fsdPercent: number; hardBrakes: number }
 }
 
@@ -62,6 +64,7 @@ export type SafetyState = {
   blindRight: boolean
   laneDeparture: boolean // lane departure avoidance is steering you back
   ttc: number | null // seconds to a predicted collision
+  rearWarn?: boolean // Rear Cross Traffic Alert: something crosses behind while reversing (beep + red on the rear view); braking follows if it gets close
 }
 
 export type NagState = {
@@ -126,7 +129,7 @@ export type AutopilotState = {
    * 'takeover' (FSD > 80 mph where the limit is < 55), 'attention' (nag level 2+).
    * Red card + alarm for crash/takeover, blue for attention. Absent when there's nothing.
    */
-  alert?: { kind: 'crash' | 'takeover' | 'attention' | 'lowConfidence'; message: string; level: number; confidence?: number } | null
+  alert?: { kind: 'crash' | 'takeover' | 'attention' | 'lowConfidence' | 'degraded'; message: string; level: number; confidence?: number } | null
   /** FSD's confidence right now, 0..1. Under 55 % (for 1.5 s) it shows the 'lowConfidence' alert and keeps driving; tapping the accelerator then hands the car over. */
   confidence?: number
   /** Learned steering calibration, for debugging. */
@@ -183,7 +186,7 @@ export type EventKind =
   // supervision
   | 'nag' | 'strike' | 'lockout'
   // active safety
-  | 'fcw' | 'aeb' | 'blindSpotWarning' | 'laneDeparture' | 'obstacleAwareAccel'
+  | 'fcw' | 'aeb' | 'rearCrossTraffic' | 'blindSpotWarning' | 'laneDeparture' | 'obstacleAwareAccel'
   // voice notes: the wheel button asks the app to start/stop recording; the relay confirms saving
   | 'voiceNote' | 'voiceNoteSaved'
   // driver + trip
@@ -200,6 +203,8 @@ export type EventKind =
   | 'arrivalChoice'    // the choice was applied
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
   | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
+  | 'pinRequired'      // PIN to Drive is locked and someone tried to drive
+  | 'lightShow'        // detail: the show's name when it starts, 'end' when it finishes or is stopped (driving, or another command)
   | 'tripSummary'      // parked after a drive of 300 m+: detail = Safety Score, data {km, minutes, fsdPercent, hardBrakes, hardTurns, takeovers, tailgatePercent, topSpeed, score}
   | 'pullOver'         // P pressed while FSD drives: pulling over ({dist}); take over to cancel
   | 'monitoring'       // camera mode: detail 'cameraUnavailable' (using the wheel) | 'camera' (back)
@@ -345,13 +350,28 @@ export type Command =
       stoppingMode?: 'roll' | 'creep' | 'hold'
       /** Regenerative braking: lifting off the accelerator slows the car (one-pedal driving). Default off. */
       regen?: boolean
-      /** Acceleration: 'standard' (default) or 'chill' (softer, eased in). */
-      accelMode?: 'standard' | 'chill'
+      /** Acceleration, for FSD and your own pedal: 'standard' (default), 'chill' (softer, eased in) or 'sport' (sharper pedal, harder pull). */
+      accelMode?: 'standard' | 'chill' | 'sport'
+      /** Steering feel under FSD: how early it steers and how fast the wheel moves. Default 'standard'. */
+      steerFeel?: 'comfort' | 'standard' | 'sport'
+      /** How hard you must turn the wheel to take over from FSD. A light touch only nudges the car; default 'normal'. */
+      takeover?: 'light' | 'normal' | 'firm'
       /** Swerve Assist while you drive (default on). */
-      swerveAssist?: boolean }
+      swerveAssist?: boolean
+      /** Hill Hold: stopped on a slope with your feet off the pedals, the brake stays on until you accelerate (default on). Best effort, needs a real game to verify. */
+      hillHold?: boolean
+      /** Road feel through the wheel while FSD drives (bumps and surface texture), 0..2, default 1. */
+      roadFeel?: number
+      /** Valet Mode: self-driving off, gentle acceleration, top speed about 65 mph. */
+      valet?: boolean
+      /** Auto wipers from the weather (default on; best effort, depends on the car). */
+      autoWipers?: boolean }
   | { t: 'attention'; state: 'ok' | 'phone' | 'eyesOff' | 'unknown' } // from the app's cabin camera, ~2-5 Hz
   | { t: 'nudge' } // "hands on wheel" (e.g. a button for keyboard players)
   | { t: 'summon'; dir: 'forward' | 'reverse' | null } // Dumb Summon (null stops)
+  | { t: 'climate'; on?: boolean; driverTemp?: number; passengerTemp?: number; fan?: number; defrost?: boolean; precondition?: boolean; cabinOverheat?: boolean; keepOn?: boolean; dogMode?: boolean; campMode?: boolean; bioweapon?: boolean; seatHeat?: Record<string, number>; wheelHeat?: boolean; vents?: string } // foundation: stored and echoed in state.climate for future fan/heater hardware; the game itself has no cabin climate
+  | { t: 'pinLock'; on: boolean } // PIN to Drive: on = the car stays in Park (and FSD refuses) until the app sends on:false after the PIN is entered
+  | { t: 'lightShow'; name: 'welcome' | 'goodbye' | 'holiday' | 'strobe' | null } // choreographed headlights/fog/blinkers while parked (null stops it)
   | { t: 'arrivalChoice'; choice: 'park' | 'street' | 'pullOver' | 'driveway' | 'takeOver' } // answer to the 'arriving' event
   | { t: 'autopark'; spot?: number } // spot: an id from parkingSpots (tapped on the map); none = the nearest free spot beside the car
   | { t: 'requestParkingSpots'; near?: [number, number]; radius?: number }
@@ -379,7 +399,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate',
 ])
 
 export const MPH = 0.44704

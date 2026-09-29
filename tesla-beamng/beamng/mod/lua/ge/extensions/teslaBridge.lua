@@ -187,6 +187,15 @@ local Sc = require('teslaBridge/score')
 local tripScore = Sc.new() -- trip stats, Safety Score, hard-braking hazards
 local tripT, tripHazardSent, tripWasMoving = nil, false, false
 local tAids = 0
+local climateState = {} -- climate foundation: what the app last asked for (no fan/heater hardware yet; hardware bridges read state.climate)
+local CLIMATE_KEYS = { on = 'boolean', driverTemp = 'number', passengerTemp = 'number', fan = 'number', defrost = 'boolean', precondition = 'boolean',
+  cabinOverheat = 'boolean', keepOn = 'boolean', dogMode = 'boolean', campMode = 'boolean', bioweapon = 'boolean', seatHeat = 'table', wheelHeat = 'boolean', vents = 'string' }
+local pinLocked = false -- PIN to Drive: the car stays in Park until the app says the PIN was entered
+local pinNoticeT = -1e9
+local wiperLevel = nil
+local Ls = require('teslaBridge/lightshow')
+local show = nil -- running light show { name, t0, last = key, prev = restore state }
+local tShow = 0
 local handoverSent = false -- the car was told a takeover is being requested (gas = take over)
 local function loadSocket()
   for _, name in ipairs({ 'socket.socket', 'socket' }) do
@@ -751,8 +760,9 @@ local function safetyTick()
   local so = safety:tick(gameTime, 0.05, { ego = ego, cars = cars }, { lane = lane, rays = rays, attention = attention })
   for _, ev in ipairs(so.events) do relayEvent(ev) end
   safetyStatus = { fcw = so.fcw or false, aeb = (so.aeb or 0) > 0, blindLeft = so.blindLeft or false, blindRight = so.blindRight or false,
-    laneDeparture = so.lda ~= nil, ttc = so.ttc and num(so.ttc) or nil }
+    laneDeparture = so.lda ~= nil, ttc = so.ttc and num(so.ttc) or nil, rearWarn = so.rearWarn or nil }
   local assist = { aeb = so.aeb or 0, ldaSteer = so.lda and num(so.lda.steer, 3) or 0, throttleCap = so.throttleCap }
+  if plannerSettings.valet and (ego.v or 0) > 29 then assist.throttleCap = 0 end -- Valet: top speed about 65 mph
   local active = assist.aeb > 0 or assist.ldaSteer ~= 0 or assist.throttleCap ~= nil
   if active or (lastAssist and (lastAssist.aeb > 0 or lastAssist.ldaSteer ~= 0 or lastAssist.throttleCap ~= nil)) then
     toVehicle(veh, 'assist', assist)
@@ -808,6 +818,53 @@ local function timeOfDay()
   return tonumber(tod)
 end
 
+local function showKey(s) return table.concat({ tostring(s.low), tostring(s.high), tostring(s.fog), tostring(s.left), tostring(s.right), tostring(s.hazard) }, ',') end
+
+local function showApply(veh, s)
+  toVehicle(veh, 'command', { t = 'lights', low = s.low or s.high, high = s.high, fog = s.fog })
+  toVehicle(veh, 'command', { t = 'signal', dir = s.hazard and 'hazard' or (s.left and 'left' or (s.right and 'right' or nil)) })
+end
+
+local function stopLightShow(veh, why)
+  if not show then return end
+  local was = show
+  show = nil
+  if veh then
+    -- back to how the lights were (auto headlights decide again on the next aids tick)
+    toVehicle(veh, 'command', { t = 'lights', low = was.prevLow and true or false, high = false, fog = was.prevFog and true or false })
+    toVehicle(veh, 'command', { t = 'signal' })
+    drive.lightsWant = nil
+  end
+  relayEvent({ kind = 'lightShow', detail = 'end', data = { reason = why, name = was.name } })
+end
+
+-- Only while parked (P or standing still in N) and FSD is off: never flashes lights at speed.
+function M.startLightShow(name)
+  local veh = playerVehicle()
+  if not veh then return end
+  if not name then stopLightShow(veh, 'stopped'); return end
+  if not Ls.length(name) then event('error', 'unknown light show ' .. tostring(name)); return end
+  if (lastVehSt.speed or 0) > 1 or (planner and planner.mode ~= 'off') then event('error', 'light shows only run while parked'); return end
+  local lights = lastVehSt.lights or {}
+  show = { name = name, t0 = realTime, prevLow = lights.low or lights.high, prevFog = lights.fog }
+  relayEvent({ kind = 'lightShow', detail = name })
+end
+
+local function lightShowTick(veh)
+  if not show or not veh then return end
+  if (lastVehSt.speed or 0) > 1 or (planner and planner.mode ~= 'off') or (lastVehSt.gear ~= 'P' and lastVehSt.gear ~= 'N') then
+    stopLightShow(veh, 'driving')
+    return
+  end
+  local s, done = Ls.state(show.name, realTime - show.t0)
+  if done then stopLightShow(veh, 'finished'); return end
+  local key = showKey(s)
+  if key ~= show.last then
+    show.last = key
+    showApply(veh, s)
+  end
+end
+
 local function driveAidsTick(veh)
   if not veh or not graph then return end
   local ego = egoSnapshot(veh)
@@ -851,6 +908,20 @@ local function driveAidsTick(veh)
     end
     if realTime >= tLearnSave then tLearnSave = realTime + 60; saveLearn() end
   end
+  -- PIN to Drive: no gear but Park until unlocked (never yanked while moving)
+  if pinLocked and lastVehSt.gear and lastVehSt.gear ~= 'P' and (lastVehSt.speed or 0) < 1 then
+    toVehicle(veh, 'command', { t = 'gear', gear = 'P' })
+    if realTime - pinNoticeT > 3 then pinNoticeT = realTime; relayEvent({ kind = 'pinRequired', detail = 'enter the PIN to drive' }) end
+  end
+  -- Auto wipers from the weather (best effort: which wiper control a car exposes varies; see diag)
+  if plannerSettings.autoWipers ~= false then
+    local rain = weather.rain or 0
+    local want = rain > 0.6 and 3 or (rain > 0.3 and 2 or (rain > 0.05 and 1 or 0))
+    if want ~= wiperLevel then
+      wiperLevel = want
+      toVehicle(veh, 'command', { t = 'wipers', level = want })
+    end
+  end
   -- speed warning
   local mode = plannerSettings.speedWarning or 'display'
   local over = drive.limitHere and ego.v > drive.limitHere + (tonumber(plannerSettings.speedWarnOffset) or 5) * 0.44704
@@ -871,7 +942,7 @@ local function driveAidsTick(veh)
   local dark = tod and tod > 0.22 and tod < 0.78 -- about 6:40 pm to 5:20 am
   local wet = (weather.rain or 0) > 0.3
   local lights = lastVehSt.lights or {}
-  if plannerSettings.autoHeadlights ~= false and tod then
+  if plannerSettings.autoHeadlights ~= false and tod and not show then
     local want = (dark or wet) and true or false
     if want ~= drive.lightsWant then
       drive.lightsWant = want
@@ -940,6 +1011,11 @@ local function computeAlert(vid, st, ps, nag)
   -- FSD isn't sure (confidence under 55 %): asks for a takeover but keeps driving until you act
   if engaged and ps.lowConfidence then
     return { kind = 'lowConfidence', message = 'Take over? FSD is unsure', level = 1, confidence = ps.confidence and num(ps.confidence, 2) or nil }
+  end
+  -- heavy rain / fog: "FSD degraded" (it already slows down; this tells the driver why)
+  local wx = ps.weather
+  if engaged and type(wx) == 'table' and ((wx.rain or 0) > 0.6 or (wx.fog or 0) > 0.5) then
+    return { kind = 'degraded', message = (wx.fog or 0) > 0.5 and 'FSD degraded: poor visibility (fog)' or 'FSD degraded: heavy rain', level = 1 }
   end
   return nil
 end
@@ -1032,6 +1108,7 @@ function M.onVehicleState(vid, json)
   -- the road's speed limit right here, FSD on or off (Tesla shows it all the time)
   st.speedLimit = drive.limitHere and num(drive.limitHere, 1) or nil
   st.speedWarning = drive.warning or nil
+  if next(climateState) then st.climate = climateState end
   st.trip = { score = tripScore:score(), km = num(tripScore.dist / 1000, 2), fsdPercent = num(tripScore.dist > 0 and tripScore.fsdDist / tripScore.dist * 100 or 0, 0), hardBrakes = tripScore.hardBrakes }
   local okA, alert = pcall(computeAlert, vid, st, ps, nag)
   st.autopilot.alert = okA and alert or nil
@@ -1109,7 +1186,7 @@ end
 -- Auto Shift out of Park (setting autoShift): the driver presses the brake in P and the car
 -- picks D or R itself: a wall, curb or car right in front (and room behind) -> R, else D.
 autoShift = function(veh)
-  if not plannerSettings.autoShift or not planner or planner.mode ~= 'off' then return end
+  if not plannerSettings.autoShift or not planner or planner.mode ~= 'off' or pinLocked then return end
   local ego = egoSnapshot(veh)
   local rays = sampleRays(ego)
   local front, rear = rays.front, rays.rear -- metres to a wall/curb, or nil
@@ -1132,9 +1209,11 @@ end
 pushVehicleSettings = function(veh)
   local ps = plannerSettings
   if ps.swerveAssist ~= nil then toVehicle(veh, 'command', { t = 'swerveAssist', on = ps.swerveAssist and true or false }) end
+  if ps.valet then toVehicle(veh, 'command', { t = 'drive', accel = 'chill' }) end
+  if ps.takeover or ps.roadFeel ~= nil then toVehicle(veh, 'command', { t = 'wheel', takeover = ps.takeover, roadFeel = ps.roadFeel }) end
   if ps.paddleSignals ~= nil then toVehicle(veh, 'command', { t = 'paddles', signals = ps.paddleSignals and true or false }) end
-  if ps.stoppingMode or ps.regen ~= nil or ps.accelMode then
-    toVehicle(veh, 'command', { t = 'drive', stopping = ps.stoppingMode, regen = ps.regen, accel = ps.accelMode })
+  if ps.stoppingMode or ps.regen ~= nil or ps.accelMode or ps.hillHold ~= nil then
+    toVehicle(veh, 'command', { t = 'drive', stopping = ps.stoppingMode, regen = ps.regen, accel = ps.accelMode, hillHold = ps.hillHold })
   end
 end
 
@@ -1142,6 +1221,8 @@ local function engageFromApp(mode, profile)
   local veh = playerVehicle()
   if not veh then event('error', 'no player vehicle'); return end
   if not planner then event('error', 'map not loaded yet'); return end
+  if plannerSettings.valet then event('error', 'Valet Mode: self-driving is off'); return end
+  if pinLocked then event('error', 'PIN to Drive: enter the PIN first'); return end
   ensureVehicleExtension(veh)
   local ego = egoSnapshot(veh)
   local ok, err = planner:engage(mode, profile, ego, trafficList())
@@ -1272,6 +1353,11 @@ handleCommand = function(msg)
     local okP = planner:pullOverNow(egoSnapshot(veh))
     if okP then relayEvent({ kind = 'pullOver', detail = 'pulling over (take over to cancel)' }); return end
   end
+  if t == 'gear' and pinLocked and msg.gear ~= 'P' then
+    -- PIN to Drive: nothing but Park until the app unlocks
+    relayEvent({ kind = 'pinRequired', detail = 'enter the PIN to drive' })
+    return
+  end
   if t == 'gear' or t == 'lights' or t == 'horn' or t == 'door' or t == 'throttleOverride' or t == 'wheel' then
     if not veh then event('error', 'no player vehicle'); return end
     ensureVehicleExtension(veh)
@@ -1339,6 +1425,18 @@ handleCommand = function(msg)
     if not planner or not veh then return end
     planner:summon(msg.dir, egoSnapshot(veh))
     syncVehicleMode(veh)
+  elseif t == 'climate' then
+    for k, ty in pairs(CLIMATE_KEYS) do
+      if msg[k] ~= nil and type(msg[k]) == ty then climateState[k] = msg[k] end
+    end
+    event('settings', 'climate updated')
+  elseif t == 'pinLock' then
+    pinLocked = msg.on and true or false
+    if pinLocked and veh and (lastVehSt.speed or 0) < 1 then toVehicle(veh, 'command', { t = 'gear', gear = 'P' }) end
+    event('settings', pinLocked and 'PIN to Drive: locked' or 'PIN to Drive: unlocked')
+  elseif t == 'lightShow' then
+    if not veh then return end
+    M.startLightShow(msg.name)
   elseif t == 'arrivalChoice' then
     if not planner or not veh then return end
     local ok, err = planner:setArrival(msg.choice)
@@ -1480,6 +1578,14 @@ function M.diagnostics()
     mapLinks = graph and #graph.edges or 0, signals = #signals, parking = #parking, traffic = 0,
     apMode = planner and planner.mode or 'none', profile = planner and planner.profile, activity = planner and planner.activity,
     hasPath = planner ~= nil and planner.path ~= nil, relayQueue = outBytes,
+    planner = planner and {
+      dest = planner.dest and { planner.dest[1], planner.dest[2] } or nil, arrived = planner.arrived, arrival = planner.arrival,
+      openEnded = planner.path and planner.path.openEnded or nil, pathPoints = planner.path and #planner.path.pts or nil,
+      pathLength = planner.path and planner.path.s and planner.path.s[#planner.path.s] or nil, activity = planner.activity,
+      hint = planner.hint, status = plannerStatus and { remaining = plannerStatus.remaining, targetSpeed = plannerStatus.targetSpeed, leadGap = plannerStatus.leadGap, waitingFor = plannerStatus.waitingFor } or nil,
+      lastPlan = planner.lastPlanInfo,
+    } or nil,
+    relayQueue2 = outBytes,
     weather = weather, weatherProbe = weatherProbe, raycast = rayFn ~= nil, overhead = overhead,
     beacons = 0, emergencyNow = 0,
     camera = { supported = camSupported(), realPath = FS ~= nil and FS.getFileRealPath ~= nil, on = cam.on, seq = cam.seq,
@@ -1585,6 +1691,11 @@ local function onUpdate(dtReal, dtSim)
   if realTime >= tWeather then
     tWeather = realTime + 2
     pcall(sampleWeather)
+  end
+
+  if show and realTime >= tShow then
+    tShow = realTime + 0.1
+    pcall(lightShowTick, veh)
   end
 
   if realTime >= tAids then

@@ -28,6 +28,8 @@ local lastDisengage = nil
 local override = { value = 0, t = -1, active = false }
 local takeover = { steering = 0, brake = 0, throttle = 0 }
 local baseline = { steering = 0 }
+local takeoverLevel = 'normal' -- how hard the wheel must be pushed to take over: 'light' | 'normal' | 'firm'
+local steerBias = 0 -- the driver's light touch on the wheel, added to FSD's steering
 local savedGearboxMode = nil
 local lastInjected = {}
 local lastOut = nil
@@ -195,7 +197,7 @@ local ffb = {
   enabled = true, strength = 1.0,
   rangeDeg = 900, -- the physical wheel's rotation (G29: 900); the G29 turns 1:1 with the car's wheel
   restoreUntil = nil, -- after release: keep checking that the game has the wheel back
-  spring = Wh.new(), held = false, fn = nil, idx = nil, id = nil, fcap = 10, method = nil,
+  spring = Wh.new({ gripScale = Wh.takeoverLimit(takeoverLevel) / 0.15 }), held = false, fn = nil, idx = nil, id = nil, fcap = 10, method = nil,
   status = 'unknown', reason = nil,
   ratio = 1, -- steering_input per raw wheel unit (learned while you drive)
   lastForce = nil, force = 0, target = 0, pos = 0, grip = false,
@@ -484,6 +486,14 @@ local function ffbUpdate(dt, targetInput)
   local pos = r and r.v or 0
   local target = wheelTarget(targetInput)
   local f, grip = ffb.spring:update(dt, target, pos, ffb.fcap, ffb.strength)
+  -- road feel: bumps and surface texture through the wheel
+  if (ffb.roadFeel or 1) > 0 and dt > 1e-4 then
+    local gz = (type(sensors) == 'table' and tonumber(sensors.gz)) or 0
+    if math.abs(gz) > 3 then gz = gz / 9.81 end -- m/s^2 -> g
+    ffb.gzLP = (ffb.gzLP or gz) + (gz - (ffb.gzLP or gz)) * math.min(1, dt / 0.5)
+    local v = tonumber(electrics.values.wheelspeed) or 0
+    f = math.max(-ffb.fcap, math.min(ffb.fcap, f + Wh.roadTexture(gz - ffb.gzLP, v, now, ffb.roadFeel or 1) * ffb.fcap))
+  end
   if dt <= 1e-4 then f = 0 end -- paused: never leave a force on the motor
   local due = now - ffb.lastSendT >= ffb.minInterval
   if (due and (ffb.lastForce == nil or abs(f - ffb.lastForce) > ffb.fcap / 400)) or (f == 0 and ffb.lastForce ~= 0) then ffbSend(f) end
@@ -528,6 +538,30 @@ local function isEV()
     if d.type == 'electricMotor' then return true end
   end
   return false
+end
+
+-- Some car mods (the Model X / Tesla mods) already regenerate when you lift off. Adding our own
+-- lift-off braking on top makes them lurch, so we stand down when the car has its own.
+local ownRegenCache
+local function carHasOwnRegen()
+  if ownRegenCache ~= nil then return ownRegenCache end
+  local found = false
+  pcall(function()
+    if powertrain and powertrain.getDevices then
+      for _, d in pairs(powertrain.getDevices()) do
+        if d.type == 'electricMotor' then
+          for k, val in pairs(d) do
+            if type(k) == 'string' and k:lower():find('regen') and ((type(val) == 'number' and val > 0) or type(val) == 'table') then found = true end
+          end
+        end
+      end
+    end
+    for k in pairs(electrics.values or {}) do
+      if type(k) == 'string' and k:lower():find('regen') then found = true end
+    end
+  end)
+  ownRegenCache = found
+  return found
 end
 
 local function mainController()
@@ -852,6 +886,27 @@ handlers.signal = function(cmd)
   hazardOn = cmd.dir == 'hazard'
 end
 
+-- Wipers: cars expose them differently, so try what exists and remember what worked.
+local wiperApi
+handlers.wipers = function(cmd)
+  local level = math.max(0, math.min(3, tonumber(cmd.level) or 0))
+  local tries = {
+    function() if electrics.setWiperMode then electrics.setWiperMode(level); return true end end,
+    function() if electrics.set_wiper_mode then electrics.set_wiper_mode(level); return true end end,
+    function() if electrics.values.wiperMode ~= nil then electrics.values.wiperMode = level; return true end end,
+    function() if electrics.values.wiperModeRaw ~= nil then electrics.values.wiperModeRaw = level; return true end end,
+  }
+  if wiperApi then pcall(tries[wiperApi]); return end
+  for i, f in ipairs(tries) do
+    local ok, res = pcall(f)
+    if ok and res then wiperApi = i; return end
+  end
+  if not wiperApi and level > 0 and not ap.wiperNoted then
+    ap.wiperNoted = true
+    errorEvent('auto wipers: this car has no wiper control the bridge knows (see debug > wiperKeys)')
+  end
+end
+
 handlers.horn = function(cmd)
   if electrics.horn then pcall(electrics.horn, cmd.on and true or false) else errorEvent('no horn') end
 end
@@ -909,8 +964,13 @@ handlers.throttleOverride = function(cmd)
 end
 
 handlers.wheel = function(cmd)
+  if cmd.takeover == 'light' or cmd.takeover == 'normal' or cmd.takeover == 'firm' then
+    takeoverLevel = cmd.takeover
+    if ffb.spring then ffb.spring.gripScale = Wh.takeoverLimit(cmd.takeover) / 0.15 end
+  end
   -- strength above 1 boosts past the game's FFB limit (a wheel set weak in the game's options)
   if cmd.strength ~= nil then ffb.strength = math.max(0, math.min(2, tonumber(cmd.strength) or ffb.strength)) end
+  if cmd.roadFeel ~= nil then ffb.roadFeel = math.max(0, math.min(2, tonumber(cmd.roadFeel) or 1)) end
   if cmd.rangeDeg ~= nil then ffb.rangeDeg = math.max(180, math.min(1080, tonumber(cmd.rangeDeg) or ffb.rangeDeg)) end
   if cmd.helper ~= nil then
     ffb.helper = cmd.helper and true or false
@@ -923,7 +983,7 @@ handlers.wheel = function(cmd)
     ffb.enabled = cmd.spring and true or false
     if not ffb.enabled then ffbRelease(); ffb.status = 'off'
     else
-      ffb.spring = Wh.new()
+      ffb.spring = Wh.new({ gripScale = Wh.takeoverLimit(takeoverLevel) / 0.15 })
       if ap.engaged and ap.mode ~= 'tacc' then ffbTake() else ffbProbe() end
     end
   end
@@ -989,14 +1049,21 @@ local function checkTakeover(dt)
     if not takeover.brakeArmed then br = 0 end
   end
   local steerDev = st and abs(st - baseline.steering) or 0
-  local devLimit, holdT = 0.15, 0.15
+  local devLimit, holdT = Wh.takeoverLimit(takeoverLevel), 0.15
+  steerBias = 0
   if ffb.helper and ap.mode ~= 'tacc' then
     -- the external helper turns the wheel to FSD's angle: a takeover is the wheel
     -- being well away from that (it lags a little in quick turns, hence the margin)
     steerDev = st and abs(st - wheelTarget(lastOut and lastOut.steer or 0)) or 0
-    devLimit, holdT = 0.2, 0.3
+    devLimit, holdT = devLimit + 0.05, 0.3
   elseif ffb.held or ap.mode == 'tacc' then
-    steerDev = 0 -- the spring moves the wheel; grips are caught by it
+    -- the spring moves the wheel; grips are caught by it. A light push shows up as the wheel's
+    -- distance from where the spring holds it
+    if ap.mode ~= 'tacc' and st and lastOut then steerBias = Wh.nudgeBias(st - wheelTarget(lastOut.steer or 0), devLimit) end
+    steerDev = 0
+  end
+  if steerDev > 0 and steerDev <= devLimit and ap.mode ~= 'tacc' then
+    steerBias = Wh.nudgeBias((st or 0) - baseline.steering, devLimit)
   end
   takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
   takeover.brake = (br > 0.1) and takeover.brake + dt or 0
@@ -1121,7 +1188,11 @@ end
 
 -- Your pedals, reshaped the Tesla way. Needs the pedals routed through us while it's on.
 local function driveFeel(dt, s)
-  local on = feel.stopping ~= 'roll' or feel.regen or feel.accel ~= 'standard'
+  -- Hill Hold: stopped (or nearly) on a slope with both feet off: the brake stays on until the accelerator
+  local slope = 0
+  pcall(function() slope = obj:getDirectionVector().z end)
+  local hill = feel.hill ~= false and abs(slope) > 0.05 and abs(s.v) < 1.5
+  local on = feel.stopping ~= 'roll' or feel.regen or feel.accel ~= 'standard' or hill
   local g = gearLetter()
   local driving = g == 'D' or g == 'R' or g:sub(1, 1) == 'M'
   if not on or not driving or assistHeld or swerve.active then
@@ -1146,16 +1217,20 @@ local function driveFeel(dt, s)
     local rate = (want > feel.th) and 0.8 or 3
     feel.th = feel.th + math.max(-rate * dt, math.min(rate * dt, want - feel.th))
     th = feel.th
+  elseif feel.accel == 'sport' then
+    -- Sport: the pedal is more sensitive (85 % of the pedal is full power)
+    th = math.min(1, th / 0.85)
+    feel.th = th
   else
     feel.th = th
   end
   local v = abs(s.v)
   feel.holding = false
   if th < 0.02 and br < 0.02 then
-    if feel.regen and v > 1.5 and not (feel.stopping == 'creep' and v < 3) then
+    if feel.regen and not carHasOwnRegen() and v > 1.5 and not (feel.stopping == 'creep' and v < 3) then
       br = math.min(0.2, 0.06 + v * 0.008) -- lift off: regen slows the car, stronger at speed
     end
-    if feel.stopping == 'hold' and v < 0.5 then
+    if (feel.stopping == 'hold' or hill) and v < 0.5 then
       br, feel.holding = 0.6, true -- Vehicle Hold: stays stopped until you press the accelerator
     elseif feel.stopping == 'creep' and v < 1.8 then
       th = 0.09 -- creeps forward like a regular automatic
@@ -1167,8 +1242,15 @@ end
 
 handlers.drive = function(cmd)
   if cmd.stopping == 'roll' or cmd.stopping == 'creep' or cmd.stopping == 'hold' then feel.stopping = cmd.stopping end
-  if cmd.regen ~= nil then feel.regen = cmd.regen and true or false end
-  if cmd.accel == 'chill' or cmd.accel == 'standard' then feel.accel = cmd.accel end
+  if cmd.hillHold ~= nil then feel.hill = cmd.hillHold and true or false end
+  if cmd.regen ~= nil then
+    feel.regen = cmd.regen and true or false
+    if feel.regen and carHasOwnRegen() and not feel.regenNoted then
+      feel.regenNoted = true
+      geEvent('notice', { detail = 'this car has its own regen braking: the bridge leaves it alone' })
+    end
+  end
+  if cmd.accel == 'chill' or cmd.accel == 'standard' or cmd.accel == 'sport' then feel.accel = cmd.accel end
 end
 
 handlers.handover = function(cmd) ap.handover = cmd.on and true or false end
@@ -1199,7 +1281,7 @@ local function updateGFX(dt)
       local out = driver:update(dt, s, { noLearn = ap.mode == 'tacc' })
       lastOut = out
       if ap.mode ~= 'tacc' then
-        inject('steering', out.steer)
+        inject('steering', math.max(-1, math.min(1, out.steer + steerBias)))
         if ffb.helper then
           -- report where the helper should hold the wheel (it reads wheel.target from the state)
           ffb.target = wheelTarget(out.steer)
@@ -1357,6 +1439,9 @@ function M.diag()
     hydros = hydros and keysOf(hydros, 80) or 'none',
     ffbEnabled = hydros and hydros.enableFFB,
     ev = isEV(),
+    ownRegen = carHasOwnRegen(),
+    wiperKeys = (function() local o = {} for k in pairs(electrics.values or {}) do if type(k) == 'string' and k:lower():find('wiper') then o[#o + 1] = k end end table.sort(o) return o end)(),
+    wiperApi = wiperApi,
     inputWraps = (function() local o = {} for k in pairs(orig) do o[#o + 1] = k end table.sort(o) return o end)(),
     ffb = {
       status = ffb.status, reason = ffb.reason, held = ffb.held, id = ffb.id, fcap = ffb.fcap, ratio = ffb.ratio,

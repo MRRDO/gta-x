@@ -16,6 +16,34 @@ local function clamp(v, lo, hi) if v < lo then return lo elseif v > hi then retu
 local Spring = {}
 Spring.__index = Spring
 
+-- How far the wheel may be pushed off FSD's angle (raw axis, 1 = full lock) before it counts as
+-- taking over. A light touch just nudges the car (like the gas pedal speeds it up); a firm turn,
+-- enough to move the car a lot, disengages.
+-- Road feel: a texture on top of the spring so the wheel isn't dead while FSD drives.
+-- hp = vertical acceleration with the slow part removed (g), v = speed (m/s), t = time (s),
+-- gain 0..2. Returns a torque offset as a fraction of full force (bounded by 0.35 * gain).
+function M.roadTexture(hp, v, t, gain)
+  gain = clamp(gain or 1, 0, 2)
+  if gain <= 0 then return 0 end
+  local n = math.sin(t * 47) * 0.6 + math.sin(t * 83 + 1.3) * 0.4
+  local speedK = min(1, max(0, v) / 25)
+  local bump = min(1, abs(hp or 0) / 0.5)
+  local tex = 0.06 * speedK * n + 0.25 * bump * (0.5 + 0.5 * n)
+  return clamp(tex * gain, -0.35 * gain, 0.35 * gain) * ((hp or 0) < 0 and -1 or 1)
+end
+
+M.TAKEOVER = { light = 0.14, normal = 0.25, firm = 0.4 }
+function M.takeoverLimit(level) return M.TAKEOVER[level] or M.TAKEOVER.normal end
+
+-- Steering the driver adds on top of FSD's while they lean on the wheel lightly.
+function M.nudgeBias(dev, limit)
+  local a = abs(dev or 0)
+  if a < 0.04 then return 0 end
+  local b = min(0.12, (a - 0.04) * 0.5)
+  if a > (limit or 0.25) then return 0 end -- past the limit it's a takeover, not a nudge
+  return dev > 0 and b or -b
+end
+
 function M.new(opts)
   opts = opts or {}
   return setmetatable({
@@ -28,6 +56,7 @@ function M.new(opts)
     ramp = 0, vel = 0, lastPos = nil,
     tf = nil, fPrev = 0, integ = 0,     -- smoothed target, last force, friction term
     wrongT = 0, goodT = 0, gripT = 0,
+    gripScale = opts.gripScale or 1,    -- scales how far off target counts as gripping (M.takeoverLimit / 0.15)
   }, Spring)
 end
 
@@ -98,8 +127,9 @@ function Spring:update(dt, target, pos, fcap, strength)
   -- grip: far from target, force saturated, not closing in -> the driver is holding it.
   -- Also resisting: the spring pushes hard but the wheel stays still (held against FSD);
   -- a wheel that's just lagging in a quick turn is moving toward the target, so it's not that.
-  local held = abs(e) > 0.1 and abs(f) > 0.6 * cap and not (converging and abs(self.vel) > 0.1)
-  local resisting = abs(e) > 0.06 and abs(f) > 0.5 * cap and abs(self.vel) < 0.05
+  local gs = self.gripScale or 1
+  local held = abs(e) > 0.1 * gs and abs(f) > 0.6 * cap and not (converging and abs(self.vel) > 0.1)
+  local resisting = abs(e) > 0.06 * gs and abs(f) > 0.5 * cap and abs(self.vel) < 0.05
   if self.ramp >= 1 and (held or resisting) then
     self.gripT = self.gripT + dt
   else

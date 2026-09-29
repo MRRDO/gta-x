@@ -541,6 +541,8 @@ try {
 
   // --- low confidence: FSD asks for a takeover, keeps driving, and the accelerator hands the car over
   {
+    playerInput('place 300 -1.8 0') // the creep test above may have left the car in a field
+    await sleep(600)
     send({ t: 'gear', gear: 'D' })
     send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
     await until('fsd', () => st().autopilot.engaged, 4000)
@@ -581,6 +583,40 @@ try {
     playerInput('brake 1')
     await until('stopped', () => st().speed < 0.5, 20000)
     playerInput('brake 0')
+  }
+
+  // --- PIN to Drive and Valet Mode
+  {
+    send({ t: 'autopilot', mode: 'off' })
+    send({ t: 'gear', gear: 'P' })
+    await until('P', () => st().gear === 'P' && st().speed < 0.3, 8000)
+    send({ t: 'pinLock', on: true })
+    events.length = 0
+    send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
+    check('PIN to Drive: FSD refuses while locked', await until('pin fsd', () => events.some((e) => e.kind === 'error' && /PIN/.test(e.detail ?? '')), 3000) && !st().autopilot.engaged)
+    send({ t: 'gear', gear: 'D' })
+    check('PIN to Drive: the car goes back to Park', await until('pin park', () => st().gear === 'P' && events.some((e) => e.kind === 'pinRequired'), 6000), `gear ${st().gear}`)
+    send({ t: 'pinLock', on: false })
+    events.length = 0
+    send({ t: 'settings', valet: true })
+    send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
+    check('Valet Mode: FSD refuses', await until('valet fsd', () => events.some((e) => e.kind === 'error' && /Valet/.test(e.detail ?? '')), 3000) && !st().autopilot.engaged)
+    send({ t: 'settings', valet: false })
+  }
+
+  // --- light shows (only while parked)
+  {
+    send({ t: 'autopilot', mode: 'off' })
+    send({ t: 'gear', gear: 'P' })
+    await until('P', () => st().gear === 'P' && st().speed < 0.3, 8000)
+    events.length = 0
+    send({ t: 'lightShow', name: 'welcome' })
+    check('light show starts while parked', await until('show start', () => events.some((e) => e.kind === 'lightShow' && e.detail === 'welcome'), 3000))
+    let sawHigh = false, sawFog = false
+    const t0 = Date.now()
+    while (Date.now() - t0 < 2600) { const l = st().lights; if (l?.high) sawHigh = true; if (l?.fog) sawFog = true; await sleep(60) }
+    check('...and really flashes the lights (high beams and fog)', sawHigh && sawFog, `high ${sawHigh} fog ${sawFog}`)
+    check('...then ends by itself', await until('show end', () => events.some((e) => e.kind === 'lightShow' && e.detail === 'end'), 3000))
   }
 
   {

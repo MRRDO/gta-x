@@ -21,6 +21,14 @@ local function binOf(v)
   return #BINS
 end
 
+-- Steering feel: how far ahead it looks, how quickly the wheel may move, how much it smooths
+local FEEL = {
+  comfort  = { look = 1.2,  rate = 0.75, lpf = 0.16 },
+  standard = { look = 1.0,  rate = 1.0,  lpf = 0.08 },
+  sport    = { look = 0.85, rate = 1.35, lpf = 0.03 },
+}
+M.FEEL = FEEL
+
 function M.new(opts)
   opts = opts or {}
   local d = setmetatable({}, Driver)
@@ -103,7 +111,8 @@ function Driver:update(dt, sense, opts)
   out.remaining = path.s[#path.s] - s
 
   -- steering: pure pursuit + a little lane-centering integral
-  local L = reverse and clamp(2.5 + 0.7 * v, 3, 8) or clamp(2 + 0.7 * v, 4, 30)
+  local fl = FEEL[plan.feel] or FEEL.standard
+  local L = reverse and clamp(2.5 + 0.7 * v, 3, 8) or clamp((2 + 0.7 * v) * fl.look, 4, 34)
   local k = P.purePursuit(path, s, sense.x, sense.y, hx, hy, L, pr.i)
   if v > 1 and not reverse then
     self.latI = clamp(self.latI + pr.lat * dt, -3, 3)
@@ -115,7 +124,14 @@ function Driver:update(dt, sense, opts)
   if plan.wiggle and not reverse and v < 8 and v > 0.5 then
     uWant = uWant + 0.018 * math.sin(self.t * 4.1) -- FSD's little low-speed steering fidget
   end
-  local rate = plan.urgent and 4 or self.steerRate * (v < 6 and 2 or 1)
+  -- a real car's wheel moves slower the faster it goes
+  local rate = plan.urgent and 4 or self.steerRate * fl.rate * (v < 6 and 2 or (v > 20 and 0.75 or 1))
+  if not plan.urgent then
+    self.uf = self.uf and (self.uf + (uWant - self.uf) * clamp(dt / fl.lpf, 0, 1)) or uWant
+    uWant = self.uf
+  else
+    self.uf = uWant
+  end
   -- stopped and staying stopped (light, stop line, hold): keep the wheel where it is instead
   -- of chasing a pure-pursuit point that swings to full lock at zero speed
   local holding = v < 0.5 and (plan.hold or (plan.stopS and plan.stopS - s < 2.5))

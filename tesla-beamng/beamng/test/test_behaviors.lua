@@ -897,5 +897,58 @@ scenario('cutIn', function()
   check(not wF.collided, 'furious cut-in without a collision')
 end)
 
+scenario('steerFeel', function()
+  -- a turn through a grid: comfort steering moves the wheel more slowly than sport, both stay in lane;
+  -- the acceleration setting changes how hard it pulls away
+  local function drive(feel, accel)
+    local w = W.new({ nodes = grid(3, 3, 120, 5), ego = { x = 0, y = LANE1, psi = 0, v = 0 },
+      settings = { quirks = { phantomBraking = false, yellowHesitation = false, wiggle = false, weather = true, creep = true }, steerFeel = feel, accelMode = accel } })
+    w.planner:setRoute({ 240, 240, 0 }, nil, 'Driveway')
+    w:engage('fsd', 'standard')
+    local last, maxRate, maxA, prevV = 0, 0, 0, 0
+    local prevU = 0
+    w:run(80, function(ww)
+      if ww.t - last >= 0.1 then
+        local dt = ww.t - last; last = ww.t
+        maxRate = math.max(maxRate, math.abs(ww.driver.u - prevU) / dt); prevU = ww.driver.u
+        maxA = math.max(maxA, (ww.ego.v - prevV) / dt); prevV = ww.ego.v
+      end
+      return ww:saw('arrived')
+    end)
+    return maxRate, maxA, w
+  end
+  local rC, _, wC = drive('comfort', 'standard')
+  local rS = drive('sport', 'standard')
+  check(wC:saw('arrived') ~= nil and not wC.collided, 'comfort steering still gets there')
+  check(rC < rS, string.format('comfort moves the wheel slower than sport (%.2f vs %.2f /s)', rC, rS))
+  local _, aChill = drive('standard', 'chill')
+  local _, aSport = drive('standard', 'sport')
+  check(aChill < aSport, string.format('chill accelerates gentler than sport (%.2f vs %.2f m/s^2)', aChill, aSport))
+end)
+
+scenario('rearCross', function()
+  -- backing out with the driver's foot down while a car crosses behind: alert, then brake
+  local w = W.new({ nodes = straight(0, 2000, 5, 25), ego = { x = 50, y = LANE1, psi = 0, v = 0, gear = 'R' } })
+  w:addCar({ id = 1, pts = line(38, -30, 38, 30), speed = 6, s0 = 0 })
+  w.manual = function() return 0, 0.5, 0 end
+  w:run(12, function(ww) return ww.collided end)
+  check(w:saw('rearCrossTraffic') ~= nil, 'Rear Cross Traffic Alert fires')
+  check(w:saw('aeb', function(e) return e.reverse end) ~= nil or not w.collided, 'brakes for the crossing car')
+  check(not w.collided, 'no collision while reversing')
+end)
+
+scenario('offRoad', function()
+  -- started well away from any road: it must end up driving on the road, or say no; never sit there braking
+  for _, dy in ipairs({ 22, 60 }) do
+    local w = W.new({ nodes = straight(0, 3000, 5, 17), ego = { x = 500, y = dy, psi = 0, v = 0 } })
+    local ok = w:engage('fsd', 'standard')
+    w:run(60)
+    local _, y = w:refPos()
+    local onRoad = math.abs(y) < 8
+    local stuck = w.planner.mode ~= 'off' and not onRoad and w.ego.v < 0.1
+    check(not stuck, string.format('%d m off the road: not silently stuck (engage %s, mode %s, y %.0f)', dy, tostring(ok), w.planner.mode, y))
+  end
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

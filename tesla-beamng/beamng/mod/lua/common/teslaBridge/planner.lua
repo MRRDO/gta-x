@@ -49,6 +49,9 @@ M.DEFAULT_SETTINGS = {
   confidenceFloor = 0.55, -- below this FSD asks the driver to take over (and keeps driving)
 }
 -- how long FSD sits at a stop sign before going, per profile (seconds; Tesla is brief)
+-- acceleration setting: how hard FSD (and, in the car, your pedal) may build power
+local ACCEL = { chill = { th = 0.75, rise = 0.7 }, standard = { th = 1, rise = 1 }, sport = { th = 1.4, rise = 1.5 } }
+setmetatable(ACCEL, { __index = function() return ACCEL.standard end })
 local STOP_DWELL = { sloth = 1.6, chill = 1.3, standard = 1.0, hurry = 0.7, madmax = 0.4, furious = 0.2 }
 
 local Planner = {}
@@ -851,10 +854,15 @@ function Planner:tick(snap)
   if not pr or pr.dist > 8 then pr = P.project(path, ego.x, ego.y) end
   if not pr then return self:finish(out) end
   if pr.dist > 15 then
+    -- off the path: plan again from here; if that doesn't bring us back onto it (a car park or field
+    -- far from any road) give up instead of sitting there braking
+    self.farTicks = (self.farTicks or 0) + 1
     local ok = self:planPath(ego, cars)
-    if not ok then self:disengage('error', 'lost the road') end
+    if not ok then self:disengage('error', 'lost the road')
+    elseif self.farTicks > 20 then self:disengage('error', 'too far from a road to drive') end
     return self:finish(out)
   end
+  self.farTicks = 0
   self.hint = pr.i
   local S = path.s
   local sCar = pr.s
@@ -1313,7 +1321,8 @@ function Planner:tick(snap)
     lead = lead and { s = lead.s - sBase, v = lead.v } or nil,
     signal = signal or false, hazard = hazard,
     hold = hold, openEnded = path.openEnded or false,
-    gapTime = gap, throttleMax = prof.throttle, decel = prof.decel, rise = prof.rise,
+    gapTime = gap, throttleMax = clamp(prof.throttle * ACCEL[self.settings.accelMode or 'standard'].th, 0.2, 1), decel = prof.decel,
+    rise = prof.rise * ACCEL[self.settings.accelMode or 'standard'].rise, feel = self.settings.steerFeel,
     maxSpeed = maxSpeed, wiggle = wiggle or nil,
     urgent = (self.urgentUntil and t < self.urgentUntil) or nil,
     mode = self.mode,

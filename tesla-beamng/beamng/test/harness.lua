@@ -459,6 +459,16 @@ local function readCtrl(dt)
   ctrlLast = line
   local what, val = line:match('^(%a+)%s+(%-?[%d%.]+)')
   if what == 'crash' then what = nil end
+  if what == 'place' then
+    -- place X Y PSI: put the player back on the road, stopped (keeps a test independent of where the last one left it)
+    local px, py, ppsi = line:match('^place%s+(%-?[%d%.]+)%s+(%-?[%d%.]+)%s+(%-?[%d%.]+)')
+    if px then
+      ppsi = tonumber(ppsi)
+      player.x, player.y, player.psi, player.v, player.delta = tonumber(px) - math.cos(ppsi) * player.ref, tonumber(py) - math.sin(ppsi) * player.ref, ppsi, 0, 0
+      hlog(string.format('placed at %s,%s', px, py))
+    end
+    return
+  end
   if what == 'tod' then HARNESS_TOD = tonumber(val); hlog('time of day ' .. val); return end
   if what then hlog('player input: ' .. what .. ' ' .. val); V.input.event(what, tonumber(val), 0); return end
   -- actions that don't go through input.event: a paddle bound to toggle_left_signal, an H-shifter

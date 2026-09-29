@@ -146,6 +146,23 @@ function Safety:tick(t, dt, snap, ctx)
     if vr > 0 then need = vr * vr / (2 * max(0.2, gap - 0.5)) end
   end
 
+  -- Rear Cross Traffic Alert / reverse braking: backing up into a car that's crossing behind us
+  if ego.v < -0.3 or (ego.gear == 'R' and ego.v < 0.3 and (ego.throttle or 0) > 0.05) then
+    local sp = max(abs(ego.v), (ego.throttle or 0) > 0.1 and 2.5 or 1.2) -- foot down: assume it will pull away
+    local back = { x = ego.x, y = ego.y, hx = -ego.hx, hy = -ego.hy, v = sp, yawRate = ego.yawRate, len = ego.len, wid = ego.wid }
+    local rttc, rwho = M.timeToCollision(back, cars, 3)
+    out.rearTtc = rttc
+    if rttc and rttc < 2.6 then
+      out.rearWarn = true
+      if not self.rearOn then out.events[#out.events + 1] = { kind = 'rearCrossTraffic', ttc = rttc } end
+      if st.aeb and rwho and (rttc < 0.9 or (rttc < 1.9 and sp >= 2.4)) then
+        if self.aebUntil < t then out.events[#out.events + 1] = { kind = 'aeb', ttc = rttc, reverse = true } end
+        self.aebUntil = t + 0.6
+      end
+    end
+  end
+  self.rearOn = out.rearWarn or false
+
   -- Forward Collision Warning
   local fcwT = FCW_TIME[st.fcw]
   local fcw = fcwT ~= nil and ttc ~= nil and ttc < fcwT and speed > 2.2 and need > 1.5
