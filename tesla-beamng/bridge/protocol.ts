@@ -84,7 +84,7 @@ export type NagState = {
 
 export type WheelState = {
   /** active = driving the wheel now; available = FFB wheel found; helper = the external wheel helper drives it; no wheel / unavailable / off / disabled otherwise */
-  status: 'active' | 'available' | 'no wheel' | 'unavailable' | 'off' | 'disabled' | 'helper' | 'unknown'
+  status: 'active' | 'available' | 'no wheel' | 'unavailable' | 'off' | 'disabled' | 'helper' | 'own' | 'unknown'
   reason?: string
   strength: number // 0..1 of the wheel's max force
   pos: number // physical wheel, raw axis -1..1
@@ -327,7 +327,7 @@ export type Command =
   | { t: 'navigate'; to: Vec3 | { node: string }; stops?: Vec3[]; arrival?: Arrival }
   | { t: 'cancelRoute' }
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
-  | { t: 'wheel'; spring?: boolean; strength?: number; helper?: boolean; rangeDeg?: number } // FFB wheel spring on/off, strength 0..1 (default on, 1.0); helper: the SDL wheel helper drives the wheel; rangeDeg: the wheel's rotation (default 900)
+  | { t: 'wheel'; spring?: boolean; strength?: number; helper?: boolean; ownFfb?: boolean; rangeDeg?: number } // FFB wheel spring on/off, strength 0..1 (default on, 1.0); helper: the SDL wheel helper drives the wheel; rangeDeg: the wheel's rotation (default 900)
   | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean; camera?: CameraSettings
       /** Auto Shift out of Park: press the brake in P and the car picks D or R (default off). */
       autoShift?: boolean

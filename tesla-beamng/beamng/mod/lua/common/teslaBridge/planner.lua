@@ -39,7 +39,7 @@ M.BEHAVIOR = {
 }
 
 M.DEFAULT_SETTINGS = {
-  quirks = { phantomBraking = true, yellowHesitation = true, wiggle = true, weather = true, creep = true },
+  quirks = { phantomBraking = false, yellowHesitation = false, wiggle = false, hesitate = false, weather = true, creep = true },
   speedOffsetMph = nil,  -- TACC/Autosteer: set speed = limit + offset (nil: profile offset)
   setSpeed = nil,        -- TACC/Autosteer fixed set speed (m/s) when the driver picked one
   followDistance = nil,  -- 1..7 (TACC); nil = profile gap
@@ -471,7 +471,7 @@ function Planner:engage(mode, profile, ego, cars)
     if not ok then self.mode = 'off'; return false, err end
     self.builtFor = self.profile
   end
-  if mode == 'fsd' and stationary and self.graph then
+  if mode == 'fsd' and stationary and self.graph and ego.gear == 'P' then
     -- start from Park: back out of a spot, or turn around when the route goes the other way
     local loc = P.locate(self.graph, ego.x, ego.y, ego.hx, ego.hy, 40)
     local e, et, ed = P.nearestEdge(self.graph, ego.x, ego.y, nil, nil, 40)
@@ -1497,7 +1497,9 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
           -- whose line is behind us (e.g. the far-side light for the other direction, whose
           -- line is the edge of the junction we're already in) must never stop the car
           local line = self:stopLine(sg, win, pr.s)
-          if line - sCar < 0.5 then
+          local rw = self.redWait and self.redWait[sg.id]
+          local heldAtRed = not (rw and rw.noted) and not self.cleared[sg.id] and sg.kind == 'signal' and v < 0.8 and line - sCar > -2.5 and sg.get and sg.get() == 'red'
+          if line - sCar < 0.5 and not heldAtRed then
             relevant = false
             if fsm and fsm.state == 'approach' then
               -- overshot a stop sign's line: stopped here, it counts; still rolling, it's missed
@@ -1589,7 +1591,7 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
           self.cleared[sg.id] = true
           self.clearedS = sSign
           -- the classic FSD go-stop-go hesitation, now and then
-          if self.settings.quirks.creep and self.rng() < 0.15 then self.hesitateUntil = t + 1.5 end
+          if self.settings.quirks.hesitate and self.rng() < 0.15 then self.hesitateUntil = t + 1.5 end
           stopS = nil
         end
       end
@@ -1701,7 +1703,7 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     local routeTurnsThatWay = nextTurn and nextTurn.dir == dir and nextTurn.s - sCar < 200
     if fsd and not routeTurnsThatWay and self:turnAtNext(dir, sCar, v, 150, true) then
       -- the turn signal means "turn there": a junction with a road that way coming up
-    elseif k >= 0 and k <= minN - 1 then want, reason = k, 'driver'
+    elseif k >= 0 and k <= minN - 1 then want, reason = k, 'driver'; self.lanePinUntil = t + 90 -- a lane the driver picked stays put
     elseif fsd and not routeTurnsThatWay then
       -- no lane that way (and never into oncoming traffic): take the next turn that way
       self:turnAtNext(dir, sCar, v)
@@ -1710,6 +1712,7 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   end
   if not want and self.moveOverRequest and lane.k < minN - 1 then want, reason = lane.k + 1, 'moveOver' end
   self.moveOverRequest = nil
+  local pinned = self.lanePinUntil and t < self.lanePinUntil
   if not want and fsd and not prep then
     -- pass a slower car
     local cruise = path.vcap[iCar] or v
@@ -1718,10 +1721,10 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     if wantsPass then lane.slowSince = lane.slowSince or t else lane.slowSince = nil end
     if wantsPass and t - lane.slowSince >= 2.5 then
       want, reason = lane.k + 1, 'pass'
-    elseif beh.leftAbove and minN >= 2 and v > beh.leftAbove and lane.k < minN - 1 and (not nextTurn or nextTurn.s - sCar > 1000) then
+    elseif beh.leftAbove and not pinned and minN >= 2 and v > beh.leftAbove and lane.k < minN - 1 and (not nextTurn or nextTurn.s - sCar > 1000) then
       -- hurry / Mad Max live in the fast lane at speed (still checked for a safe gap below)
       want, reason = lane.k + 1, 'madMax'
-    elseif lane.k > 0 and not (beh.leftAbove and v > beh.leftAbove * 0.8) then
+    elseif lane.k > 0 and not pinned and not (beh.leftAbove and v > beh.leftAbove * 0.8) then
       -- back to the right lane once clear (and not passing someone slower there)
       local slowerRight = false
       for _, o in ipairs(onPath) do

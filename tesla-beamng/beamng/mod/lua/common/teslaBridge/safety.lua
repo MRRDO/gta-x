@@ -204,6 +204,11 @@ function Safety:tick(t, dt, snap, ctx)
     -- only a graze of the path's edge (< 0.3 m of body overlap), driving straight: not a threat
     if lat > ((ego.wid or 1.9) + (who.w or 1.9)) * 0.5 - 0.3 and abs(ego.yawRate or 0) < 0.15 then threat = false end
   end
+  -- a wall/pole dead ahead (or behind, in reverse) that we can't stop for: brake (needs to persist too)
+  if not threat and ctx.rays and speed > 0.8 then
+    local d = (ego.v or 0) >= 0 and ctx.rays.front or ctx.rays.rear
+    if d and d < speed * speed / 12 + 0.5 + speed * 0.15 then threat = true; ttc = ttc or d / speed end
+  end
   self.threatTicks = threat and ((self.threatTicks or 0) + 1) or 0
   if st.aeb and not out.evade and threat and self.threatTicks >= 3 then
     if self.aebUntil < t then out.events[#out.events + 1] = { kind = 'aeb', ttc = ttc } end

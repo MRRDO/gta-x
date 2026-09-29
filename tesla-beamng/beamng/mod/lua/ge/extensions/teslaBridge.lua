@@ -1244,6 +1244,11 @@ local function engageFromApp(mode, profile)
   if pinLocked then event('error', 'PIN to Drive: enter the PIN first'); return end
   ensureVehicleExtension(veh)
   local ego = egoSnapshot(veh)
+  if mode ~= 'tacc' and math.abs(ego.v or 0) < 1 and ego.gear ~= 'R' then
+    -- never launch into a wall/pole right in front (e.g. engaged in Park facing one)
+    local front = sampleRays(ego).front
+    if front and front < 4 then event('error', 'autopilot: something is right in front of the car - back up first'); return end
+  end
   local ok, err = planner:engage(mode, profile, ego, trafficList())
   if not ok then event('error', 'autopilot: ' .. tostring(err)); return end
   syncVehicleMode(veh)

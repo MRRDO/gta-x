@@ -277,7 +277,7 @@ scenario('backOut', function()
 end)
 
 scenario('threePointTurn', function()
-  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 400, y = LANE1, psi = 0, v = 0 } })
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 400, y = LANE1, psi = 0, v = 0, gear = 'P' } })
   w.planner:setRoute({ 100, -LANE1, 0 }, nil, 'Driveway')
   check(w:engage('fsd', 'standard'), 'engage facing the wrong way')
   w:run(150, function(ww) return ww:saw('arrived') ~= nil end)

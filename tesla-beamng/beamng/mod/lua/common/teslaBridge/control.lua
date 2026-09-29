@@ -113,7 +113,7 @@ function Driver:update(dt, sense, opts)
 
   -- steering: pure pursuit + a little lane-centering integral
   local fl = FEEL[plan.feel] or FEEL.standard
-  local L = reverse and clamp(2.5 + 0.7 * v, 3, 8) or clamp((2 + 0.7 * v) * fl.look, 4, 34)
+  local L = reverse and clamp(2.5 + 0.7 * v, 3, 8) or clamp((2 + (v > 15 and 0.9 or 0.7) * v) * fl.look, 4, 40)
   local k = P.purePursuit(path, s, sense.x, sense.y, hx, hy, L, pr.i)
   if v > 1 and not reverse then
     self.latI = clamp(self.latI + pr.lat * dt, -3, 3)

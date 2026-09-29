@@ -29,7 +29,7 @@ local override = { value = 0, t = -1, active = false }
 local takeover = { steering = 0, brake = 0, throttle = 0 }
 local baseline = { steering = 0 }
 local takeoverLevel = 'normal' -- how hard the wheel must be pushed to take over: 'light' | 'normal' | 'firm'
-local steerBias = 0 -- the driver's light touch on the wheel, added to FSD's steering
+local steerBias = 0 -- unused: kept at 0 (FSD steering is never biased by the hands)
 local savedGearboxMode = nil
 local lastInjected = {}
 local lastOut = nil
@@ -198,6 +198,7 @@ local steeringWeight = 'standard' -- Tesla's Steering Weight: light | standard |
 local ffb = {
   enabled = true, strength = 0.6, roadFeel = 0, -- softer hold and no road buzz by default: the wheel shook and fought overtaking
   rangeDeg = 900, -- the physical wheel's rotation (G29: 900); the G29 turns 1:1 with the car's wheel
+  persist = true, -- after FSD keep our own steering feel instead of handing the wheel back (game FFB stayed dead)
   restoreUntil = nil, -- after release: keep checking that the game has the wheel back
   spring = Wh.new({ gripScale = Wh.takeoverLimit(takeoverLevel) / 0.15 }), held = false, fn = nil, idx = nil, id = nil, fcap = 10, method = nil,
   status = 'unknown', reason = nil,
@@ -412,12 +413,19 @@ local function ffbGiveBack()
   return id == nil or id >= 0
 end
 
-local function ffbRelease()
+local function ffbRelease(handBack)
   if not ffb.held then return end
   ffbSend(0)
   ffb.held = false
-  if not ffbGiveBack() then ffb.restoreUntil = now + 3 end
   ffb.force, ffb.grip = 0, false
+  if ffb.persist and not handBack and ffb.method and ffb.id and ffb.id >= 0 then
+    -- the game's own force feedback went dead after FSD on Quentin's setup: keep the wheel alive
+    -- with our own steering feel (self-centering, speed-weighted) instead of handing it back
+    ffb.own, ffb.status, ffb.reason = true, 'own', 'our own steering feel (the game keeps force feedback off)'
+    ffb.spring:reset()
+    return
+  end
+  if not ffbGiveBack() then ffb.restoreUntil = now + 3 end
   ffb.status = 'available'
 end
 
@@ -439,6 +447,15 @@ end
 local function ffbOwnTick(dt, s)
   if not ffb.own or ffb.held or ap.engaged then return end
   local id = hydrosId()
+  if ffb.persist then
+    -- ours on purpose: only let go if the game itself took the device back
+    if ffb.method == 'upvalue' then
+      local ok, _, cur = pcall(debug.getupvalue, ffb.fn, ffb.idx)
+      id = (ok and cur ~= -1) and (tonumber(cur) or 0) or -1
+    else
+      id = (hydros and hydros.enableFFB == false) and -1 or id
+    end
+  end
   if id and id >= 0 then
     ffb.own, ffb.status = false, 'available' -- the game has the wheel again
     ffbSend(0)
@@ -519,7 +536,7 @@ local function ffbUpdate(dt, targetInput)
   end
   if ffb.spring.disabled then
     errorEvent('wheel spring turned off: the wheel kept moving the wrong way')
-    ffbRelease()
+    ffbRelease(true)
     ffb.status, ffb.enabled = 'disabled', false
     return false
   end
@@ -1015,16 +1032,21 @@ handlers.wheel = function(cmd)
   if cmd.strength ~= nil then ffb.strength = math.max(0, math.min(2, tonumber(cmd.strength) or ffb.strength)) end
   if cmd.roadFeel ~= nil then ffb.roadFeel = math.max(0, math.min(2, tonumber(cmd.roadFeel) or 1)) end
   if cmd.rangeDeg ~= nil then ffb.rangeDeg = math.max(180, math.min(1080, tonumber(cmd.rangeDeg) or ffb.rangeDeg)) end
+  if cmd.ownFfb ~= nil then
+    ffb.persist = cmd.ownFfb and true or false
+    if not ffb.persist and ffb.own then ffb.own = false; ffbGiveBack() end
+  end
   if cmd.helper ~= nil then
     ffb.helper = cmd.helper and true or false
     if ffb.helper then
-      ffbRelease()
+      ffb.own = false
+      ffbRelease(true)
       ffb.status, ffb.reason = 'helper', 'external wheel helper drives the wheel'
     elseif ap.engaged and ap.mode ~= 'tacc' then ffbTake() else ffbProbe() end
   end
   if cmd.spring ~= nil then
     ffb.enabled = cmd.spring and true or false
-    if not ffb.enabled then ffbRelease(); ffb.status = 'off'
+    if not ffb.enabled then ffb.own = false; ffbRelease(true); ffb.status = 'off'
     else
       ffb.spring = Wh.new({ gripScale = Wh.takeoverLimit(takeoverLevel) / 0.15 })
       if ap.engaged and ap.mode ~= 'tacc' then ffbTake() else ffbProbe() end
@@ -1102,12 +1124,10 @@ local function checkTakeover(dt)
   elseif ffb.held or ap.mode == 'tacc' then
     -- the spring moves the wheel; grips are caught by it. A light push shows up as the wheel's
     -- distance from where the spring holds it
-    if ap.mode ~= 'tacc' and st and lastOut then steerBias = Wh.nudgeBias(st - wheelTarget(lastOut.steer or 0), devLimit) end
     steerDev = 0
   end
-  if steerDev > 0 and steerDev <= devLimit and ap.mode ~= 'tacc' then
-    steerBias = Wh.nudgeBias((st or 0) - baseline.steering, devLimit)
-  end
+  -- no steering bias from the driver's hands: FSD's steering is FSD's alone (a hand on the
+  -- wheel only counts as "hands on" for the nag, or a takeover when strong)
   takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
   takeover.brake = (br > 0.1) and takeover.brake + dt or 0
   takeover.throttle = 0 -- the accelerator never disengages (like a Tesla): it speeds you up
@@ -1555,7 +1575,8 @@ end
 
 local function onExtensionUnloaded()
   if ap.engaged then disengage('error', 'extension unloaded') end
-  ffbRelease()
+  ffb.own = false
+  ffbRelease(true)
   removeInputHook()
   removeFFBHook()
 end
