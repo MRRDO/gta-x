@@ -299,6 +299,10 @@ export type Command =
        * less often on highways and at low speed), 'auto' (default: camera while it reports).
        */
       nagMode?: 'auto' | 'camera' | 'wheel' | 'off'
+      /** Paddles / shift bindings act as turn signals (left = shift down, right = shift up). Default on. */
+      paddleSignals?: boolean
+      /** Light on-line learning of your driving style (default on). */
+      learning?: boolean
       /** Auto headlights (default on): on when it's dark or raining, off in daylight. */
       autoHeadlights?: boolean
       /** Auto high beams at night above 25 mph, dipped for cars ahead (default off). */
