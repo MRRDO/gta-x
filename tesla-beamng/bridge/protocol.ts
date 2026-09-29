@@ -379,6 +379,8 @@ export type Command =
       hillHold?: boolean
       /** Road feel through the wheel while FSD drives (bumps and surface texture), 0..2, default 0 (off: it made the wheel shake). */
       roadFeel?: number
+      /** Keep the bridge's own steering feel on the wheel after FSD instead of handing force feedback back to the game (use if the wheel goes dead after FSD; default off). */
+      ownFfb?: boolean
       /** Valet Mode: self-driving off, gentle acceleration, top speed about 65 mph. */
       valet?: boolean
       /** Auto wipers from the weather (default on; best effort, depends on the car). */

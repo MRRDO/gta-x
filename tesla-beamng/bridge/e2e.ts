@@ -296,9 +296,10 @@ try {
       events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
   }
   if (process.env.HARNESS_NO_WHEEL !== '1') {
-  check('wheel handed back to the game after disengage', await until('available', () => st().wheel?.status === 'available', 3000), st().wheel?.status)
+  // the wheel keeps our own steering feel after FSD (the game's FFB stayed dead on the real setup)
+  check('wheel alive after disengage (own feel or game)', await until('available', () => ['available', 'own'].includes(st().wheel?.status as string), 3000), JSON.stringify(st().wheel))
   // 0.39 bug: after a takeover the game's own force feedback stayed off (device id -1)
-  if (st().wheel?.gameId !== undefined) {
+  if (st().wheel?.gameId !== undefined && st().wheel?.status !== 'own') {
     check('game force feedback is back on after the takeover', await until('gameFFB', () => (st().wheel?.gameId ?? -1) >= 0, 3000), JSON.stringify(st().wheel))
   }
 

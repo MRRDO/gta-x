@@ -1230,6 +1230,7 @@ pushVehicleSettings = function(veh)
   if ps.swerveAssist ~= nil then toVehicle(veh, 'command', { t = 'swerveAssist', on = ps.swerveAssist and true or false }) end
   if ps.valet then toVehicle(veh, 'command', { t = 'drive', accel = 'chill' }) end
   if ps.takeover or ps.roadFeel ~= nil or ps.steeringWeight then toVehicle(veh, 'command', { t = 'wheel', takeover = ps.takeover, roadFeel = ps.roadFeel, weight = ps.steeringWeight }) end
+  if ps.ownFfb ~= nil then toVehicle(veh, 'command', { t = 'wheel', ownFfb = ps.ownFfb and true or false }) end
   if ps.paddleSignals ~= nil then toVehicle(veh, 'command', { t = 'paddles', signals = ps.paddleSignals and true or false }) end
   if ps.stoppingMode or ps.regen ~= nil or ps.accelMode or ps.hillHold ~= nil or ps.regenLevel then
     toVehicle(veh, 'command', { t = 'drive', stopping = ps.stoppingMode, regen = ps.regen, accel = ps.accelMode, hillHold = ps.hillHold, regenLevel = ps.regenLevel })

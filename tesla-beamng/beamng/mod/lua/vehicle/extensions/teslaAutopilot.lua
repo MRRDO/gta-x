@@ -198,7 +198,7 @@ local steeringWeight = 'standard' -- Tesla's Steering Weight: light | standard |
 local ffb = {
   enabled = true, strength = 0.6, roadFeel = 0, -- softer hold and no road buzz by default: the wheel shook and fought overtaking
   rangeDeg = 900, -- the physical wheel's rotation (G29: 900); the G29 turns 1:1 with the car's wheel
-  persist = true, -- after FSD keep our own steering feel instead of handing the wheel back (game FFB stayed dead)
+  persist = false, -- after FSD keep our own steering feel instead of handing the wheel back (game FFB stayed dead)
   restoreUntil = nil, -- after release: keep checking that the game has the wheel back
   spring = Wh.new({ gripScale = Wh.takeoverLimit(takeoverLevel) / 0.15 }), held = false, fn = nil, idx = nil, id = nil, fcap = 10, method = nil,
   status = 'unknown', reason = nil,
@@ -338,7 +338,7 @@ end
 local function ffbProbe()
   if ffb.helper then ffb.status, ffb.reason = 'helper', 'external wheel helper drives the wheel'; return false end
   if not ffb.enabled then ffb.status, ffb.reason = 'off', 'turned off'; return false end
-  if ffb.held then return true end
+  if ffb.held or ffb.own then return true end
   if not hasSendFFB() then ffb.status, ffb.reason = 'unavailable', 'obj:sendForceFeedback missing'; return false end
   local cid = cfgId()
   if cid and cid >= 0 and type(hydros) == 'table' and hydros.enableFFB ~= nil and currentCfg() then
@@ -360,6 +360,12 @@ end
 
 local function ffbTake()
   ffb.farNoted, ffb.farT = false, 0
+  if ffb.own and ffb.method and ffb.enabled and not ffb.helper then
+    -- the device is already ours (kept after the last FSD): just start driving it again
+    ffb.own, ffb.held, ffb.lastForce, ffb.restoreUntil, ffb.status = false, true, nil, nil, 'active'
+    ffb.spring:reset()
+    return true
+  end
   ffb.own = false
   local ok, method, f, i, id = ffbProbe()
   if not ok or ffb.held then return ffb.held end
