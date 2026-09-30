@@ -657,6 +657,9 @@ local function sampleRays(ego)
   local half = (ego.len or 4.6) * 0.5
   local rays = {
     front = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z, ego.hx, ego.hy, 0, 30),
+    -- a second ray 0.9 m higher: a real wall/pole/car is hit by both at about the same distance; a rising road or
+    -- crest is hit by the low ray much sooner (that read as a wall dead ahead: phantom braking at 30 mph)
+    frontHi = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z + 0.9, ego.hx, ego.hy, 0, 30),
     rear = castRay(ego.x - ego.hx * half, ego.y - ego.hy * half, z, -ego.hx, -ego.hy, 0, 15),
     left = castRay(ego.x, ego.y, z, -ego.hy, ego.hx, 0, 8),
     right = castRay(ego.x, ego.y, z, ego.hy, -ego.hx, 0, 8),

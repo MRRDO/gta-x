@@ -230,12 +230,17 @@ function Safety:tick(t, dt, snap, ctx)
   -- a wall/pole dead ahead (or behind, in reverse) we can't stop for (curbs/trees/rails beside a bend are not)
   local carThreat = threat
   if not carThreat and ctx.rays and speed > 0.8 then
-    local d = (ego.v or 0) >= 0 and ctx.rays.front or ctx.rays.rear
-    if d and abs(ego.yawRate or 0) < 0.2 and d < speed * speed / 18 + 0.4 + speed * 0.08 then threat = true; ttc = ttc or d / speed end
+    local fwd = (ego.v or 0) >= 0
+    local d = fwd and ctx.rays.front or ctx.rays.rear
+    -- forward: both rays must hit at about the same distance (a vertical obstacle, not a slope or crest)
+    if fwd and d and (not ctx.rays.frontHi or math.abs(ctx.rays.frontHi - d) > 1.5) then d = nil end
+    -- under FSD its own path planning already keeps clear of the roadside: only a really imminent hit counts
+    local k = ego.engaged and 30 or 22
+    if d and abs(ego.yawRate or 0) < 0.12 and d < speed * speed / k + 0.4 + speed * 0.05 then threat = true; ttc = ttc or d / speed end
   end
   -- a wall must persist 3 ticks; a car is already filtered by the brain's belief
   self.threatTicks = (threat and not carThreat) and ((self.threatTicks or 0) + 1) or 0
-  if st.aeb and not out.evade and (carThreat or self.threatTicks >= 3) then
+  if st.aeb and not out.evade and (carThreat or self.threatTicks >= 5) then
     if self.aebUntil < t then out.events[#out.events + 1] = { kind = 'aeb', ttc = ttc } end
     self.aebUntil = t + 0.6
   end

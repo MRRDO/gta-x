@@ -164,6 +164,16 @@ function Driver:update(dt, sense, opts)
   if plan.maxSpeed then vt = min(vt, plan.maxSpeed) end
   if plan.hold or out.remaining < (reverse and 0.3 or 0.5) and not plan.openEnded then vt = 0 end
   vt = max(0, vt)
+  -- accelerate like a person driving, not like a launch: the speed we ask for rises at the profile's accel
+  -- (m/s^2) instead of jumping to the new target; slowing down is never delayed
+  if plan.accel and not plan.urgent then
+    local ramp = self.vtRamp or v
+    if vt <= ramp then ramp = vt else ramp = min(vt, max(ramp, v) + plan.accel * dt) end
+    self.vtRamp = ramp
+    vt = ramp
+  else
+    self.vtRamp = nil
+  end
   out.targetSpeed = vt
 
   -- speed control: PI on speed error, never throttle and brake together
