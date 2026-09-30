@@ -32,6 +32,18 @@ So: buy it for BeamNG if the price is right (better than the ProBook's Vega iGPU
 it for AI. A GPU only matters if we ever train something big (camera / vision), which we don't need.
 The i7's 4 cores / 8 threads are what training will use, and the laptop can train too.
 
+## A small LLM ("FSD Assistant")
+
+Setting `assistant` (Settings > Autopilot > FSD Assistant, **on by default**). An LLM is far too slow for the
+20 Hz driving loop (a 1B model makes a few tokens a second on a CPU, less on an old GPU), so it is NOT a driver.
+What it can do: comment on rare, slow situations. Today: when FSD is stuck at level 2+ (it has re-planned and
+reset and still cannot say why), the relay (`bridge/assistant.ts`) sends the scene to a local model and shows
+its advice in the app: wait / replan / creep / ask the driver, plus a few words why. **Advice only, the car does
+not act on it.** With no local model running it does nothing and costs nothing, so on-by-default is safe.
+To try it: install Ollama, `ollama pull llama3.2:1b` (~1 GB); `TESLA_LLM_URL` / `TESLA_LLM_MODEL` override.
+It runs on the CPU (24 GB of RAM is plenty); the R5 340X can't help. Later ideas: voice commands, explaining
+what FSD is doing ("slowing for a pedestrian"), reading signs the map lacks.
+
 ## Phases
 
 **Phase 1: done (foundation).**

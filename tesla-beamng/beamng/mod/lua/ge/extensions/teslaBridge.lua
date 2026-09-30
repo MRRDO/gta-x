@@ -706,6 +706,7 @@ local function relayEvent(ev)
   if ev.kind == 'nag' then detail = tostring(ev.level) .. (ev.reason and (' ' .. ev.reason) or '') end
   if ev.kind == 'monitoring' then detail = ev.state end
   if ev.kind == 'strike' then detail = tostring(ev.strikes) .. '/' .. tostring(ev.max) end
+  if ev.kind == 'stuck' then detail = 'level ' .. tostring(ev.level) end
   if ev.kind == 'disengage' then detail = ev.reason end -- the UI keys on the reason; the rest is in data
   local msg = { t = 'event', kind = ev.kind, detail = detail and tostring(detail) or nil, data = ev }
   send(msg)

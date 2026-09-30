@@ -201,6 +201,7 @@ export type EventKind =
   | 'collision'        // the car was hit (see autopilot.alert)
   | 'signalStuck'      // a red that never changed for 90 s, treated as an all-way stop
   | 'brain'            // the driving brain noticed something: detail says what (erratic car, tailgater, pedestrian, staleGreen, laneHold)
+  | 'advice'           // the FSD Assistant's advice after a stuck FSD: detail 'wait|replan|creep|askDriver: why'
   | 'stuck'            // FSD stopped for no reason it can name: level 1 re-plan, 2 reset, 3 asks the driver
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
   | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver}; answer with {t:'arrivalChoice'}
@@ -345,6 +346,8 @@ export type Command =
       paddleSignals?: boolean
       /** Light on-line learning of your driving style (default on). */
       learning?: boolean
+      /** FSD Assistant: a small local LLM (Ollama) may comment on a stuck FSD; advice only (default on; does nothing without a local model). Handled by the relay. */
+      assistant?: boolean
       /** Nudge the speed caps by up to +-8% with the policy trained on your driving (rl/train_bc.py -> the game's settings/teslaBridgePolicy.json). Default off; needs the file. */
       policy?: boolean
       /** Confidence under which FSD asks you to take over (default 0.55). */

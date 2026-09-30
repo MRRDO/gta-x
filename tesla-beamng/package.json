@@ -6,7 +6,7 @@
   "scripts": {
     "bridge": "tsx bridge/relay.ts",
     "mod": "tsx bridge/buildMod.ts",
-    "test": "luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua && luajit beamng/test/test_maneuver.lua && luajit beamng/test/test_behaviors.lua && luajit beamng/test/test_score.lua && luajit beamng/test/test_lightshow.lua && luajit beamng/test/test_camgov.lua && luajit beamng/test/test_steerfeel.lua && luajit beamng/test/test_drift.lua",
+    "test": "tsx bridge/browse_test.ts && tsx bridge/assistant_test.ts && luajit beamng/test/test_driving.lua && luajit beamng/test/test_wheel.lua && luajit beamng/test/test_maneuver.lua && luajit beamng/test/test_behaviors.lua && luajit beamng/test/test_score.lua && luajit beamng/test/test_lightshow.lua && luajit beamng/test/test_camgov.lua && luajit beamng/test/test_steerfeel.lua && luajit beamng/test/test_drift.lua",
     "e2e": "tsx bridge/e2e.ts && tsx bridge/app/selftest.ts && tsx bridge/tunnel_test.ts",
     "harness": "luajit beamng/test/harness.lua",
     "typecheck": "tsc --noEmit",

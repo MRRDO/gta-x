@@ -455,6 +455,7 @@ end
 
 -- mode: 'fsd' | 'autosteer' (steer + cruise) | 'tacc' (cruise only). Returns ok, err.
 function Planner:engage(mode, profile, ego, cars)
+  self.farTicks = 0 -- a fresh start: an earlier off-road spell must not count against this one
   if self.nag.lockedOut then return false, 'FSD is locked out for this drive (too many strikes)' end
   if profile and P.PROFILES[profile] then self.profile = profile end
   self.mode = mode

@@ -555,7 +555,8 @@ try {
   // --- low confidence: FSD asks for a takeover, keeps driving, and the accelerator hands the car over
   {
     playerInput('place 300 -1.8 0') // the creep test above may have left the car in a field
-    await sleep(600)
+    await until('placed', () => Math.abs((st().pos?.[0] ?? 0) - 300) < 8, 4000)
+    await sleep(300)
     send({ t: 'gear', gear: 'D' })
     events.length = 0
     send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })

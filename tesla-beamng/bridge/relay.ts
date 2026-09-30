@@ -18,6 +18,8 @@ import qrcode from 'qrcode-terminal'
 import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
+import { handleBrowse } from './browse.ts'
+import { adviseStuck, assistantStatus, setAssistantEnabled } from './assistant.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -413,6 +415,10 @@ function onGameLine(line: string) {
       // back to the menu / level change: a new app must not get the old world's state or route
       if (msg.kind === 'levelUnloaded') { lastState = null; lastRoute = null }
       log('event', msg.kind, msg.detail ?? '')
+      if (msg.kind === 'stuck' && (msg.data?.level ?? 0) >= 2) {
+        // FSD stopped and can't say why: ask the local model (if any) for advice, shown in the app
+        void adviseStuck(msg.data).then((a) => { if (a) { log('assistant:', a.action, a.why); broadcast({ t: 'event', kind: 'advice', detail: `${a.action}: ${a.why}` }) } })
+      }
       recentEvents.push({ ...msg, at: new Date().toISOString() })
       if (recentEvents.length > 100) recentEvents.shift()
       broadcast(msg)
@@ -539,8 +545,13 @@ const server = createServer((req, res) => {
   if (path === '/health') {
     res.writeHead(200, { 'content-type': 'application/json' })
     const local = isLoopback(req)
-    return res.end(JSON.stringify({ game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null,
+    return res.end(JSON.stringify({ assistant: assistantStatus(), game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null,
       tunnel: local ? tunnelUrl : undefined, appLink: local && tunnelUrl ? appPairingLink(APP_URL, tunnelUrl, TOKEN) : undefined }))
+  }
+  if (path === '/browse') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    void handleBrowse(req, res, url.searchParams.get('u'))
+    return
   }
   // private: voice notes (with where the car was) and the backup camera need the token off this PC
   if ((path === '/feedback' || path.startsWith('/feedback/') || path.startsWith('/camera') || path.startsWith('/cam/')) && !authorized(req)) {
@@ -636,6 +647,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     }
     stats.fromApp++
     if (handleButtons(ws, msg)) return
+    if (msg.t === 'settings' && typeof msg.assistant === 'boolean') setAssistantEnabled(msg.assistant) // the FSD Assistant (bridge/assistant.ts) lives here, the game needn't know
     if (msg.t === 'hello') { log(`app: ${msg.app ?? '?'} ${msg.version ?? ''}`); return }
     if (msg.t === 'requestMap' && lastMap) {
       ws.send(JSON.stringify(lastMap))
