@@ -21,6 +21,7 @@ local Mv = require('teslaBridge/maneuver')
 local Nag = require('teslaBridge/nag')
 local Brain = require('teslaBridge/brain')
 local Judge = require('teslaBridge/judge')
+local Policy = require('teslaBridge/policy')
 
 local M = {}
 
@@ -90,7 +91,7 @@ function M.new(opts)
     t = 0, events = {}, lastDisengage = nil,
     wiggleUntil = -1, phantom = nil, lastOverhead = false,
     arrivalMemory = {},
-    brain = opts.brain or Brain.new(), hangBack = {}, judge = Judge.new(), lightAge = {}, pedNoted = {},
+    brain = opts.brain or Brain.new(), hangBack = {}, judge = Judge.new(), lightAge = {}, pedNoted = {}, policy = opts.policy,
   }, Planner)
   self.nag.rng = self.rng
   self.degree = {}
@@ -1220,6 +1221,23 @@ function Planner:tick(snap)
   -- what we've learned about Quentin's style on this kind of road (FSD only, mild)
   local limNow = path.limit and path.limit[pr.i]
   local learnSpeed = self.learn and self.mode == 'fsd' and self.learn:speedScale(limNow) or 1
+  -- the policy trained on his driving (rl/train_bc.py): an advisory nudge of at most +-8% on the speed
+  -- caps, only when the setting is on; the limits, the brain and the safety layer all still apply
+  if self.policy and self.settings.policy and self.mode == 'fsd' and limNow then
+    if not self.polT or t - self.polT >= 0.2 then
+      local dtp = self.polT and (t - self.polT) or 0.2
+      self.polT = t
+      local ctl = st.control
+      local gap = st.leadGap and min(st.leadGap, 60) or 60
+      local closing = (self.polGap and dtp > 0) and (self.polGap - gap) / dtp or 0
+      local acc = (self.polV and dtp > 0) and (v - self.polV) / dtp or 0
+      self.polGap, self.polV = gap, v
+      local a = self.policy:act({ v, limNow, gap, closing, ctl and ctl.dist and min(ctl.dist, 80) or 80, (ctl and ctl.state == 'red') and 1 or 0, acc })
+      self.polScale = (self.polScale or 1) + ((1 + 0.08 * clamp(a, -1, 1)) - (self.polScale or 1)) * 0.2
+    end
+    learnSpeed = learnSpeed * self.polScale
+    st.policy = floor((self.polScale - 1) * 1000) / 10 -- % nudge, for diagnostics
+  end
   if self.learn and self.mode == 'fsd' and self.learn.spotScale then learnSpeed = learnSpeed * self.learn:spotScale(ego.x, ego.y) end
   local learnGap = self.learn and self.mode == 'fsd' and self.learn:gapScale(limNow) or 1
   if q.weather and ((wx.rain or 0) > 0.05 or (wx.fog or 0) > 0.05) then

@@ -40,7 +40,8 @@ The i7's 4 cores / 8 threads are what training will use, and the laptop can trai
 changes). `python rl/train_bc.py` clones how he uses the pedals (speed vs limit, gap, lights, acceleration)
 into `policy.json`. `policy.lua` runs it and matches numpy exactly (tested). **It does not drive anything yet.**
 
-**Phase 2: advisory speed policy (next).**
+**Phase 2: advisory speed policy (wired, off by default).**
+Done: `settings {policy:true}` + a trained `settings/teslaBridgePolicy.json` in the game's user folder nudges the speed caps by at most +-8% (smoothed, 5 Hz). Still to do: the offline check against held-out days and the A/B takeover-rate comparison below. Original plan:
 Load `policy.json` in the GE, blend its suggestion into the planner's speed (max +-10%, never above the limit
 offset, safety layer always wins), behind a setting. Check offline first: how often would it have matched
 him on held-out days. Then A/B by takeover rate (learn.lua already counts takeovers).
@@ -66,6 +67,16 @@ timing and steering feel from him. This is what makes it drive "like a person".
 **Phase 5: compute placement.**
 Best: game on the PC with the better GPU; trainer on any CPU (same PC when idle, or the laptop). No GPU
 needed. Revisit only if we add vision.
+
+## Least-harm decisions (Quentin: illegal but logical is fine)
+
+`safety.lua` no longer only swerves when there is a free lane. When braking cannot stop in time it scores every
+way out and takes the one that hurts least, even an illegal one: into the oncoming lane, onto the verge,
+sideswiping a parked car. Harm: pedestrian 100, car 2 + impact speed^2 / 8, wall or pole 30, verge / oncoming
+lane a few points; straight ahead counts what full braking leaves of the speed. It only swerves when that is
+clearly better (< 60% of the harm of braking straight), so a bump it can nearly stop for is braked, not swerved.
+Limits: a swerve needs about a second and a metre or two of sideways room, so it cannot save what is already
+inside ~0.7 s; and it only knows about what the game reports as cars (pedestrians are the small ones).
 
 ## Honest limits
 

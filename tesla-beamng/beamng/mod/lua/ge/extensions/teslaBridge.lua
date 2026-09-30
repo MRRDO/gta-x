@@ -189,6 +189,7 @@ local learn = nil -- light on-line learning of his driving style (teslaBridge/le
 local tLearnSave = 0
 local loadLearn, saveLearn -- forward
 local Lr = require('teslaBridge/learn')
+local Po = require('teslaBridge/policy')
 local Sc = require('teslaBridge/score')
 local tripScore = Sc.new() -- trip stats, Safety Score, hard-braking hazards
 local tripT, tripHazardSent, tripWasMoving = nil, false, false
@@ -463,7 +464,8 @@ local function buildMap()
   findSignals()
   findParking()
   if not learn then loadLearn() end
-  planner = Pl.new({ graph = graph, signals = signals, parking = parking, learn = learn })
+  local polSpec = jsonReadFile and try(jsonReadFile, '/settings/teslaBridgePolicy.json') or nil -- trained by rl/train_bc.py
+  planner = Pl.new({ graph = graph, signals = signals, parking = parking, learn = learn, policy = type(polSpec) == 'table' and Po.new(polSpec) or nil })
   safety.brain = planner.brain -- one brain reads the traffic for both driving and safety
   planner:configure(plannerSettings)
   sentMode = 'off'

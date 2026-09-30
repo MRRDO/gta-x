@@ -345,6 +345,8 @@ export type Command =
       paddleSignals?: boolean
       /** Light on-line learning of your driving style (default on). */
       learning?: boolean
+      /** Nudge the speed caps by up to +-8% with the policy trained on your driving (rl/train_bc.py -> the game's settings/teslaBridgePolicy.json). Default off; needs the file. */
+      policy?: boolean
       /** Confidence under which FSD asks you to take over (default 0.55). */
       confidenceFloor?: number
       /** Auto headlights (default on): on when it's dark or raining, off in daylight. */

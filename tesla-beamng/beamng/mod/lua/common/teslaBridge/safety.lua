@@ -177,27 +177,48 @@ function Safety:tick(t, dt, snap, ctx)
   self.fcwOn = fcw
   out.fcw = fcw
 
-  -- Automatic Collision Evasion: braking can't make it -> steer around if a side is clear
-  if st.evasion and ttc and ttc < 1.6 and need > 7 and out.belief >= Brain.WARN and speed > 8 and t > self.evadeCooldown and ctx.lane then
+  -- Automatic Collision Evasion, least harm: braking can't make it -> compare every way out and take the
+  -- one that hurts least, even an illegal one (into the oncoming lane, onto the verge, sideswiping a
+  -- parked car) to spare a person. Harm: a pedestrian 100, a car 2 + impact speed^2 / 8, a wall / pole
+  -- 30, the verge or an oncoming lane a few points. Straight ahead counts what braking leaves of the speed.
+  local pedAhead = who and (who.w or 2) < 1.2 and (who.l or 4) < 1.5
+  local urgent = ttc and ((ttc < 1.6 and need > 7 and speed > 8) or (pedAhead and ttc < 2.0 and need > 4 and speed > 3))
+  if st.evasion and urgent and out.belief >= Brain.WARN and t > self.evadeCooldown then
     local L = ctx.lane
+    local dist = ttc * speed
+    local impact = sqrt(max(0, speed * speed - 2 * 8.5 * dist)) -- what is left of our speed at the object after full braking
+    local straight
+    if pedAhead then straight = impact > 1.5 and 100 or 10 * impact
+    else straight = impact > 0.5 and (2 + impact * impact / 8) or 0 end
     local best
-    for _, side in ipairs({ 1, -1 }) do
-      local shift = L.laneW or 3.5
-      local room = side > 0 and L.roomLeft or L.roomRight
-      local rayOk = not ctx.rays or not ctx.rays[side > 0 and 'left' or 'right'] or ctx.rays[side > 0 and 'left' or 'right'] > shift + 1
-      if room and room - shift >= (ego.wid or 1.9) * 0.5 + 0.3 and rayOk then
-        local tt = M.timeToCollision(fwd, cars, 3, side, shift, 1.8)
-        if not tt then
-          local score = room - shift + (side < 0 and 0.5 or 0) -- prefer the shoulder over oncoming traffic
-          if (side > 0 and L.oncomingLeft) then score = score - 1 end
-          if not best or score > best.score then best = { side = side, shift = shift, score = score } end
+    if straight >= 5 then
+      for _, side in ipairs({ 1, -1 }) do
+        for _, shift in ipairs({ (L and L.laneW) or 3.5, ((L and L.laneW) or 3.5) * 0.5 }) do
+          local tt, hit = M.timeToCollision(fwd, cars, 3, side, shift, max(0.7, min(1.8, ttc * 0.9)))
+          local h = 0
+          if tt then
+            local ped = (hit.w or 2) < 1.2 and (hit.l or 4) < 1.5
+            local rel = abs(speed - (hit.v or 0))
+            h = ped and 100 or (2 + rel * rel / 8)
+          end
+          local ray = ctx.rays and ctx.rays[side > 0 and 'left' or 'right']
+          if ray and ray < shift + 1 then h = h + 30 end                       -- a wall / pole beside us
+          if L then
+            local room = side > 0 and L.roomLeft or L.roomRight
+            if not room or room - shift < (ego.wid or 1.9) * 0.5 + 0.3 then h = h + 6 end -- off the road / verge
+            if side > 0 and L.oncomingLeft then h = h + 6 end                  -- into oncoming: only the oncoming cars themselves are counted above
+          else
+            h = h + 3
+          end
+          if side < 0 then h = h - 0.5 end -- prefer the shoulder over oncoming traffic when it is a tie
+          if not best or h < best.h then best = { side = side, shift = shift, h = h } end
         end
       end
     end
-    if best then
+    if best and best.h < straight * 0.6 then
       out.evade = { side = best.side, shift = best.shift }
       self.evadeCooldown = t + 4
-      out.events[#out.events + 1] = { kind = 'collisionEvasion', side = best.side > 0 and 'left' or 'right' }
+      out.events[#out.events + 1] = { kind = 'collisionEvasion', side = best.side > 0 and 'left' or 'right', detail = pedAhead and 'pedestrian' or nil }
     end
   end
 

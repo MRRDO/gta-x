@@ -616,6 +616,59 @@ scenario('policyNet', function()
   check(us < 100, 'policy: cheap (< 0.1 ms a call)')
 end)
 
+scenario('leastHarm', function()
+  local S = require('teslaBridge/safety')
+  local function run(cars, lane, rays, v)
+    local sf = S.new()
+    local evade, ev
+    for k = 0, 10 do
+      local ego = { x = 0, y = 0, z = 0, hx = 1, hy = 0, v = v or 15, yawRate = 0, len = 4.6, wid = 1.9 }
+      local o = sf:tick(k * 0.05, 0.05, { ego = ego, cars = cars }, { rays = rays or {}, lane = lane })
+      if o.evade then evade = o.evade end
+      for _, e in ipairs(o.events) do if e.kind == 'collisionEvasion' then ev = e end end
+    end
+    return evade, ev
+  end
+  local ped = { id = 1, x = 21, y = 0, z = 0, dx = 0, dy = 1, v = 0, l = 0.6, w = 0.6 }
+  local lane = { laneW = 3.5, roomLeft = 6, roomRight = 6 }
+  local e1, ev1 = run({ ped }, lane, nil, 20)
+  check(e1 ~= nil and ev1 and ev1.detail == 'pedestrian', 'least harm: swerves for a pedestrian braking cannot save')
+  -- the oncoming lane is the only way out: still fine to save a person
+  local e2 = run({ ped }, { laneW = 3.5, roomLeft = 6, roomRight = 0, oncomingLeft = true }, nil, 20)
+  check(e2 ~= nil, 'least harm: takes the oncoming lane / verge rather than hit a pedestrian')
+  -- parked cars both sides and walls: hitting a parked car beats hitting a person
+  local carL = { id = 2, x = 18, y = 3.5, z = 0, dx = 1, dy = 0, v = 0, l = 4.6, w = 1.9 }
+  local carR = { id = 3, x = 18, y = -3.5, z = 0, dx = 1, dy = 0, v = 0, l = 4.6, w = 1.9 }
+  local e3 = run({ ped, carL, carR }, lane, nil, 20)
+  check(e3 ~= nil, 'least harm: sideswipes a parked car to spare the pedestrian')
+  -- a car ahead we can nearly stop for: no swerve (a small bump beats a manoeuvre)
+  local slow = { id = 4, x = 24, y = 0, z = 0, dx = 1, dy = 0, v = 0, l = 4.6, w = 1.9 }
+  local e4 = run({ slow }, lane)
+  check(e4 == nil, 'least harm: a bump we can nearly stop for is braked, not swerved')
+  -- but a person on the road that braking can stop for: brake
+  local pedFar = { id = 5, x = 40, y = 0, z = 0, dx = 0, dy = 1, v = 0, l = 0.6, w = 0.6 }
+  local e5 = run({ pedFar }, lane)
+  check(e5 == nil, 'least harm: a pedestrian we can stop for is braked for')
+end)
+
+scenario('policyBlend', function()
+  local function cruise(a, on)
+    local w = W.new({ nodes = straight(0, 4000, 5, 20), ego = { x = 0, y = RIGHT2 + 0, psi = 0, v = 15 } })
+    if a then w.planner.policy = { act = function() return a end } end
+    w.planner.settings.policy = on
+    w:engage('fsd', 'standard')
+    w:run(40)
+    return w.ego.v
+  end
+  local base = cruise(nil, false)
+  local up = cruise(1, true)
+  local down = cruise(-1, true)
+  local off = cruise(1, false)
+  check(up > base * 1.03 and up < base * 1.10, string.format('policy: +1 nudges speed up a little (%.1f vs %.1f)', up, base))
+  check(down < base * 0.97 and down > base * 0.90, string.format('policy: -1 nudges speed down a little (%.1f vs %.1f)', down, base))
+  check(math.abs(off - base) < 0.2, 'policy: does nothing while the setting is off')
+end)
+
 scenario('aebParked', function()
   local S = require('teslaBridge/safety')
   local function braked(latOffset)
