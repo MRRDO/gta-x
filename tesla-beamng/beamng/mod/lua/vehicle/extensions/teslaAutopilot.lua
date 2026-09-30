@@ -285,6 +285,12 @@ end
 
 local function ffbSend(force)
   local ok
+  if ffb.ext then
+    -- the game keeps the wheel and adds our torque to its own (hydros.setExternalForce): the way that reaches
+    -- cars where a raw obj:sendForceFeedback is ignored
+    ffb.lastForce, ffb.lastSendT = force, now
+    return (pcall(hydros.setExternalForce, force))
+  end
   if ffb.sendArgs ~= 2 then
     ok = pcall(obj.sendForceFeedback, obj, ffb.id, force, 0, 0, 0) -- torque, damping, inertia, friction
     if not ok and ffb.sendArgs == nil then ffb.sendArgs = 2 end -- a game with the old signature
@@ -336,7 +342,6 @@ end
 
 -- Returns ok, method, f, i, id
 local function ffbProbe()
-  if ffb.helper then ffb.status, ffb.reason = 'helper', 'external wheel helper drives the wheel'; return false end
   if not ffb.enabled then ffb.status, ffb.reason = 'off', 'turned off'; return false end
   if ffb.held or ffb.own then return true end
   if not hasSendFFB() then ffb.status, ffb.reason = 'unavailable', 'obj:sendForceFeedback missing'; return false end
@@ -366,7 +371,6 @@ local function ffbProbe()
 end
 
 local function ffbTake()
-  if ffb.dead then return false end -- the wheel can't follow force in this car: don't hold it
   ffb.farNoted, ffb.farT = false, 0
   ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil
   ffb.posStart, ffb.everMoved = nil, false
@@ -387,7 +391,7 @@ local function ffbTake()
   ffb.minInterval = (periodms and periodms > 0) and math.max(0.002, periodms / 1000) or 0.01
   if method == 'upvalue' then
     if not pcall(debug.setupvalue, f, i, -1) then ffb.status, ffb.reason = 'unavailable', 'debug.setupvalue blocked'; return false end
-  else
+  elseif not ffb.ext then
     hydros.enableFFB = false
     applyCfg(ffbCfg) -- hydros lets go of the device
   end
@@ -395,7 +399,7 @@ local function ffbTake()
   ffb.held = true
   ffb.spring:reset()
   ffb.lastForce = nil
-  ffb.status = 'active'
+  ffb.status = ffb.helper and 'helper' or 'active'
   return true
 end
 
@@ -521,8 +525,11 @@ local function ffbUpdate(dt, targetInput)
     if cid and cid >= 0 then ffb.id = cid end
     -- the game took the wheel back (settings changed, car reset): let go again
     local hid = hydrosId()
-    if hid and hid >= 0 and hydros.enableFFB ~= false then hydros.enableFFB = false; applyCfg(ffbCfg) end
+    if not ffb.ext and hid and hid >= 0 and hydros.enableFFB ~= false then hydros.enableFFB = false; applyCfg(ffbCfg) end
   end
+  -- the external helper moves the wheel (the game's own force path doesn't reach some cars): we only keep the game's
+  -- force feedback off the motor so it doesn't fight the helper
+  if ffb.helper then return false end
   local r = raw.steering
   local pos = r and r.v or 0
   local target = wheelTarget(targetInput)
@@ -548,12 +555,18 @@ local function ffbUpdate(dt, targetInput)
     ffb.stuckLo = math.min(ffb.stuckLo or pos, pos)
     ffb.stuckHi = math.max(ffb.stuckHi or pos, pos)
     if ffb.stuckHi - ffb.stuckLo > 0.006 then ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil end
-    if ffb.stuckT > 2.5 then
+    if ffb.stuckT > 2.5 and not ffb.ext and ffb.method == 'config' and not ffb.helper and type(hydros.setExternalForce) == 'function' then
+      -- our raw force doesn't move this wheel: hand the device back to the game and add our torque through it
+      ffb.ext = true
+      ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil
+      ffb.posStart, ffb.everMoved = nil, false
+      ffbGiveBack()
+      ffb.lastForce = nil
+      geEvent('notice', { detail = 'wheel ignores raw force feedback in this car: using the game force feedback plus our torque (hydros external force)' })
+    elseif ffb.stuckT > 2.5 and not ffb.dead then
+      -- keep pushing (the wheel may be turning where we can't see it) but never read "not moving" as a grab
       ffb.dead = true
-      geEvent('notice', { detail = string.format('the wheel does not follow force feedback in this car (pos %.3f, force %.2f): FSD runs without holding the wheel', pos, f) })
-      ffbRelease(true)
-      ffb.status, ffb.reason = 'no wheel', 'the wheel does not follow force feedback in this car'
-      return false
+      geEvent('notice', { detail = string.format('no wheel movement seen under force feedback (pos %.3f, force %.2f): still driving the wheel, but that is not counted as a driver grab', pos, f) })
     end
   else
     ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil
@@ -575,7 +588,7 @@ local function ffbUpdate(dt, targetInput)
     ffb.status, ffb.enabled = 'disabled', false
     return false
   end
-  return grip and ffb.everMoved == true
+  return grip and ffb.everMoved == true and not ffb.dead
 end
 
 -- Learn how the wheel's raw axis maps to steering input (1:1 unless the car's
@@ -1075,7 +1088,7 @@ handlers.wheel = function(cmd)
     ffb.helper = cmd.helper and true or false
     if ffb.helper then
       ffb.own = false
-      ffbRelease(true)
+      if ap.engaged and ap.mode ~= 'tacc' then ffbTake() else ffbRelease(true) end
       ffb.status, ffb.reason = 'helper', 'external wheel helper drives the wheel'
     elseif ap.engaged and ap.mode ~= 'tacc' then ffbTake() else ffbProbe() end
   end

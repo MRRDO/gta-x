@@ -78,6 +78,8 @@ class Controller:
                 target = float(s.get('steering') or 0.0) / ratio
             return Spring(center=clamp(self.sign * float(target), -1, 1), coeff=self.strength,
                           saturation=self.strength, damper=0.15 * self.strength, on=True)
+        # FSD off: the game's own force feedback centres the wheel (the mod gave it back)
+        return Spring()
         # FSD off: light centring that firms up with speed, like the game's own FFB
         k = clamp(0.06 + speed * 0.012, 0.06, 0.4) * self.strength / 0.6
         return Spring(center=0.0, coeff=clamp(k, 0, 1), saturation=clamp(k * 1.5, 0, 1), damper=0.1, on=True)
