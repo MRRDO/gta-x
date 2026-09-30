@@ -391,13 +391,24 @@ local function ffbTake()
   ffb.minInterval = (periodms and periodms > 0) and math.max(0.002, periodms / 1000) or 0.01
   if method == 'upvalue' then
     if not pcall(debug.setupvalue, f, i, -1) then ffb.status, ffb.reason = 'unavailable', 'debug.setupvalue blocked'; return false end
-  elseif not ffb.ext then
-    hydros.enableFFB = false
-    applyCfg(ffbCfg) -- hydros lets go of the device
+  else
+    -- The game keeps the device (a raw obj:sendForceFeedback doesn't reach the wheel in every car) and we
+    -- steer it through hydros: its own self-centring is switched off (wheelPowerSteeringCoef 0) and our
+    -- spring goes in as hydros.setExternalForce, so the wheel follows FSD and nothing fights it.
+    ffb.ext = type(hydros.setExternalForce) == 'function' and not ffb.helper
+    if ffb.ext then
+      if ffb.savedPSC == nil then ffb.savedPSC = hydros.wheelPowerSteeringCoef end
+      hydros.wheelPowerSteeringCoef = 0
+    else
+      hydros.enableFFB = false
+      applyCfg(ffbCfg) -- hydros lets go of the device
+    end
   end
   ffb.restoreUntil = nil
   ffb.held = true
   ffb.spring:reset()
+  -- hydros' external force pushes the axis the other way round from a raw send (measured: -force ran the wheel to the +lock)
+  if ffb.ext and not ffb.extSignSet then ffb.extSignSet = true; ffb.spring.sign = -1 end
   ffb.lastForce = nil
   ffb.status = ffb.helper and 'helper' or 'active'
   return true
@@ -438,6 +449,12 @@ local function ffbRelease(handBack)
   ffbSend(0)
   ffb.held = false
   ffb.force, ffb.grip = 0, false
+  if ffb.ext then
+    -- nothing was taken from the game: give its self-centring back and stop pushing
+    if ffb.savedPSC ~= nil then hydros.wheelPowerSteeringCoef = ffb.savedPSC; ffb.savedPSC = nil end
+    ffb.status = 'available'
+    return
+  end
   if ffb.persist and not handBack and ffb.method and ffb.id and ffb.id >= 0 then
     -- the game's own force feedback went dead after FSD on Quentin's setup: keep the wheel alive
     -- with our own steering feel (self-centering, speed-weighted) instead of handing it back
@@ -521,6 +538,7 @@ local function ffbUpdate(dt, targetInput)
       pcall(debug.setupvalue, ffb.fn, ffb.idx, -1)
     end
   else
+    if ffb.ext and hydros.wheelPowerSteeringCoef ~= 0 then hydros.wheelPowerSteeringCoef = 0 end
     local cid = cfgId()
     if cid and cid >= 0 then ffb.id = cid end
     -- the game took the wheel back (settings changed, car reset): let go again
@@ -1174,12 +1192,17 @@ local function checkTakeover(dt)
     -- distance from where the spring holds it
     steerDev = 0
   end
+  if not ffb.helper and not ffb.held and ap.mode ~= 'tacc' and st and lastOut then
+    -- the game's own force feedback may turn the wheel along with the car, or leave it where it was:
+    -- only a wheel that is neither where it started nor where FSD steers is a driver taking over
+    steerDev = math.min(steerDev, abs(st - wheelTarget(lastOut.steer or 0)))
+  end
   -- no steering bias from the driver's hands: FSD's steering is FSD's alone (a hand on the
   -- wheel only counts as "hands on" for the nag, or a takeover when strong)
   takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
   takeover.brake = (br > 0.1) and takeover.brake + dt or 0
   takeover.throttle = 0 -- the accelerator never disengages (like a Tesla): it speeds you up
-  if takeover.steering > holdT then disengage('steer'); return true end
+  if takeover.steering > holdT then disengage('steer', string.format('wheel %.3f start %.3f fsd %.3f limit %.3f held %s', st or 0, baseline.steering, wheelTarget(lastOut and lastOut.steer or 0), devLimit, tostring(ffb.held))); return true end
   if takeover.brake > 0.15 then disengage('brake'); return true end
   if override.active and override.value < -0.1 then disengage('brake', 'app brake'); return true end
   return false
@@ -1521,7 +1544,7 @@ local function updateGFX(dt)
     -- if the setting is on)
     swerveAssist(dt, s)
     driveFeel(dt, s)
-    local bp = (rawValue('brake') or 0) > 0.3
+    local bp = math.max(rawValue('brake') or 0, tonumber(electrics.values.brake_input) or 0, tonumber(electrics.values.brake) or 0) > 0.3
     if bp and not ap.brakeWasDown and gearLetter() == 'P' and abs(s.v) < 0.3 then geEvent('brakeInPark', {}) end
     ap.brakeWasDown = bp
     -- accelerator strip in the app, autopilot off

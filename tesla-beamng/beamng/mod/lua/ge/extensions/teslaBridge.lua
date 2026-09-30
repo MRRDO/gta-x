@@ -984,7 +984,7 @@ local function driveAidsTick(veh)
 end
 
 -- Red/blue alert card for the app (crash, take over now, attention).
---  crash: the car's damage jumps by > 1500 within a second (a real hit, not a scrape); stays
+--  crash: the car's damage jumps by > 9000 within a second (a real hit, not a scrape); stays
 --         until the car is repaired/reset. FSD lets go and the hazards go on.
 --  takeover: FSD over 80 mph where the limit is under 55.
 --  attention: the nag at level 2+.
@@ -1002,7 +1002,7 @@ local function computeAlert(vid, st, ps, nag)
     h[#h + 1] = { t = realTime, d = dmg }
     while #h > 1 and realTime - h[1].t > 1 do table.remove(h, 1) end
     if crash.active and dmg < math.max(50, crash.active.base * 0.5) then crash.active = nil end -- repaired / reset
-    if not crash.active and dmg - h[1].d > 1500 then
+    if not crash.active and dmg - h[1].d > 9000 then
       crash.active = { t = realTime, base = h[1].d + 1 }
       relayEvent({ kind = 'collision', detail = string.format('damage +%.0f', dmg - h[1].d) })
       local veh = vehicleById(vid)

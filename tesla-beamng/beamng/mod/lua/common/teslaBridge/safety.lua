@@ -197,7 +197,7 @@ function Safety:tick(t, dt, snap, ctx)
   -- Automatic Emergency Braking
   -- phantom braking guards: the threat must persist for 3 ticks (0.15 s), and a parked car
   -- beside the lane (well off our heading, not moving) isn't a threat
-  local threat = ttc and speed > 1 and (ttc < 0.8 or (ttc < 1.3 and need > 4))
+  local threat = ttc and speed > 1 and (ttc < 0.6 or (ttc < 1.0 and need > 6))
   if threat and who and abs(who.v or 0) < 0.6 then
     local rx, ry = who.x - ego.x, who.y - ego.y
     local lat = abs(-rx * ego.hy + ry * ego.hx)
@@ -207,10 +207,11 @@ function Safety:tick(t, dt, snap, ctx)
   -- a wall/pole dead ahead (or behind, in reverse) that we can't stop for: brake (needs to persist too)
   if not threat and ctx.rays and speed > 0.8 then
     local d = (ego.v or 0) >= 0 and ctx.rays.front or ctx.rays.rear
-    if d and d < speed * speed / 12 + 0.5 + speed * 0.15 then threat = true; ttc = ttc or d / speed end
+    -- only a wall/pole we're really about to hit, driving roughly straight (curbs, trees and rails beside a bend are not)
+    if d and abs(ego.yawRate or 0) < 0.2 and d < speed * speed / 18 + 0.4 + speed * 0.08 then threat = true; ttc = ttc or d / speed end
   end
   self.threatTicks = threat and ((self.threatTicks or 0) + 1) or 0
-  if st.aeb and not out.evade and threat and self.threatTicks >= 3 then
+  if st.aeb and not out.evade and threat and self.threatTicks >= 5 then
     if self.aebUntil < t then out.events[#out.events + 1] = { kind = 'aeb', ttc = ttc } end
     self.aebUntil = t + 0.6
   end
