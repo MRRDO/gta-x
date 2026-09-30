@@ -669,6 +669,26 @@ scenario('policyBlend', function()
   check(math.abs(off - base) < 0.2, 'policy: does nothing while the setting is off')
 end)
 
+scenario('straightBoost', function()
+  -- 1.5 km straight, then a 60 m radius bend: the straight allows a little more than the plain profile,
+  -- the bend and the run-up to it do not
+  local pts = {}
+  local x, y, h = 0, 0, 0
+  for i = 0, 750 do pts[#pts + 1] = { x = x, y = y, z = 0, r = 4, lim = 20 }; x = x + 2 end
+  for i = 1, 60 do h = h + 2 / 60; x = x + 2 * math.cos(h); y = y + 2 * math.sin(h); pts[#pts + 1] = { x = x, y = y, z = 0, r = 4, lim = 20 } end
+  local function prof(straight)
+    local path = { pts = pts, s = P.cumulative(pts) }
+    P.speedProfile(path, { offset = 0, aLat = 2.8, straight = straight })
+    return path
+  end
+  local a, b = prof(0), prof(0.05)
+  check(math.abs(b.vcap[100] / a.vcap[100] - 1.05) < 0.01, 'straight boost: +5% on the open straight (' .. string.format('%.1f vs %.1f', b.vcap[100], a.vcap[100]) .. ')')
+  local last = #pts
+  check(math.abs(b.vcap[last - 10] - a.vcap[last - 10]) < 0.01, 'straight boost: none in the bend')
+  local near = 750 - 40 -- 80 m before the bend: the run-up brakes for it exactly as before
+  check(math.abs(b.vcap[near] - a.vcap[near]) < 0.5, 'straight boost: no extra speed into the bend (' .. string.format('%.1f vs %.1f', b.vcap[near], a.vcap[near]) .. ')')
+end)
+
 scenario('aebParked', function()
   local S = require('teslaBridge/safety')
   local function braked(latOffset)
@@ -754,7 +774,7 @@ end)
 
 -- confidence: an unreadable light lowers it under 55 %; FSD asks for a takeover but keeps driving
 scenario('confidence', function()
-  local w = W.new({ nodes = straight(0, 2000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 12 },
+  local w = W.new({ nodes = straight(0, 2000, 5, 15), ego = { x = 0, y = LANE1, psi = 0, v = 12 },
     signals = { { id = 'dead', x = 600, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return nil end } } })
   w:engage('fsd', 'standard')
   local low, minConf = false, 1

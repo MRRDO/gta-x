@@ -53,13 +53,13 @@ end
 
 M.PROFILES = {
   -- decel = the comfortable braking FSD plans stops with (m/s^2); jerk = how fast pedal effort may change
-  sloth    = { offset = -2 * MPH, aLat = 2.2, gap = 3.0, throttle = 0.6, decel = 1.0, rise = 0.8 },
-  chill    = { offset =  0,       aLat = 2.5, gap = 2.5, throttle = 0.6, decel = 1.2, rise = 0.9 },
-  standard = { offset =  2 * MPH, aLat = 2.8, gap = 2.0, throttle = 0.6, decel = 1.4, rise = 1.1 },
-  hurry    = { offset =  5 * MPH, aLat = 2.7, gap = 1.6, throttle = 0.7, decel = 1.9, rise = 1.5 },
-  madmax   = { offset =  8 * MPH, aLat = 3.0, gap = 1.2, throttle = 0.9, decel = 2.5, rise = 2.2 },
+  sloth    = { offset = -2 * MPH, straight = 0,    aLat = 2.2, gap = 3.0, throttle = 0.6, decel = 1.0, rise = 0.8 },
+  chill    = { offset =  0,       straight = 0.02, aLat = 2.5, gap = 2.5, throttle = 0.6, decel = 1.2, rise = 0.9 },
+  standard = { offset =  2 * MPH, straight = 0.04, aLat = 2.8, gap = 2.0, throttle = 0.6, decel = 1.4, rise = 1.1 },
+  hurry    = { offset =  5 * MPH, straight = 0.06, aLat = 2.7, gap = 1.6, throttle = 0.7, decel = 1.9, rise = 1.5 },
+  madmax   = { offset =  8 * MPH, straight = 0.09, aLat = 3.0, gap = 1.2, throttle = 0.9, decel = 2.5, rise = 2.2 },
   -- Furious: hold Max / Service mode. Cuts in, tails, well over the limit; the safety layer still brakes.
-  furious  = { offset = 15 * MPH, aLat = 4.0, gap = 0.8, throttle = 1.0, decel = 3.5, rise = 3.5 },
+  furious  = { offset = 15 * MPH, straight = 0.12, aLat = 4.0, gap = 0.8, throttle = 1.0, decel = 3.5, rise = 3.5 },
 }
 
 ---------------------------------------------------------------------------
@@ -749,12 +749,29 @@ function M.speedProfile(path, opts)
   local n = #pts
   local vlim, vcap = {}, {}
   local decel = opts.decel or 2.5
+  local kk = {}
+  for i = 1, n do kk[i] = abs(M.curvatureAt(pts, i, 4)) end
+  -- straight stretches (no bend over the next 250 m, radius > 400 m) allow a little more speed than the
+  -- profile's cruise (opts.straight = fraction, e.g. 0.05); bends and stop points still slow it as before
+  local sb = opts.straight or 0
+  local ahead = {}
+  if sb > 0 then
+    local dq, head = {}, 1 -- indices of a decreasing-curvature queue (sliding window max, looking forward)
+    local tail = 0
+    local j = n
+    for i = n, 1, -1 do
+      while tail >= head and kk[dq[tail]] <= kk[i] do dq[tail] = nil; tail = tail - 1 end
+      tail = tail + 1; dq[tail] = i
+      while path.s[dq[head]] - path.s[i] > 250 do head = head + 1 end
+      ahead[i] = kk[dq[head]]
+    end
+  end
   for i = 1, n do
     local p = pts[i]
     local lim = p.lim or M.classDefaultSpeed(p.r, p.drv)
     vlim[i] = max(1, lim + (opts.offset or 0))
-    local k = abs(M.curvatureAt(pts, i, 4))
-    local vc = sqrt((opts.aLat or 2.4) / max(k, 1e-4))
+    if sb > 0 and ahead[i] < 1 / 400 then vlim[i] = vlim[i] * (1 + sb) end
+    local vc = sqrt((opts.aLat or 2.4) / max(kk[i], 1e-4))
     vcap[i] = min(vlim[i], vc)
   end
   if opts.endSpeed then

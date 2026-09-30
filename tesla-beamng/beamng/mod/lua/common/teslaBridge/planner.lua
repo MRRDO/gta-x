@@ -132,7 +132,7 @@ function Planner:setProfile(profile)
   self.profile = profile
   if self.path then
     local prof = self:prof()
-    P.speedProfile(self.path, { offset = prof.offset, aLat = prof.aLat, endSpeed = (not self.path.openEnded) and 0 or nil })
+    P.speedProfile(self.path, { offset = prof.offset, aLat = prof.aLat, straight = prof.straight, endSpeed = (not self.path.openEnded) and 0 or nil })
     self.builtFor = profile
   end
 end
@@ -322,7 +322,7 @@ function Planner:planPath(ego, cars)
   end
   prependBack(path, 150)
   local prof = self:prof()
-  P.speedProfile(path, { offset = prof.offset, aLat = prof.aLat, decel = prof.decel, endSpeed = (not path.openEnded) and 0 or nil })
+  P.speedProfile(path, { offset = prof.offset, aLat = prof.aLat, straight = prof.straight, decel = prof.decel, endSpeed = (not path.openEnded) and 0 or nil })
   path.limit = {}
   for i, pt in ipairs(path.pts) do path.limit[i] = pt.lim or P.classDefaultSpeed(pt.r, pt.drv) end
   self.path, self.hint = path, nil
