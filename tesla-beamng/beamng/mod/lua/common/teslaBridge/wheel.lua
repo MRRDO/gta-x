@@ -129,7 +129,7 @@ function Spring:update(dt, target, pos, fcap, strength)
   self.flipHold = max(0, (self.flipHold or 0) - dt)
   if not self.confirmed then
     local speedingAway = not converging and abs(self.vel) > 0.4 and abs(self.vel) >= prevSpeed - 1e-3
-    if self.flipHold <= 0 and self.ramp >= 1 and abs(e) > 0.15 and abs(f) > 0.4 * cap and speedingAway then
+    if self.flipHold <= 0 and self.ramp >= 0.4 and abs(e) > 0.12 and abs(f) > 0.3 * cap and speedingAway then
       self.wrongT = self.wrongT + dt
       if self.wrongT > 0.25 then
         self.sign = -self.sign
