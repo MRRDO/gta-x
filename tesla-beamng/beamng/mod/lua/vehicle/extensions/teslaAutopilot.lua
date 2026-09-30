@@ -1524,6 +1524,10 @@ local function updateGFX(dt)
         ap.lastSignal = sig
         hazardOn = sig == 'hazard'
         ap.sigSetAt = now
+        -- whatever the lights do now is ours: only a fresh flick after this counts as the driver
+        ap.lOnT, ap.rOnT = nil, nil
+        ap.prevL = (electrics.values.signal_left_input or 0) > 0.5
+        ap.prevR = (electrics.values.signal_right_input or 0) > 0.5
       end
       -- the driver's own blinker (paddles / stalk bound to toggle_left/right_signal): a
       -- rising edge we didn't cause asks FSD for a lane change (or the next turn) that way

@@ -464,6 +464,7 @@ local function buildMap()
   findParking()
   if not learn then loadLearn() end
   planner = Pl.new({ graph = graph, signals = signals, parking = parking, learn = learn })
+  safety.brain = planner.brain -- one brain reads the traffic for both driving and safety
   planner:configure(plannerSettings)
   sentMode = 'off'
   local sig = {}

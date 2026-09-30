@@ -19,6 +19,7 @@
 local P = require('teslaBridge/pathing')
 local Mv = require('teslaBridge/maneuver')
 local Nag = require('teslaBridge/nag')
+local Brain = require('teslaBridge/brain')
 
 local M = {}
 
@@ -88,6 +89,7 @@ function M.new(opts)
     t = 0, events = {}, lastDisengage = nil,
     wiggleUntil = -1, phantom = nil, lastOverhead = false,
     arrivalMemory = {},
+    brain = opts.brain or Brain.new(), hangBack = {},
   }, Planner)
   self.nag.rng = self.rng
   self.degree = {}
@@ -863,6 +865,8 @@ function Planner:tick(snap)
   local ego = snap.ego
   local cars = snap.cars or {}
   local out = { commands = {} }
+  self.brain:observe(t, cars) -- read the traffic: swerving, cutting in, hard braking, parked
+  for id, t0 in pairs(self.hangBack) do if t - t0 > 60 then self.hangBack[id] = nil end end
 
   -- supervision
   local lim = self.status and self.status.speedLimit
@@ -985,6 +989,18 @@ function Planner:tick(snap)
     local ourSh = self:shiftAt(o.s, o.i)
     local clearance = abs(o.lat - ourSh) - ((c.w or 1.9) + egoWid) * 0.5
     local want = (c.w or 1.9) < 1.2 and 1.2 or 0.7
+    local badlyParked = stationary and Brain.parkedQuality(o.dot, clearance) == 'bad'
+    if badlyParked then
+      -- angled or poking out: it may pull out or a door may open -> pass wider and slower
+      want = max(want, 1.2)
+      if fsd and rel > -2 and rel < 40 and clearance < 2.5 and clearance > -((c.w or 1.9) + egoWid) * 0.5 + 0.6 then cap(max(11, v * 0.9)) end
+    end
+    -- a swerving car ahead in the next lane: hang back instead of pulling alongside it (for a while)
+    if fsd and o.dot > 0.3 and rel > -3 and rel < 25 and clearance > 0 and clearance < 4 and self.brain:isErratic(c) then
+      local hb = self.hangBack[c.id or c]
+      if not hb then hb = t; self.hangBack[c.id or c] = hb; self:emit('brain', { what = 'erratic', id = c.id }) end
+      if t - hb < 15 then cap(max(5, o.vAlong - 1)) end
+    end
     -- school bus: slow way down when passing a stopped one
     if c.schoolBus and abs(c.v) < 0.5 and rel > -10 and rel < 80 and abs(o.lat) < 12 then
       st.schoolBus = true
@@ -1062,6 +1078,10 @@ function Planner:tick(snap)
         local vv = o.dot > 0.3 and max(0, o.vAlong) or 0
         local rear = o.s - (c.l or 4.6) * 0.5 - egoLen * 0.5
         if not lead or rear < lead.s then lead = { s = rear, v = vv, o = o } end
+      elseif o.dot > 0.3 and self.brain:cutInEta(ego, c) then
+        -- sliding into our lane: follow it already (a driver eases off before it's all the way in)
+        local rear = o.s - (c.l or 4.6) * 0.5 - egoLen * 0.5
+        if not lead or rear < lead.s then lead = { s = rear, v = max(0, o.vAlong), o = o, cutIn = true } end
       end
     end
   end
@@ -1353,7 +1373,11 @@ function Planner:tick(snap)
   end
   self.seq = self.seq + 1
   local gap = prof.gap * learnGap
+  -- a lead that swerves or just braked hard gets more room
+  local wary = lead and lead.o and (self.brain:isErratic(lead.o.c) or self.brain:hardBraked(lead.o.c, t, 8))
   if self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
+  if wary then gap = gap * 1.4 end
+  st.brain = (wary or (lead and lead.cutIn)) and { wary = wary or nil, cutIn = lead.cutIn or nil } or nil
   out.plan = {
     seq = self.seq, pts = flat, vcap = vcap, dir = 1,
     stopS = stopS and (stopS - sBase) or nil,

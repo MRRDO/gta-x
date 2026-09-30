@@ -452,6 +452,79 @@ scenario('brainNoPhantom', function()
   check(us < 200, 'brain is cheap (< 0.2 ms a tick)')
 end)
 
+scenario('brainReads', function()
+  local B = require('teslaBridge/brain')
+  local ego = { x = 0, y = 0, z = 0, hx = 1, hy = 0, v = 25, yawRate = 0, wid = 1.9 }
+  -- swerving: heading swings side to side at speed
+  local b = B.new()
+  for k = 0, 80 do
+    local a = 0.12 * math.sin(k * 0.05 * 2 * math.pi * 0.7)
+    b:observe(k * 0.05, { { id = 1, x = 30 + k, y = 3.6, dx = math.cos(a), dy = math.sin(a), v = 20 } })
+  end
+  check(b:isErratic({ id = 1 }), 'brain: sees a swerving car')
+  -- one clean lane change is not swerving
+  local b2 = B.new()
+  for k = 0, 80 do
+    local a = (k > 20 and k < 40) and 0.08 * math.sin((k - 20) / 20 * 2 * math.pi) or 0
+    b2:observe(k * 0.05, { { id = 1, x = 30 + k, y = 3.6, dx = math.cos(a), dy = math.sin(a), v = 20 } })
+  end
+  check(not b2:isErratic({ id = 1 }), 'brain: one lane change is not swerving')
+  -- cutting in: next lane, sliding toward us
+  local b3 = B.new()
+  local car
+  for k = 0, 10 do
+    car = { id = 3, x = 20, y = 3.6 - k * 0.05, dx = 1, dy = 0, v = 20 }
+    b3:observe(k * 0.05, { car })
+  end
+  check(b3:cutInEta(ego, car) ~= nil, 'brain: sees a car cutting in')
+  local b4 = B.new()
+  for k = 0, 10 do
+    car = { id = 4, x = 20, y = 3.6 + k * 0.05, dx = 1, dy = 0, v = 20 }
+    b4:observe(k * 0.05, { car })
+  end
+  check(b4:cutInEta(ego, car) == nil, 'brain: a car moving away is not cutting in')
+  -- hard braking
+  local b5 = B.new()
+  for k = 0, 20 do b5:observe(k * 0.05, { { id = 5, x = 40, y = 0, dx = 1, dy = 0, v = 20 - k * 0.4 } }) end
+  check(b5:hardBraked({ id = 5 }, 1.0), 'brain: sees a hard braker')
+  -- parked quality
+  check(B.parkedQuality(0.99, 1.5) == 'good', 'brain: lined-up parked car is parked properly')
+  check(B.parkedQuality(0.7, 1.5) == 'bad', 'brain: angled parked car is badly parked')
+  check(B.parkedQuality(0.99, 0.2) == 'bad', 'brain: parked car poking into the lane is badly parked')
+  -- a car cutting in right beside us counts as a real threat sooner
+  local S = require('teslaBridge/safety')
+  local sf = S.new()
+  local braked = false
+  for k = 0, 30 do
+    local tt = k * 0.05
+    local e = { x = 20 * tt, y = 0, z = 0, hx = 1, hy = 0, v = 20, yawRate = 0, len = 4.6, wid = 1.9 }
+    local c = { id = 9, x = 20 * tt + 9, y = math.max(0, 3.6 - 3 * tt), z = 0, dx = 1, dy = 0, v = 14, l = 4.6, w = 1.9 }
+    local o = sf:tick(tt, 0.05, { ego = e, cars = { c } }, { rays = {} })
+    if (o.aeb or 0) > 0 then braked = true end
+  end
+  check(braked, 'brain: brakes for a car swerving into our lane close ahead')
+end)
+
+scenario('erraticHangBack', function()
+  -- a car swerving in the next lane ahead, a bit slower: FSD doesn't pull up alongside it
+  local w = W.new({ nodes = straight(0, 3000, 7.5, 25), ego = { x = 0, y = RIGHT2, psi = 0, v = 20 } })
+  w:addCar({ id = 1, pts = line(40, LEFT2, 3000, LEFT2), speed = 17 })
+  w:engage('fsd', 'standard')
+  local wob = 0
+  local closest = 1e9
+  w:run(20, function(ww)
+    wob = wob + 1
+    local c = ww.cars[1]
+    local a = 0.15 * math.sin(wob * 0.05 * 2 * math.pi * 0.6)
+    c.dx, c.dy = math.cos(a), math.sin(a)
+    local ex = ww:refPos()
+    closest = math.min(closest, c.x - ex)
+  end)
+  check(w:saw('brain', function(e) return e.what == 'erratic' end) ~= nil, 'notices the swerving car')
+  check(closest > 0, 'hangs back instead of pulling alongside (closest ' .. string.format('%.1f', closest) .. ' m ahead)')
+  check(not w.collided, 'no collision')
+end)
+
 scenario('aebParked', function()
   local S = require('teslaBridge/safety')
   local function braked(latOffset)
