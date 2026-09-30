@@ -521,7 +521,7 @@ try {
     await until('fsd', () => st().autopilot.engaged, 4000)
     await sleep(1500)
     events.length = 0
-    playerInput('crash 3000')
+    playerInput('crash 12000')
     check('crash: red alert, FSD off, hazards on', await until('crash', () => st().autopilot.alert?.kind === 'crash' && !st().autopilot.engaged && st().signal === 'hazard', 4000),
       JSON.stringify(st().autopilot.alert) + ` engaged ${st().autopilot.engaged} signal ${st().signal}`)
     playerInput('repair')

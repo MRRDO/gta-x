@@ -690,7 +690,7 @@ function Planner:turnAtNext(dir, sCar, v, maxAhead, quiet)
         end
         if best then
           local d = min(20, best.len * 0.5)
-          self.turnVia = { at = p.node, to = best.other, x = cn.x + best.ox * d, y = cn.y + best.oy * d, dir = dir }
+          self.turnVia = { at = p.node, to = best.other, x = cn.x + best.ox * d, y = cn.y + best.oy * d, dir = dir, t = self.t }
           self.replanNow = true
           self:emit('turnRequest', { dir = dir, dist = ahead })
           return true
@@ -925,6 +925,10 @@ function Planner:tick(snap)
 
   if self.turnVia and (ego.x - self.turnVia.x) ^ 2 + (ego.y - self.turnVia.y) ^ 2 < 12 * 12 then
     self.turnVia = nil -- made the turn: later replans go straight to the destination
+  elseif self.turnVia and self.t - (self.turnVia.t or self.t) > 30 then
+    -- missed it (or circling around it): forget the turn and go straight to the destination
+    self.turnVia = nil
+    self.replanNow = true
   end
   if self.replanNow or (path.openEnded and remaining < 400) then
     self.replanNow = nil
@@ -1701,11 +1705,14 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     local d = dir == 'left' and 1 or -1
     local k = lane.k + d
     local routeTurnsThatWay = nextTurn and nextTurn.dir == dir and nextTurn.s - sCar < 200
-    if fsd and not routeTurnsThatWay and self:turnAtNext(dir, sCar, v, 150, true) then
+    if fsd and not routeTurnsThatWay and not self.turnVia and t - (self.lastTurnReqT or -1e9) > 15 and self:turnAtNext(dir, sCar, v, 150, true) then
+      self.lastTurnReqT = t
       -- the turn signal means "turn there": a junction with a road that way coming up
     elseif k >= 0 and k <= minN - 1 then want, reason = k, 'driver'; self.lanePinUntil = t + 90 -- a lane the driver picked stays put
-    elseif fsd and not routeTurnsThatWay then
+    elseif fsd and not routeTurnsThatWay and not self.turnVia and t - (self.lastTurnReqT or -1e9) > 15 then
       -- no lane that way (and never into oncoming traffic): take the next turn that way
+      -- (once: a repeated request must not keep re-routing off the route)
+      self.lastTurnReqT = t
       self:turnAtNext(dir, sCar, v)
     end
     self.driverLaneRequest = nil

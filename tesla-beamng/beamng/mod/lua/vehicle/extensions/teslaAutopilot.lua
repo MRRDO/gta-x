@@ -1529,10 +1529,20 @@ local function updateGFX(dt)
       -- rising edge we didn't cause asks FSD for a lane change (or the next turn) that way
       local e2 = electrics.values
       local l, r = (e2.signal_left_input or 0) > 0.5, (e2.signal_right_input or 0) > 0.5
-      if now - (ap.sigSetAt or -1) > 0.3 and ap.mode ~= 'tacc' and ap.lastSignal ~= 'hazard' then
-        if l and not ap.prevL and ap.lastSignal ~= 'left' then geEvent('driverSignal', { dir = 'left' }) end
-        if r and not ap.prevR and ap.lastSignal ~= 'right' then geEvent('driverSignal', { dir = 'right' }) end
+      -- some cars (the Tesla Model 3 mod) blink the *_input value with the flasher, and our own
+      -- signal lingers after FSD turns it off: those looked like the driver signalling again and
+      -- again (route kept turning off and growing). Count it only when it stays on for 0.8 s
+      -- (a flasher blinks faster), well after FSD last touched the signal, or right after a paddle.
+      local paddle = now - (ap.paddleT or -1e9) < 1.5
+      local quiet = now - (ap.sigSetAt or -1e9) > 2.5
+      if l and not ap.prevL then ap.lOnT = now end
+      if r and not ap.prevR then ap.rOnT = now end
+      if ap.mode ~= 'tacc' and ap.lastSignal ~= 'hazard' and (quiet or paddle) then
+        if l and ap.lOnT and (paddle or now - ap.lOnT > 0.8) and ap.lastSignal ~= 'left' then ap.lOnT = nil; geEvent('driverSignal', { dir = 'left' }) end
+        if r and ap.rOnT and (paddle or now - ap.rOnT > 0.8) and ap.lastSignal ~= 'right' then ap.rOnT = nil; geEvent('driverSignal', { dir = 'right' }) end
       end
+      if not l then ap.lOnT = nil end
+      if not r then ap.rOnT = nil end
       ap.prevL, ap.prevR = l, r
     end
   else
