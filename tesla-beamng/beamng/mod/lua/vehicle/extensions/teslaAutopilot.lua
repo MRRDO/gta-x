@@ -611,25 +611,11 @@ local function ffbUpdate(dt, targetInput)
     ffb.stuckLo = math.min(ffb.stuckLo or pos, pos)
     ffb.stuckHi = math.max(ffb.stuckHi or pos, pos)
     if ffb.stuckHi - ffb.stuckLo > 0.006 then ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil end
-    if ffb.stuckT > 2.5 and not ffb.ext and ffb.method == 'config' and not ffb.helper and type(hydros.setExternalForce) == 'function' then
-      -- our raw force doesn't move this wheel: hand the device back to the game and add our torque through it
-      ffb.ext = true
-      ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil
-      ffb.posStart, ffb.everMoved = nil, false
-      ffbGiveBack()
-      ffb.lastForce = nil
-      if ffb.savedPSC == nil then ffb.savedPSC = hydros.wheelPowerSteeringCoef end
-      hydros.wheelPowerSteeringCoef = 0
-      ffb.spring:reset()
-      if not ffb.spring.confirmed and (ffb.spring.flips or 0) == 0 then ffb.spring.sign = -1 end
-      ffb.spring.stiffness, ffb.spring.damping, ffb.spring.integMax = 0.09, 0.28, 0.3
-      ffb.spring.velTau, ffb.spring.deadband, ffb.spring.slew = 0.05, 0.006, 0.03
-      ffb.spring.gripErr = nil
-      geEvent('notice', { detail = 'wheel ignores raw force feedback in this car: using the game force feedback plus our torque (hydros external force)' })
-    elseif ffb.stuckT > 2.5 and not ffb.dead then
-      -- keep pushing (the wheel may be turning where we can't see it) but never read "not moving" as a grab
-      ffb.dead = true
-      geEvent('notice', { detail = string.format('no wheel movement seen under force feedback (pos %.3f, force %.2f): still driving the wheel, but that is not counted as a driver grab', pos, f) })
+    if ffb.stuckT > 2.5 and not ffb.dead then
+      -- (only a note: a hand holding the wheel looks the same as a wheel that ignores force; behaviour is not changed)
+      ffb.dead = false
+      ffb.stuckT, ffb.stuckLo, ffb.stuckHi = -30, nil, nil -- say it once in a while, not every frame
+      geEvent('notice', { detail = string.format('no wheel movement seen under force (pos %.3f, force %.2f): a hand on the wheel, or a wheel that ignores force', pos, f) })
     end
   else
     ffb.stuckT, ffb.stuckLo, ffb.stuckHi = 0, nil, nil
@@ -651,7 +637,7 @@ local function ffbUpdate(dt, targetInput)
     ffb.status, ffb.enabled = 'disabled', false
     return false
   end
-  return grip and ffb.everMoved == true and not ffb.dead
+  return grip and ffb.everMoved == true
 end
 
 -- Learn how the wheel's raw axis maps to steering input (1:1 unless the car's
@@ -1040,8 +1026,12 @@ handlers.lights = function(cmd)
 end
 
 handlers.signal = function(cmd)
-  setSignal(cmd.dir)
+  local ok, err = pcall(setSignal, cmd.dir)
   hazardOn = cmd.dir == 'hazard'
+  local e = electrics.values
+  if cmd.dir == 'left' or cmd.dir == 'right' then
+    geEvent('notice', { detail = string.format('signal %s: ok=%s err=%s L=%s R=%s hazard=%s', tostring(cmd.dir), tostring(ok), tostring(err), tostring(e.signal_left_input), tostring(e.signal_right_input), tostring(e.hazard_enabled)) })
+  end
 end
 
 -- Wipers: cars expose them differently, so try what exists and remember what worked.
@@ -1320,8 +1310,9 @@ local function detectNudge()
   if now - lastNudgeT < 1 then return end
   local hit = false
   if ffb.held then
-    local e = abs((ffb.pos or 0) - (ffb.target or 0))
-    hit = e > 0.012 and e < 0.1 and not ffb.grip
+    -- slow copy of the error, wheel settled: following FSD's own movement does not count as hands
+    local e = abs(ffb.spring.eLP or 0)
+    hit = e > 0.03 and e < 0.1 and abs(ffb.spring.vel or 0) < 0.25 and not ffb.grip
   else
     local r = raw.steering
     if r and r.t > ap.engagedAt and now - r.t < 0.1 then

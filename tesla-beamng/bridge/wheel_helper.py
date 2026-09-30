@@ -27,6 +27,7 @@ Ctrl+C stops it and hands the wheel back to the mod.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import signal
 import sys
@@ -97,7 +98,7 @@ class SDLWheel:
         import sdl2
         self.sdl2, self.ctypes = sdl2, ctypes
         sdl2.SDL_SetHint(b'SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS', b'1')  # BeamNG has the focus
-        if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK | sdl2.SDL_INIT_HAPTIC) != 0:
+        if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK | (sdl2.SDL_INIT_HAPTIC if haptics else 0)) != 0:
             raise RuntimeError('SDL init failed: ' + sdl2.SDL_GetError().decode())
         self.joy = self.haptic = None
         self.spring_id = self.damper_id = -1
@@ -385,6 +386,12 @@ def main(argv: list[str] | None = None) -> int:
                     link.send({'t': 'wheelButton', 'button': i, 'down': down})
                     if not a.quiet and down:
                         print(f'  button {i}', flush=True)
+                    if down:
+                        try:
+                            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wheel_helper.log'), 'a') as lf:
+                                lf.write(f'{time.strftime("%H:%M:%S")} button {i}\n')
+                        except Exception:
+                            pass
             prev_buttons = now_buttons
             sp = ctl.spring(time.monotonic()) if not a.buttons else Spring()
             wheel.apply(sp)

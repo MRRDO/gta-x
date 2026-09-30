@@ -1026,6 +1026,10 @@ local function computeAlert(vid, st, ps, nag)
   if engaged and planner and planner.mode == 'fsd' and (st.speed or 0) > 35.8 and lim and lim < 24.6 then
     return { kind = 'takeover', message = 'Take over immediately', level = 3 }
   end
+  if engaged and (nag.level or 0) >= 1 and nag.reason == 'hands' then
+    -- wheel monitoring: ask for a little force on the wheel, like a Tesla
+    return { kind = 'attention', message = (nag.level or 0) >= 3 and 'Take over immediately' or 'Apply slight force to the steering wheel', level = nag.level }
+  end
   if engaged and (nag.level or 0) >= 2 then
     return { kind = 'attention', message = (nag.level or 0) >= 3 and 'Take over immediately' or 'Pay attention to the road', level = nag.level }
   end
