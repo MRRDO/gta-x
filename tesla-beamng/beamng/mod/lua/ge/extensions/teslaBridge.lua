@@ -1153,6 +1153,10 @@ function M.onVehicleEvent(vid, json)
     if learn and drive.limitHere and (ev.reason == 'brake' or ev.reason == 'steer') and (lastVehSt.speed or 0) > drive.limitHere * 0.95 then
       learn:feedback(drive.limitHere, 'slower') -- he took over while going at / over the limit
     end
+    if ev.reason == 'brake' or ev.reason == 'steer' then
+      local ego = veh and egoSnapshot(veh) -- remember where: the same place gets a gentler drive next time
+      if learn and ego then learn:markSpot(ego.x, ego.y) end
+    end
     if ev.reason == 'brake' or ev.reason == 'steer' or ev.reason == 'throttle' then tripScore:takeover() end
     if planner and planner.mode ~= 'off' then
       planner:disengage(ev.reason or 'error', ev.detail)

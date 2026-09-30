@@ -525,6 +525,97 @@ scenario('erraticHangBack', function()
   check(not w.collided, 'no collision')
 end)
 
+scenario('judgeLogic', function()
+  local J = require('teslaBridge/judge')
+  local j = J.new()
+  check(j:allowLane(0, 0, 1, 'pass'), 'judge: first change is fine')
+  j:laneChanged(10, 0, 1, 'pass')
+  check(not j:allowLane(15, 1, 2, 'pass'), 'judge: no discretionary change while settling')
+  check(not j:allowLane(25, 1, 0, 'madMax'), 'judge: no flip back to the lane we just left')
+  check(j:allowLane(25, 1, 0, 'madMax', 7), 'judge: ...unless the other lane is much faster')
+  check(j:allowLane(25, 1, 0, 'route'), 'judge: a route need overrides')
+  check(j:allowLane(25, 1, 0, 'driver'), 'judge: the driver overrides')
+  check(j:allowLane(25, 1, 0, 'return'), 'judge: coming back right after passing is normal')
+  check(j:allowLane(50, 1, 0, 'madMax'), 'judge: later it may change again')
+  -- confusion
+  local j2 = J.new()
+  local lvl, rose
+  for k = 1, 60 do lvl, rose = j2:watchStuck(k * 0.1, { engaged = true, v = 0, dt = 0.1 }); if rose == 1 then break end end
+  check(rose == 1, 'judge: unexplained stillness -> re-plan level')
+  local seen3 = false
+  for k = 1, 300 do lvl, rose = j2:watchStuck(10 + k * 0.1, { engaged = true, v = 0, dt = 0.1 }); if rose == 3 then seen3 = true end end
+  check(seen3, 'judge: still stuck -> asks the driver')
+  j2:watchStuck(99, { engaged = true, v = 0, explained = 'stopPoint', dt = 0.1 })
+  check(j2.level == 0, 'judge: an explained stop is not confusion')
+  -- tailgater
+  local B = require('teslaBridge/brain')
+  local b = B.new()
+  local ego = { x = 0, y = 0, z = 0, hx = 1, hy = 0, v = 20, wid = 1.9, len = 4.6 }
+  local got
+  for k = 0, 80 do
+    b:observe(k * 0.05, {})
+    got = b:tailgater(ego, { { id = 1, x = -8, y = 0.1, z = 0, dx = 1, dy = 0, v = 21, l = 4.6, w = 1.9 } })
+  end
+  check(got ~= nil, 'brain: sees a tailgater after a few seconds')
+  local b2 = B.new()
+  for k = 0, 80 do b2:observe(k * 0.05, {}); got = b2:tailgater(ego, { { id = 1, x = -30, y = 0, z = 0, dx = 1, dy = 0, v = 21, l = 4.6, w = 1.9 } }) end
+  check(got == nil, 'brain: a car well back is not a tailgater')
+  local b3 = B.new()
+  ego.v = 0
+  for k = 0, 80 do b3:observe(k * 0.05, {}); got = b3:tailgater(ego, { { id = 1, x = -6, y = 0, z = 0, dx = 1, dy = 0, v = 0, l = 4.6, w = 1.9 } }) end
+  check(got == nil, 'brain: the car behind us at a light is normal')
+  -- pedestrians
+  check(B.pedestrianEta(4, -1.4, 1.6) ~= nil, 'brain: pedestrian walking toward the road')
+  check(B.pedestrianEta(4, 1.4, 1.6) == nil, 'brain: pedestrian walking away')
+  check(B.pedestrianEta(4, 0.1, 1.6) == nil, 'brain: pedestrian standing still')
+  -- learned bad spots
+  local L = require('teslaBridge/learn')
+  local l = L.new()
+  check(l:spotScale(100, 100) == 1, 'learn: unknown place is normal')
+  l:markSpot(100, 100); l:markSpot(105, 98)
+  check(l:spotScale(100, 100) < 1, 'learn: two takeovers here -> gentler')
+  local l2 = L.new(l:export())
+  check(l2:spotScale(100, 100) < 1, 'learn: remembered after save / load')
+end)
+
+scenario('tailgaterYield', function()
+  -- someone rides our bumper in the left lane: we move over to the right (the brain's verdict is stubbed
+  -- here; its detection is unit tested in judgeLogic)
+  local w = W.new({ nodes = straight(0, 3000, 7.5, 25), ego = { x = 100, y = LEFT2, psi = 0, v = 22 } })
+  w.planner.brain.tailgater = function() return { id = 1 } end
+  w:engage('fsd', 'sloth')
+  w.planner.lane.k = 1 -- we are in the left lane
+  w:run(15)
+  check(w:saw('brain', function(e) return e.what == 'tailgater' end) ~= nil, 'reacts to a tailgater')
+  check(w:saw('laneChange', function(e) return e.reason == 'yield' end) ~= nil, 'moves right for it')
+end)
+
+scenario('policyNet', function()
+  local Po = require('teslaBridge/policy')
+  -- a hand-made 2-input net: layer 1 = two tanh units, layer 2 = their difference
+  local spec = { scale = { 10, 10 }, layers = {
+    { w = { { 1, 0 }, { 0, 1 } }, b = { 0, 0 }, act = 'tanh' },
+    { w = { { 1, -1 } }, b = { 0 }, act = 'tanh' } } }
+  local p = Po.new(spec)
+  local out = p:act({ 5, 5 })
+  check(math.abs(out) < 1e-9, 'policy: symmetric input -> 0')
+  out = p:act({ 10, 0 })
+  local expect = math.tanh and math.tanh(math.tanh(1)) or (function(x) local e = math.exp(2 * x); return (e - 1) / (e + 1) end)((function(x) local e = math.exp(2 * x); return (e - 1) / (e + 1) end)(1))
+  check(math.abs(out - expect) < 1e-9, 'policy: matches the hand-computed forward pass (' .. string.format('%.4f', out) .. ')')
+  check(Po.new({}) == nil and Po.new({ scale = { 1, 2, 3 }, layers = spec.layers }) == nil, 'policy: rejects a bad spec')
+  -- cost
+  local big = { layers = { { w = {}, b = {}, act = 'tanh' }, { w = {}, b = {}, act = 'tanh' }, { w = { {} }, b = { 0 }, act = 'tanh' } } }
+  for r = 1, 16 do big.layers[1].w[r] = {}; for c = 1, 7 do big.layers[1].w[r][c] = 0.1 end; big.layers[1].b[r] = 0 end
+  for r = 1, 16 do big.layers[2].w[r] = {}; for c = 1, 16 do big.layers[2].w[r][c] = 0.05 end; big.layers[2].b[r] = 0 end
+  for c = 1, 16 do big.layers[3].w[1][c] = 0.1 end
+  local pb = Po.new(big)
+  local c0 = os.clock()
+  for _ = 1, 5000 do pb:act({ 20, 20, 30, 0, 50, 0, 1 }) end
+  local us = (os.clock() - c0) / 5000 * 1e6
+  print(string.format('  policy net 7-16-16-1: %.1f us per call', us))
+  check(us < 100, 'policy: cheap (< 0.1 ms a call)')
+end)
+
 scenario('aebParked', function()
   local S = require('teslaBridge/safety')
   local function braked(latOffset)

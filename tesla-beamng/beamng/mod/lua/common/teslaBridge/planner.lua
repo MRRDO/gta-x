@@ -20,6 +20,7 @@ local P = require('teslaBridge/pathing')
 local Mv = require('teslaBridge/maneuver')
 local Nag = require('teslaBridge/nag')
 local Brain = require('teslaBridge/brain')
+local Judge = require('teslaBridge/judge')
 
 local M = {}
 
@@ -89,7 +90,7 @@ function M.new(opts)
     t = 0, events = {}, lastDisengage = nil,
     wiggleUntil = -1, phantom = nil, lastOverhead = false,
     arrivalMemory = {},
-    brain = opts.brain or Brain.new(), hangBack = {},
+    brain = opts.brain or Brain.new(), hangBack = {}, judge = Judge.new(), lightAge = {}, pedNoted = {},
   }, Planner)
   self.nag.rng = self.rng
   self.degree = {}
@@ -866,6 +867,7 @@ function Planner:tick(snap)
   local cars = snap.cars or {}
   local out = { commands = {} }
   self.brain:observe(t, cars) -- read the traffic: swerving, cutting in, hard braking, parked
+  self.tailCar = self.brain:tailgater(ego, cars) -- someone riding our bumper?
   for id, t0 in pairs(self.hangBack) do if t - t0 > 60 then self.hangBack[id] = nil end end
 
   -- supervision
@@ -994,6 +996,21 @@ function Planner:tick(snap)
       -- angled or poking out: it may pull out or a door may open -> pass wider and slower
       want = max(want, 1.2)
       if fsd and rel > -2 and rel < 40 and clearance < 2.5 and clearance > -((c.w or 1.9) + egoWid) * 0.5 + 0.6 then cap(max(11, v * 0.9)) end
+    end
+    -- a pedestrian heading for the road: slow down early enough to stop, don't wait until they step out
+    if fsd and (c.w or 2) < 1.2 and (c.l or 4) < 1.5 and rel > 2 and rel < 45 then
+      local tr = self.brain:traits(c)
+      local a, b = path.pts[o.i], path.pts[min(#path.pts, o.i + 1)]
+      local tx, ty = b.x - a.x, b.y - a.y
+      local tl = sqrt(tx * tx + ty * ty)
+      if tr and tl > 1e-6 then
+        local vLat = tr.vx * (-ty / tl) + tr.vy * (tx / tl)
+        local eta = Brain.pedestrianEta(o.lat - ourSh, vLat, egoWid * 0.5 + 0.6)
+        if eta and eta < rel / max(v, 1) + 1.5 then
+          cap(max(3, sqrt(2 * 2.0 * max(0, rel - 4))))
+          if not self.pedNoted[c.id or c] then self.pedNoted[c.id or c] = t; self:emit('brain', { what = 'pedestrian', eta = floor(eta * 10) / 10 }) end
+        end
+      end
     end
     -- a swerving car ahead in the next lane: hang back instead of pulling alongside it (for a while)
     if fsd and o.dot > 0.3 and rel > -3 and rel < 25 and clearance > 0 and clearance < 4 and self.brain:isErratic(c) then
@@ -1199,9 +1216,11 @@ function Planner:tick(snap)
   -- rain / fog
   local wx = snap.weather or {}
   local wxScale = 1
+  local boostScale = (self.lightBoostUntil and t < self.lightBoostUntil) and 1.1 or 1
   -- what we've learned about Quentin's style on this kind of road (FSD only, mild)
   local limNow = path.limit and path.limit[pr.i]
   local learnSpeed = self.learn and self.mode == 'fsd' and self.learn:speedScale(limNow) or 1
+  if self.learn and self.mode == 'fsd' and self.learn.spotScale then learnSpeed = learnSpeed * self.learn:spotScale(ego.x, ego.y) end
   local learnGap = self.learn and self.mode == 'fsd' and self.learn:gapScale(limNow) or 1
   if q.weather and ((wx.rain or 0) > 0.05 or (wx.fog or 0) > 0.05) then
     local lim = st.speedLimit or 20
@@ -1355,6 +1374,34 @@ function Planner:tick(snap)
     end
   end
 
+  ---------------------------------------------------------------- confusion: stopped and can't say why
+  do
+    local explained
+    if waitingFor or self.hesitateUntil and t < self.hesitateUntil then explained = 'waiting'
+    elseif stopS and stopS - sCar < 45 then explained = 'stopPoint'
+    elseif lead and lead.s - sCar < 15 and lead.v < 1.5 then explained = 'car'
+    elseif st.goAround or st.schoolBus or st.emergency or st.creeping then explained = 'situation'
+    elseif maxSpeed and maxSpeed < 0.5 then explained = 'capped'
+    elseif remaining < 40 and not path.openEnded then explained = 'arriving'
+    elseif self.lane.change then explained = 'laneChange' end
+    local lvl, rose = self.judge:watchStuck(t, { engaged = fsd, v = ego.v, explained = explained, dt = dt })
+    st.stuck = lvl > 0 and lvl or nil
+    if rose then
+      local ctl = st.control
+      self:emit('stuck', { level = rose, lead = lead and floor(lead.s - sCar) or nil, lane = self.lane.k, ctl = ctl and ctl.kind or nil, dist = ctl and ctl.dist and floor(ctl.dist) or nil,
+        state = ctl and ctl.state or nil, speedCap = maxSpeed and floor(maxSpeed * 10) / 10 or nil, activity = self.activity })
+      if rose == 1 then
+        self.replanNow = true -- fresh route from where we are
+      elseif rose == 2 then
+        -- forget whatever stop / turn / wait state may be jamming us and try again
+        self.stopFsm, self.cleared, self.lightStopped, self.redWait = {}, {}, {}, {}
+        self.turnVia, self.leftCommitted, self.leftWaitSince, self.hesitateUntil = nil, false, nil, nil
+        self.replanNow = true
+      end
+    end
+    if lvl >= 3 then st.lowConfidence = true; self.conf = min(self.conf or 1, 0.3) end -- ask the driver to help
+  end
+
   ---------------------------------------------------------------- build the window for the car
   local flat, vcap = {}, {}
   for k2 = 1, #win.pts do
@@ -1369,7 +1416,7 @@ function Planner:tick(snap)
     flat[#flat + 1] = pt.x - ty * sh
     flat[#flat + 1] = pt.y + tx * sh
     flat[#flat + 1] = pt.z or 0
-    vcap[#vcap + 1] = path.vcap[i] * wxScale * learnSpeed
+    vcap[#vcap + 1] = path.vcap[i] * wxScale * learnSpeed * boostScale
   end
   self.seq = self.seq + 1
   local gap = prof.gap * learnGap
@@ -1377,6 +1424,7 @@ function Planner:tick(snap)
   local wary = lead and lead.o and (self.brain:isErratic(lead.o.c) or self.brain:hardBraked(lead.o.c, t, 8))
   if self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
   if wary then gap = gap * 1.4 end
+  if lead and lead.cutIn and (self.profile == 'sloth' or self.profile == 'chill' or self.profile == 'standard') then gap = gap * 1.25 end -- let it in
   st.brain = (wary or (lead and lead.cutIn)) and { wary = wary or nil, cutIn = lead.cutIn or nil } or nil
   out.plan = {
     seq = self.seq, pts = flat, vcap = vcap, dir = 1,
@@ -1631,6 +1679,9 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   -- traffic light
   control.state = stt
   control.red = stt == 'red'
+  -- how long has it been this colour? (only trustworthy if we watched it change)
+  local la = self.lightAge[sg.id]
+  if not la or la.state ~= stt then la = { state = stt, t = t, saw = la ~= nil }; self.lightAge[sg.id] = la end
   self.lightStopped = self.lightStopped or {}
   if stt == 'red' and v < 0.5 and dist < 10 then self.lightStopped[sg.id] = t end
   if stt == 'red' then
@@ -1649,9 +1700,20 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
       if dec.hesitate then self:emit('yellowHesitation', {}) end
     end
     if not dec.go then stopS = s end
+    -- Mad Max / Furious: a yellow we can make -> put the foot down and clear it
+    if dec.go and (self.profile == 'madmax' or self.profile == 'furious') and dist > 0 and v > 8 then
+      self.lightBoostUntil = t + 2.5
+    end
     if dec.hesitate and t - dec.t < 0.7 then cap(max(3, v - 2)) end
   else
     self.yellow[sg.id] = nil
+    -- a green that has been green a long time is about to change: don't arrive at speed
+    -- (the hurried profiles gamble on it, the careful ones get ready to stop)
+    local careful = self.profile == 'sloth' or self.profile == 'chill' or self.profile == 'standard'
+    if careful and la.saw and stt == 'green' and t - la.t > 20 and dist > 8 and dist < 45 and v > 6 then
+      cap(max(5, sqrt(2 * 2.2 * max(0, dist - 2))))
+      if not la.noted then la.noted = true; self:emit('brain', { what = 'staleGreen', age = floor(t - la.t) }) end
+    end
     -- green after we stopped at it: in confirm mode wait for the driver's go
     local stoppedAt = self.lightStopped[sg.id]
     if stoppedAt and t - stoppedAt < 120 and self.settings.trafficControl == 'confirm' then
@@ -1699,6 +1761,7 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     elseif ch.phase == 'moving' then
       if sCar > ch.s1 then
         lane.k = ch.to; lane.change = nil
+        self.judge:laneChanged(t, ch.from, ch.to, ch.reason)
         -- route / merge / driver changes can follow quickly; the ones FSD chose (passing, fast lane, coming back) wait
         lane.cooldown = t + ((ch.reason == 'route' or ch.reason == 'merge' or ch.reason == 'driver' or ch.reason == 'moveOver') and 3 or 14)
         lane.lastDiscretionary = (ch.reason == 'pass' or ch.reason == 'madMax' or ch.reason == 'return') and t or lane.lastDiscretionary
@@ -1744,6 +1807,13 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   if not want and self.moveOverRequest and lane.k < minN - 1 then want, reason = lane.k + 1, 'moveOver' end
   self.moveOverRequest = nil
   local pinned = self.lanePinUntil and t < self.lanePinUntil
+  if not want and fsd and not prep and not pinned and self.tailCar and lane.k > 0 and (not lead or lead.v > v - 1) then
+    -- someone is riding our bumper: get out of the way to the right instead of holding them up
+    want, reason = lane.k - 1, 'yield'
+    if not self.tailNoted then self.tailNoted = true; self:emit('brain', { what = 'tailgater' }) end
+  elseif not self.tailCar then
+    self.tailNoted = false
+  end
   if not want and fsd and not prep then
     -- pass a slower car
     local cruise = path.vcap[iCar] or v
@@ -1769,7 +1839,15 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     local to = lane.k + (want > lane.k and 1 or -1)
     -- no lane changes right at a junction
     if nextTurn and nextTurn.s - sCar < 25 and reason ~= 'route' then return end
-    if self:laneClear(to, onPath, sCar, v, egoLen, beh.cut) or reason == 'merge' or reason == 'route' then
+    -- is the target lane actually better? (m/s its nearest car ahead is faster than ours)
+    local theirs, ours = 60, lead and lead.v or 60
+    for _, o in ipairs(onPath) do
+      if o.lane == to and o.dot > 0.3 and o.s > sCar and o.s - sCar < 80 and o.vAlong < theirs then theirs = o.vAlong end
+    end
+    local okJ, whyJ = self.judge:allowLane(t, lane.k, to, reason, theirs - ours)
+    if not okJ then
+      if not self.judgeNoted or t - self.judgeNoted > 20 then self.judgeNoted = t; self:emit('brain', { what = 'laneHold', why = whyJ, wanted = reason }) end
+    elseif self:laneClear(to, onPath, sCar, v, egoLen, beh.cut) or reason == 'merge' or reason == 'route' then
       lane.change = { from = lane.k, to = to, reason = reason, phase = 'signal', t = t }
     end
   end

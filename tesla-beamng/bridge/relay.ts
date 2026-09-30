@@ -17,6 +17,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import qrcode from 'qrcode-terminal'
 import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
+import { record as recordDrive } from './recorder.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -27,6 +28,7 @@ function arg(name: string, fallback?: string): string | undefined {
   return v && !v.startsWith('--') ? v : 'true'
 }
 
+const RECORD = process.argv.includes('--record') || process.env.TESLA_RECORD === '1' // driving log for the AI (docs/AI_COMPUTE_PLAN.md)
 const PORT = Number(arg('port', process.env.BRIDGE_PORT ?? '8765'))
 const GAME_HOST = arg('game-host', '127.0.0.1')!
 const GAME_PORT = Number(arg('game-port', '8766'))
@@ -358,6 +360,7 @@ function onGameLine(line: string) {
     return
   }
   msg = normalize_(msg)
+  recordDrive(msg, RECORD)
   switch (msg.t) {
     case 'hello':
       gameVersion = msg.version

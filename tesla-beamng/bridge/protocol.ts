@@ -200,6 +200,8 @@ export type EventKind =
   | 'swerveAssist'     // manual driving: stabilizing a swerve (detail: 'stabilizing' | 'done')
   | 'collision'        // the car was hit (see autopilot.alert)
   | 'signalStuck'      // a red that never changed for 90 s, treated as an all-way stop
+  | 'brain'            // the driving brain noticed something: detail says what (erratic car, tailgater, pedestrian, staleGreen, laneHold)
+  | 'stuck'            // FSD stopped for no reason it can name: level 1 re-plan, 2 reset, 3 asks the driver
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
   | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver}; answer with {t:'arrivalChoice'}
   | 'arrivalChoice'    // the choice was applied

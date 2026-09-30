@@ -23,7 +23,7 @@ end
 local function newBucket() return { pref = 1.0, prefN = 0, bias = 0, gapPref = 2.0, gapN = 0, gapBias = 0 } end
 
 function M.new(data)
-  local L = { b = {}, dirty = false }
+  local L = { b = {}, dirty = false, spots = (data and type(data.spots) == 'table') and data.spots or {} }
   for _, k in ipairs(BUCKETS) do
     local d = data and data[k]
     L.b[k] = newBucket()
@@ -32,7 +32,29 @@ function M.new(data)
   return setmetatable(L, { __index = M })
 end
 
-function M:export() return self.b end
+-- Places where he took over (FSD did something he didn't like): 40 m cells. Two takeovers in a
+-- cell -> take it 10% slower there, four -> 18%. Cheap: one table lookup a tick.
+local CELL = 40
+local function cellKey(x, y) return math.floor(x / CELL) .. ',' .. math.floor(y / CELL) end
+
+function M:markSpot(x, y)
+  self.spots = self.spots or {}
+  local k = cellKey(x, y)
+  self.spots[k] = math.min(8, (self.spots[k] or 0) + 1)
+  self.dirty = true
+end
+
+function M:spotScale(x, y)
+  local n = self.spots and self.spots[cellKey(x, y)] or 0
+  return n >= 4 and 0.82 or n >= 2 and 0.9 or 1
+end
+
+function M:export()
+  local o = {}
+  for k, v in pairs(self.b) do o[k] = v end
+  o.spots = self.spots
+  return o
+end
 
 -- manual driving sample: v (m/s), limit (m/s), gap (s to the car ahead, nil = free road), dt
 function M:watch(limit, v, gap, dt)

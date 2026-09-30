@@ -559,7 +559,7 @@ try {
     send({ t: 'gear', gear: 'D' })
     events.length = 0
     send({ t: 'autopilot', mode: 'fsd', profile: 'standard' })
-    if (!(await until('fsd', () => st().autopilot.engaged, 4000))) console.log('  engage events:', events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '), JSON.stringify(st().pos ?? st().position), st().gear)
+    if (!(await until('fsd', () => st().autopilot.engaged, 4000))) console.log('  engage events:', events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '), JSON.stringify(st().pos), st().gear)
     await until('moving', () => st().speed > 3, 10000)
     send({ t: 'settings', confidenceFloor: 2 }) // "always unsure"
     check('low confidence: asks the driver to take over', await until('lowconf', () => st().autopilot.alert?.kind === 'lowConfidence', 6000), JSON.stringify(st().autopilot.alert))

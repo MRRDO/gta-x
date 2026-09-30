@@ -112,6 +112,38 @@ function Brain:cutInEta(ego, c)
   return nil
 end
 
+-- A car right behind us in our lane, close and for a while (tailgating): the car, and how many
+-- seconds behind us it is. Needs us moving (a car close behind at a light is normal).
+function Brain:tailgater(ego, cars)
+  local v = ego.v or 0
+  if v < 8 then self.tailSince = nil; return nil end
+  local best, bestGap
+  for _, c in ipairs(cars) do
+    local lon, lat, dot = M.relative(ego, c)
+    if lon < 0 and lon > -22 and dot > 0.7 and abs(lat) < ((ego.wid or 1.9) + (c.w or 1.9)) * 0.5 and abs(ego.z and c.z and c.z - ego.z or 0) < 2.5 then
+      local gap = (-lon - ((ego.len or 4.6) + (c.l or 4.6)) * 0.5) / max(v, 1)
+      if (c.v or 0) >= v - 1 and gap < 0.9 and (not bestGap or gap < bestGap) then best, bestGap = c, gap end
+    end
+  end
+  if not best then self.tailSince = nil; return nil end
+  self.tailSince = self.tailSince or self.obsT or 0
+  if (self.obsT or 0) - self.tailSince >= 3 then return best, bestGap end
+  return nil
+end
+
+-- A pedestrian (small, slow) heading for the road: seconds until they would be in our corridor,
+-- or nil. `pathLat` = their signed sideways distance from our path centre, `vLat` = their sideways
+-- speed (+ = away from the path's left side, sign matches pathLat).
+function M.pedestrianEta(pathLat, vLat, corridor)
+  if vLat == nil or abs(vLat) < 0.4 then return nil end
+  if pathLat * vLat >= 0 then return nil end            -- walking away
+  local d = abs(pathLat) - corridor
+  if d <= 0 then return 0 end
+  local eta = d / abs(vLat)
+  if eta < 4 then return eta end
+  return nil
+end
+
 -- where car c sits relative to us: along our heading, sideways, and heading agreement
 local function relative(ego, c)
   local rx, ry = c.x - ego.x, c.y - ego.y
