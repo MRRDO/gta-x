@@ -63,6 +63,7 @@ local CAM_DIR = 'temp/teslaBridge'
 
 -- FSD brain, safety, and what we last told the car
 local planner = nil
+local reloadRequested = nil -- (update while playing) set by the reloadMod command, handled in onUpdate
 local plannerSettings = {}   -- kept across level loads
 local safetySettings = {}
 local safety = Sf.new()
@@ -467,6 +468,7 @@ local function buildMap()
   local polSpec = jsonReadFile and try(jsonReadFile, '/settings/teslaBridgePolicy.json') or nil -- trained by rl/train_bc.py
   planner = Pl.new({ graph = graph, signals = signals, parking = parking, learn = learn, policy = type(polSpec) == 'table' and Po.new(polSpec) or nil })
   safety.brain = planner.brain -- one brain reads the traffic for both driving and safety
+  planner.castRay = function(x, y, z, dx, dy, dz, dist) return castRay(x, y, z, dx, dy, dz, dist) end -- Autopark looks for walls with it
   planner:configure(plannerSettings)
   sentMode = 'off'
   local sig = {}
@@ -1541,6 +1543,21 @@ handleCommand = function(msg)
       local okP = planner:planPath(egoSnapshot(veh), trafficList())
       if okP then send(planner:routeMessage()); planner.routeDirty = false end
     end
+  elseif t == 'reloadMod' then
+    -- (update while playing) reload this extension and its modules from disk (needs the mod installed as an unpacked folder);
+    -- the car's own extension too when asked. Done on the next frame: this extension is replaced while it is running.
+    reloadRequested = { vehicle = msg.vehicle ~= false }
+    relayEvent({ kind = 'notice', detail = 'reloading the Tesla bridge' })
+  elseif t == 'teleport' then
+    -- (testing) put the player's car somewhere: x, y, z, heading (hx, hy)
+    if not veh or not msg.x then return end
+    local ok, err = pcall(function()
+      local dir = vec3(tonumber(msg.hx) or 1, tonumber(msg.hy) or 0, 0)
+      if msg.flip then dir = -dir end
+      local q = quatFromDir(dir, vec3(0, 0, 1))
+      veh:setPositionRotation(msg.x, msg.y, msg.z or 0, q.x, q.y, q.z, q.w)
+    end)
+    relayEvent({ kind = 'notice', detail = 'teleport ' .. tostring(ok) .. ' ' .. tostring(err or '') })
   elseif t == 'autopark' then
     if not planner or not veh then return end
     local ego, cars = egoSnapshot(veh), trafficList()
@@ -1659,6 +1676,29 @@ function M.voiceNote()
   send({ t = 'event', kind = 'voiceNote', detail = 'toggle', data = { lastDisengage = planner and planner.lastDisengage or nil } })
 end
 
+-- The G29 paddles (bound to "Tesla: paddle left / right"): the turn signal; with FSD it asks for that turn / lane change.
+function M.paddle(dir)
+  if dir == 'left' then runAction('laneLeft') else runAction('laneRight') end
+end
+
+-- The G29 red dial (bound to "Tesla: dial up / down / click"): volume by default, its button cycles what it controls.
+-- Volume goes to the app as a wheelMedia event (the iPad's music), the rest to the planner like the wheel-button actions.
+local DIAL_MODES = { 'volume', 'distance', 'speed', 'profile' }
+local dialIdx = 1
+local DIAL_ACTIONS = { volume = { 'volumeUp', 'volumeDown' }, distance = { 'followFarther', 'followCloser' }, speed = { 'speedUp', 'speedDown' }, profile = { 'profileNext', 'profilePrev' } }
+function M.dial(kind)
+  if kind == 'click' then
+    dialIdx = dialIdx % #DIAL_MODES + 1
+    send({ t = 'event', kind = 'wheelDial', detail = DIAL_MODES[dialIdx], data = { mode = DIAL_MODES[dialIdx] } })
+    return
+  end
+  local mode = DIAL_MODES[dialIdx]
+  local act = DIAL_ACTIONS[mode][kind == 'up' and 1 or 2]
+  send({ t = 'event', kind = 'wheelDial', detail = mode, data = { mode = mode, dir = kind } })
+  if mode == 'volume' then send({ t = 'event', kind = 'wheelMedia', detail = act, data = { action = act } })
+  else runAction(act) end
+end
+
 -- Bound to "Tesla: I'm paying attention" (a wheel button for keyboard/gamepad players).
 function M.nudge()
   nudgeT = gameTime
@@ -1747,9 +1787,42 @@ end
 -- hooks
 ---------------------------------------------------------------------------
 
+local bindingsRefreshAt -- seconds left until the second bindings refresh (set when the extension loads)
+local refreshBindings
+local function doReload()
+  local req = reloadRequested
+  reloadRequested = nil
+  -- forget the modules so they are read from disk again
+  for k in pairs(package.loaded) do
+    if type(k) == 'string' and k:find('^teslaBridge/') then package.loaded[k] = nil end
+  end
+  if req and req.vehicle then
+    local veh = be and be.getPlayerVehicle and be:getPlayerVehicle(0)
+    if veh then veh:queueLuaCommand("package.loaded['teslaBridge/control'] = nil; package.loaded['teslaBridge/wheel'] = nil; package.loaded['teslaBridge/nag'] = nil; package.loaded['teslaBridge/pathing'] = nil; package.loaded['teslaBridge/safety'] = nil; extensions.reload('teslaAutopilot')") end
+  end
+  local ok, err = pcall(function()
+    if core_jobsystem and core_jobsystem.create then
+      -- from a job: this extension is replaced while its own code is on the stack otherwise
+      core_jobsystem.create(function(job)
+        job.sleep(0.15)
+        extensions.unload('teslaBridge')
+        job.sleep(0.15)
+        extensions.load('teslaBridge')
+      end, 1)
+    elseif extensions and extensions.reload then
+      extensions.reload('teslaBridge')
+    end
+  end)
+  logI('reload requested: ' .. tostring(ok) .. ' ' .. tostring(err))
+end
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   realTime = realTime + dtReal
+  if reloadRequested then pcall(doReload); return end
+  if bindingsRefreshAt then
+    bindingsRefreshAt = bindingsRefreshAt - dtReal
+    if bindingsRefreshAt <= 0 then bindingsRefreshAt = nil; if refreshBindings then refreshBindings() end end
+  end
   gameTime = gameTime + (dtSim or dtReal)
   if dtReal > 0 then fpsAvg = fpsAvg + (1 / dtReal - fpsAvg) * 0.05 end
   local okNet, netErr = pcall(netUpdate)
@@ -1889,10 +1962,20 @@ saveLearn = function()
   end
 end
 
+-- BeamNG reads the wheel's bindings (settings/inputmaps) at start, before this mod is mounted, so our actions (the FSD button,
+-- the paddles, the red dial) did not exist yet and their bindings were dropped. Ask it to read them again now that they do.
+refreshBindings = function()
+  pcall(function()
+    if core_input_bindings and core_input_bindings.onFileChanged then core_input_bindings.onFileChanged('/settings/inputmaps/c24f046d.diff', 0) end
+  end)
+end
+
 local function onExtensionLoaded()
-  logI('loaded')
+  logI('loaded (v2) ' .. tostring(os.time()))
   loadLearn()
   if levelName() then mapPending = true end
+  refreshBindings()
+  bindingsRefreshAt = 4 -- and once more a few seconds later (seconds of game time from the first update)
 end
 
 local function onExtensionUnloaded()

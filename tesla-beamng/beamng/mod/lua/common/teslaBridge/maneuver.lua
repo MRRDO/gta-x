@@ -64,6 +64,8 @@ local function feasibleBezier(p0, t0x, t0y, p1, t1x, t1y, rmin)
   return best, bestK
 end
 
+M.feasibleBezier = feasibleBezier
+
 --- Back out of a parking spot.
 -- ego = { x, y, z, hx, hy } (heading = where the nose points, into the spot)
 -- road = { x, y, z (closest point in the lane we'll use), dx, dy (direction we'll drive after) }
@@ -154,6 +156,42 @@ function M.backIn(spot, road, rmin)
   -- reverse: start moving along -road dir, finish moving into the spot (-out)
   local pts, k = feasibleBezier(q, -dx, -dy, spot, -ox, -oy, rmin)
   return q, { dir = -1, pts = pts, maxSpeed = 1.3, kind = 'backIn', curvature = k }
+end
+
+--- Reverse into a perpendicular spot on a fixed-radius arc: straight back `extra` m, a 90 degree arc of radius R, then a straight tail
+-- of `tail` m into the spot so the car ends aligned. S = the spot (x, y, z), o = unit vector out of the spot toward the aisle,
+-- d = unit vector along the aisle (the way the nose points at the start). Returns Q (where the forward approach ends) and the points.
+function M.backInArc(S, o, d, R, extra, tail)
+  local step = 0.4
+  local pts = {}
+  local function add(x, y) pts[#pts + 1] = { x = x, y = y, z = S.z } end
+  local Q = { x = S.x + o.x * (tail + R) + d.x * (R + extra), y = S.y + o.y * (tail + R) + d.y * (R + extra), z = S.z }
+  local n = max(1, math.ceil(extra / step))
+  for i = 0, n do local t = i / n * extra; add(Q.x - d.x * t, Q.y - d.y * t) end
+  local C = { x = S.x + o.x * tail + d.x * R, y = S.y + o.y * tail + d.y * R }
+  local na = max(6, math.ceil(R * pi / 2 / step))
+  for i = 1, na do
+    local th = i / na * pi / 2
+    add(C.x + o.x * R * cos(th) - d.x * R * sin(th), C.y + o.y * R * cos(th) - d.y * R * sin(th))
+  end
+  local nt = max(1, math.ceil(tail / step))
+  for i = 1, nt do local t = i / nt * tail; add(S.x + o.x * (tail - t), S.y + o.y * (tail - t)) end
+  return Q, pts
+end
+
+--- Roll a kinematic bicycle forward (dir 1) or backward (dir -1) along a constant curvature for `len` m: the points and the end pose.
+function M.rollOut(x, y, psi, dir, curv, len)
+  local pts = { { x = x, y = y } }
+  local ds = 0.4
+  local l = 0
+  while l < len - 1e-6 do
+    psi = psi + dir * curv * ds
+    x = x + dir * cos(psi) * ds
+    y = y + dir * sin(psi) * ds
+    l = l + ds
+    pts[#pts + 1] = { x = x, y = y }
+  end
+  return pts, x, y, psi
 end
 
 --- Parallel park into a curb spot (FSD's "Street" arrival).

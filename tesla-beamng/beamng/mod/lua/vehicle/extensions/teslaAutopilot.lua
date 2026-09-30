@@ -425,6 +425,7 @@ local function ffbTake()
     ffb.spring.stiffness, ffb.spring.damping, ffb.spring.integMax = 0.20, 0.0, 0.15
     ffb.spring.velTau, ffb.spring.deadband, ffb.spring.slew = 0.10, 0.012, 0.25
     ffb.spring.gripErr = Wh.takeoverLimit(takeoverLevel)
+    ffb.gripBase = ffb.spring.gripErr
   end
   if ffb.tune then
     for k, v in pairs(ffb.tune) do if v ~= nil then ffb.spring[k] = v end end
@@ -576,6 +577,8 @@ local function ffbUpdate(dt, targetInput)
   local r = raw.steering
   local pos = r and r.v or 0
   local target = wheelTarget(targetInput)
+  -- a parking maneuver turns the wheel fast (full lock in about a second): the wheel lags FSD by a lot then, which is not a hand
+  if ffb.gripBase and ffb.spring.gripErr then ffb.spring.gripErr = (ap.plan and ap.plan.maneuver) and 0.3 or ffb.gripBase end
   local f, grip = ffb.spring:update(dt, target, pos, ffb.fcap, ffb.strength)
   -- road feel: bumps and surface texture through the wheel
   if (ffb.roadFeel or 0) > 0 and dt > 1e-4 then

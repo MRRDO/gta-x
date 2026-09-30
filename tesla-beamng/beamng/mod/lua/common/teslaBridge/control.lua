@@ -182,7 +182,8 @@ function Driver:update(dt, sense, opts)
   if vt < 0.3 and v < 0.6 then
     self.speedI = 0
     -- soft stop: ease the brake off as the car comes to rest (no lurch), then hold it
-    out.throttle, out.brake = 0, (v > 0.12) and (0.12 + 0.6 * v) or 0.5
+    -- (an EV in D creeps at ~0.15 m/s: the old 0.12 + 0.6 v brake could not stop that, and maneuvers never went on to their next leg)
+    out.throttle, out.brake = 0, (v > 0.08) and (0.25 + 0.8 * v) or 0.6
     if plan.hold then out.parkingbrake = 1 end
   else
     self.speedI = clamp(self.speedI + e * dt * 0.08, -0.3, 0.4)

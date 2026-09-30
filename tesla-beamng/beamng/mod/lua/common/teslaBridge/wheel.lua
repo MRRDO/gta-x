@@ -63,6 +63,7 @@ end
 
 function Spring:reset()
   self.ramp, self.vel, self.lastPos, self.eLP = 0, 0, nil, nil
+  self.age = 0
   self.tf, self.fPrev, self.integ = nil, 0, 0
   self.wrongT, self.gripT, self.goodT = 0, 0, 0
 end
@@ -79,6 +80,7 @@ function Spring:update(dt, target, pos, fcap, strength)
   end
   self.lastPos = pos
   self.ramp = min(1, self.ramp + dt / 0.8)
+  self.age = (self.age or 0) + dt
   local cap = fcap * clamp(strength or 1, 0, 2)
   -- smooth the target (FSD's steering comes in steps): no jerks for the motor to chase
   -- start from where the wheel IS (no snap to FSD's angle when it takes over) and move the target at a sane speed
@@ -129,7 +131,9 @@ function Spring:update(dt, target, pos, fcap, strength)
   self.flipHold = max(0, (self.flipHold or 0) - dt)
   if not self.confirmed then
     local speedingAway = not converging and abs(self.vel) > 0.4 and abs(self.vel) >= prevSpeed - 1e-3
-    if self.flipHold <= 0 and self.ramp >= 0.4 and abs(e) > 0.12 and abs(f) > 0.3 * cap and speedingAway then
+    -- the direction is tried at most in the first 1.5 s after the wheel is taken (it is known on the cars tried); later a fast
+    -- reversal of FSD's target looks like the wheel running away and flipped it for no reason (Autopark)
+    if self.flipHold <= 0 and self.age < 1.5 and self.ramp >= 0.4 and abs(e) > 0.12 and abs(f) > 0.3 * cap and speedingAway then
       self.wrongT = self.wrongT + dt
       if self.wrongT > 0.25 then
         self.sign = -self.sign
