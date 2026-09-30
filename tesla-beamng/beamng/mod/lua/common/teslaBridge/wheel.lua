@@ -150,6 +150,12 @@ function Spring:update(dt, target, pos, fcap, strength)
   local gs = self.gripScale or 1
   local held = abs(e) > 0.1 * gs and abs(f) > 0.6 * capUse and not (converging and abs(self.vel) > 0.1)
   local resisting = abs(e) > 0.06 * gs and abs(f) > 0.5 * capUse and abs(self.vel) < 0.05
+  if self.gripErr then
+    -- soft spring (the hydros path): its force stays small for small errors, so judge the driver's hand by how far the
+    -- wheel is pulled from where FSD holds it, unless it is just lagging behind a quick turn
+    held = abs(e) > self.gripErr and not (converging and abs(self.vel) > 0.1)
+    resisting = false
+  end
   if self.ramp >= 1 and (held or resisting) then
     self.gripT = self.gripT + dt
   else

@@ -413,6 +413,7 @@ local function ffbTake()
     -- the force goes through the game's own smoothing (~0.1 s of lag): a soft, well damped spring so the wheel follows
     -- FSD without the shake a stiff one gives with that delay
     ffb.spring.stiffness, ffb.spring.damping, ffb.spring.integMax = 0.30, 0.34, 0.1
+    ffb.spring.gripErr = Wh.takeoverLimit(takeoverLevel)
   end
   ffb.lastForce = nil
   ffb.status = ffb.helper and 'helper' or 'active'
@@ -1187,6 +1188,23 @@ local function checkTakeover(dt)
   local steerDev = st and abs(st - baseline.steering) or 0
   local devLimit, holdT = Wh.takeoverLimit(takeoverLevel), 0.08
   steerBias = 0
+  do
+    -- a slight turn of the wheel steers the car a little (how far the driver has moved it from where FSD has it);
+    -- past devLimit it is a takeover, below a small dead zone it is nothing
+    local dv
+    if ap.mode ~= 'tacc' then
+      if ffb.held then
+        -- while the wheel is still moving to follow FSD the gap is lag, not a hand
+        if abs(ffb.spring.vel or 0) < 0.25 then dv = (ffb.pos or 0) - (ffb.target or 0) end
+      elseif st and lastOut then
+        local a1, b1 = st - baseline.steering, st - wheelTarget(lastOut.steer or 0)
+        dv = abs(a1) < abs(b1) and a1 or b1
+      end
+    end
+    if dv and abs(dv) > 0.012 and abs(dv) < Wh.takeoverLimit(takeoverLevel) then
+      steerBias = (dv > 0 and 1 or -1) * (abs(dv) - 0.012) * 0.8
+    end
+  end
   if ffb.helper and ap.mode ~= 'tacc' then
     -- the external helper turns the wheel to FSD's angle: a takeover is the wheel
     -- being well away from that (it lags a little in quick turns, hence the margin)
@@ -1202,8 +1220,7 @@ local function checkTakeover(dt)
     -- only a wheel that is neither where it started nor where FSD steers is a driver taking over
     steerDev = math.min(steerDev, abs(st - wheelTarget(lastOut.steer or 0)))
   end
-  -- no steering bias from the driver's hands: FSD's steering is FSD's alone (a hand on the
-  -- wheel only counts as "hands on" for the nag, or a takeover when strong)
+  -- slight hand movement above steers a little; a strong one is a takeover
   takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
   takeover.brake = (br > 0.04) and takeover.brake + dt or 0
   takeover.throttle = 0 -- the accelerator never disengages (like a Tesla): it speeds you up
