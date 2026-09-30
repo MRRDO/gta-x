@@ -416,6 +416,42 @@ scenario('learning', function()
 end)
 
 -- phantom braking: a parked car beside the lane must not trigger AEB, a stopped car in the lane must
+scenario('brainNoPhantom', function()
+  local S = require('teslaBridge/safety')
+  -- straight road, a little steering wobble, an oncoming car in its own lane: never brake
+  local sf = S.new()
+  local braked, warned = false, false
+  for k = 0, 60 do
+    local tt = k * 0.05
+    local ego = { x = 27 * tt, y = 0, z = 0, hx = 1, hy = 0, v = 27, yawRate = 0.03 * math.sin(k), len = 4.6, wid = 1.9 }
+    local car = { id = 7, x = 90 - 27 * tt, y = 3.6, z = 0, dx = -1, dy = 0, v = 27, l = 4.6, w = 1.9 }
+    local o = sf:tick(tt, 0.05, { ego = ego, cars = { car } }, { rays = {} })
+    if (o.aeb or 0) > 0 then braked = true end
+    if o.fcw then warned = true end
+  end
+  check(not braked and not warned, 'brain: no braking/warning for an oncoming car in its own lane')
+  -- a stopped car under us on another level (overpass): never brake
+  local sf2 = S.new()
+  local b2 = false
+  for k = 0, 40 do
+    local ego = { x = 0, y = 0, z = 8, hx = 1, hy = 0, v = 20, yawRate = 0, len = 4.6, wid = 1.9 }
+    local o = sf2:tick(k * 0.05, 0.05, { ego = ego, cars = { { id = 2, x = 20, y = 0, z = 0, dx = 0, dy = 1, v = 0, l = 4.6, w = 1.9 } } }, { rays = {} })
+    if (o.aeb or 0) > 0 then b2 = true end
+  end
+  check(not b2, 'brain: no braking for a car on the road below')
+  -- cost: 30 cars, 2000 ticks
+  local B = require('teslaBridge/brain')
+  local br = B.new()
+  local cars = {}
+  for i = 1, 30 do cars[i] = { id = i, x = i * 7, y = (i % 3) * 3.5, z = 0, dx = 1, dy = 0, v = 20, l = 4.6, w = 1.9 } end
+  local ego = { x = 0, y = 0, z = 0, hx = 1, hy = 0, v = 25, yawRate = 0, wid = 1.9 }
+  local c0 = os.clock()
+  for k = 1, 2000 do br:update(k * 0.05, ego, cars, { car = cars[k % 30 + 1], ttc = 1.0, need = 2 }) end
+  local us = (os.clock() - c0) / 2000 * 1e6
+  print(string.format('  brain: %.1f us per tick with 30 cars', us))
+  check(us < 200, 'brain is cheap (< 0.2 ms a tick)')
+end)
+
 scenario('aebParked', function()
   local S = require('teslaBridge/safety')
   local function braked(latOffset)

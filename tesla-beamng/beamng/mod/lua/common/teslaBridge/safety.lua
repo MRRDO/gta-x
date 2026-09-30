@@ -8,6 +8,7 @@
 -- with each car as three circles along its length. Pure Lua (tested in beamng/test/).
 
 local M = {}
+local Brain = require('teslaBridge/brain')
 
 local sqrt, abs, min, max, cos, sin, atan2 = math.sqrt, math.abs, math.min, math.max, math.cos, math.sin, math.atan2
 
@@ -52,6 +53,7 @@ end
 local function egoAt(ego, t, side, shift, tShift)
   local v = ego.v
   local w = ego.yawRate or 0
+  if abs(w) < 0.02 then w = 0 end -- wheel wobble on a straight road isn't a turn
   local psi0 = atan2(ego.hy, ego.hx)
   local psi = psi0 + w * t
   local x, y
@@ -76,6 +78,7 @@ function M.timeToCollision(ego, cars, horizon, side, shift, tShift)
   local best, who = nil, nil
   for _, c in ipairs(cars) do
     local dx0, dy0 = c.x - ego.x, c.y - ego.y
+    if ego.z and c.z and abs(c.z - ego.z) > 2.5 then dx0 = 1e9 end -- on a bridge above / road below
     if dx0 * dx0 + dy0 * dy0 < (abs(ego.v) * horizon + abs(c.v) * horizon + 20) ^ 2 then
       local t = 0.1
       while t <= horizon do
@@ -133,7 +136,7 @@ function Safety:tick(t, dt, snap, ctx)
   local ego = snap.ego
   local cars = snap.cars or {}
   local out = { events = {} }
-  local fwd = { x = ego.x, y = ego.y, hx = ego.hx, hy = ego.hy, v = ego.v, yawRate = ego.yawRate, len = ego.len, wid = ego.wid }
+  local fwd = { x = ego.x, y = ego.y, hx = ego.hx, hy = ego.hy, v = ego.v, yawRate = ego.yawRate, len = ego.len, wid = ego.wid, z = ego.z }
   local speed = abs(ego.v)
 
   -- collision prediction (moving forward)
@@ -145,6 +148,10 @@ function Safety:tick(t, dt, snap, ctx)
     local vr, gap = closing(ego, who)
     if vr > 0 then need = vr * vr / (2 * max(0.2, gap - 0.5)) end
   end
+
+  self.brain = self.brain or Brain.new()
+  self.brain:update(t, ego, cars, (ttc and speed > 1) and { car = who, ttc = ttc, need = need } or nil)
+  out.belief = self.brain:belief(who) -- belief in the car the prediction says we'd hit
 
   -- Rear Cross Traffic Alert / reverse braking: backing up into a car that's crossing behind us
   if ego.v < -0.3 or (ego.gear == 'R' and ego.v < 0.3 and (ego.throttle or 0) > 0.05) then
@@ -165,13 +172,13 @@ function Safety:tick(t, dt, snap, ctx)
 
   -- Forward Collision Warning
   local fcwT = FCW_TIME[st.fcw]
-  local fcw = fcwT ~= nil and ttc ~= nil and ttc < fcwT and speed > 2.2 and need > 1.5
+  local fcw = fcwT ~= nil and ttc ~= nil and ttc < fcwT and speed > 2.2 and need > 1.5 and out.belief >= Brain.WARN
   if fcw and not self.fcwOn then out.events[#out.events + 1] = { kind = 'fcw', ttc = ttc } end
   self.fcwOn = fcw
   out.fcw = fcw
 
   -- Automatic Collision Evasion: braking can't make it -> steer around if a side is clear
-  if st.evasion and ttc and ttc < 1.6 and need > 7 and speed > 8 and t > self.evadeCooldown and ctx.lane then
+  if st.evasion and ttc and ttc < 1.6 and need > 7 and out.belief >= Brain.WARN and speed > 8 and t > self.evadeCooldown and ctx.lane then
     local L = ctx.lane
     local best
     for _, side in ipairs({ 1, -1 }) do
@@ -195,23 +202,19 @@ function Safety:tick(t, dt, snap, ctx)
   end
 
   -- Automatic Emergency Braking
-  -- phantom braking guards: the threat must persist for 3 ticks (0.15 s), and a parked car
-  -- beside the lane (well off our heading, not moving) isn't a threat
-  local threat = ttc and speed > 1 and (ttc < 0.8 or (ttc < 1.3 and need > 4))
-  if threat and who and abs(who.v or 0) < 0.6 then
-    local rx, ry = who.x - ego.x, who.y - ego.y
-    local lat = abs(-rx * ego.hy + ry * ego.hx)
-    -- only a graze of the path's edge (< 0.3 m of body overlap), driving straight: not a threat
-    if lat > ((ego.wid or 1.9) + (who.w or 1.9)) * 0.5 - 0.3 and abs(ego.yawRate or 0) < 0.15 then threat = false end
-  end
-  -- a wall/pole dead ahead (or behind, in reverse) that we can't stop for: brake (needs to persist too)
-  if not threat and ctx.rays and speed > 0.8 then
+  -- the brain weighs the prediction against what it sees (in our lane now? oncoming in its own
+  -- lane? parked beside the road? another level?) and brakes only when it believes it
+  local threat = false
+  if ttc and speed > 1 and (ttc < 0.8 or (ttc < 1.3 and need > 4)) and (out.belief or 0) >= Brain.BRAKE then threat = true end
+  -- a wall/pole dead ahead (or behind, in reverse) we can't stop for (curbs/trees/rails beside a bend are not)
+  local carThreat = threat
+  if not carThreat and ctx.rays and speed > 0.8 then
     local d = (ego.v or 0) >= 0 and ctx.rays.front or ctx.rays.rear
-    -- only a wall/pole we're really about to hit, driving roughly straight (curbs, trees and rails beside a bend are not)
     if d and abs(ego.yawRate or 0) < 0.2 and d < speed * speed / 18 + 0.4 + speed * 0.08 then threat = true; ttc = ttc or d / speed end
   end
-  self.threatTicks = threat and ((self.threatTicks or 0) + 1) or 0
-  if st.aeb and not out.evade and threat and self.threatTicks >= 3 then
+  -- a wall must persist 3 ticks; a car is already filtered by the brain's belief
+  self.threatTicks = (threat and not carThreat) and ((self.threatTicks or 0) + 1) or 0
+  if st.aeb and not out.evade and (carThreat or self.threatTicks >= 3) then
     if self.aebUntil < t then out.events[#out.events + 1] = { kind = 'aeb', ttc = ttc } end
     self.aebUntil = t + 0.6
   end
