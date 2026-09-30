@@ -196,7 +196,7 @@ local Sfl = require('teslaBridge/steerfeel')
 local steeringWeight = 'standard' -- Tesla's Steering Weight: light | standard | heavy
 
 local ffb = {
-  enabled = true, strength = 1.5, roadFeel = 0, -- 1.5: what the raw path needs to follow FSD (measured) -- softer hold and no road buzz by default: the wheel shook and fought overtaking
+  enabled = true, strength = 1.2, roadFeel = 0, -- 1.5: what the raw path needs to follow FSD (measured) -- softer hold and no road buzz by default: the wheel shook and fought overtaking
   rangeDeg = 900, -- the physical wheel's rotation (G29: 900); the G29 turns 1:1 with the car's wheel
   persist = false, -- after FSD keep our own steering feel instead of handing the wheel back (game FFB stayed dead)
   restoreUntil = nil, -- after release: keep checking that the game has the wheel back
@@ -1274,8 +1274,10 @@ local function checkTakeover(dt)
         dv = abs(a1) < abs(b1) and a1 or b1
       end
     end
-    if dv and abs(dv) > 0.035 and abs(dv) < Wh.takeoverLimit(takeoverLevel) then
-      steerBias = (dv > 0 and 1 or -1) * math.min(0.03, (abs(dv) - 0.035) * 0.8)
+    -- a slight nudge steers the car about as far as the wheel moved (raw 1.0 = 450 deg of wheel = 1.13 of steering input),
+    -- from a small dead zone up to the takeover limit; beyond that it is a takeover
+    if dv and abs(dv) > 0.02 and abs(dv) < Wh.takeoverLimit(takeoverLevel) then
+      steerBias = (dv > 0 and 1 or -1) * math.min(0.08, (abs(dv) - 0.02) * 0.9)
     end
   end
   if ffb.helper and ap.mode ~= 'tacc' then
