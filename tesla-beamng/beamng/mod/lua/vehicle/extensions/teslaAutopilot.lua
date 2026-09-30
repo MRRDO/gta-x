@@ -409,11 +409,13 @@ local function ffbTake()
   ffb.spring:reset()
   -- hydros' external force pushes the axis the other way round from a raw send (measured: -force ran the wheel to the +lock)
   if ffb.ext and not ffb.spring.confirmed and (ffb.spring.flips or 0) == 0 then ffb.spring.sign = -1 end
+  ffb.spring.gripErr = nil
   if ffb.ext then
-    -- the force goes through the game's own smoothing (~0.1 s of lag): a soft, well damped spring so the wheel follows
-    -- FSD without the shake a stiff one gives with that delay
-    ffb.spring.stiffness, ffb.spring.damping, ffb.spring.integMax = 0.30, 0.34, 0.1
-    ffb.spring.gripErr = Wh.takeoverLimit(takeoverLevel)
+    -- v1 dynamics (measured good on the car: the wheel followed FSD): stiffness 0.09, damping 0.28, integrator 0.3.
+    -- Softer or less damped versions made the shake bigger. Only a touch of velocity smoothing and a small dead zone.
+    ffb.spring.stiffness, ffb.spring.damping, ffb.spring.integMax = 0.09, 0.28, 0.3
+    ffb.spring.velTau, ffb.spring.deadband, ffb.spring.slew = 0.05, 0.006, 0.03
+    ffb.spring.gripErr = nil
   end
   ffb.lastForce = nil
   ffb.status = ffb.helper and 'helper' or 'active'
@@ -457,7 +459,9 @@ local function ffbRelease(handBack)
   ffb.force, ffb.grip = 0, false
   if ffb.ext then
     -- nothing was taken from the game: give its self-centring back and stop pushing
-    if ffb.savedPSC ~= nil then hydros.wheelPowerSteeringCoef = ffb.savedPSC; ffb.savedPSC = nil end
+    hydros.wheelPowerSteeringCoef = ffb.savedPSC or 1
+    ffb.savedPSC = nil
+    pcall(hydros.setExternalForce, 0)
     ffb.status = 'available'
     return
   end
@@ -570,6 +574,18 @@ local function ffbUpdate(dt, targetInput)
   local due = now - ffb.lastSendT >= ffb.minInterval
   if (due and (ffb.lastForce == nil or abs(f - ffb.lastForce) > ffb.fcap / 400)) or (f == 0 and ffb.lastForce ~= 0) then ffbSend(f) end
   ffb.force, ffb.target, ffb.pos, ffb.grip = f, target, pos, grip
+  -- diagnostics: how much and how fast the wheel jitters (high-pass of its position)
+  do
+    ffb.jLP = (ffb.jLP or pos) + (pos - (ffb.jLP or pos)) * math.min(1, dt / 0.25)
+    local hp = pos - ffb.jLP
+    ffb.jRms = (ffb.jRms or 0) + (hp * hp - (ffb.jRms or 0)) * math.min(1, dt / 1.0)
+    if ffb.jPrev and (hp > 0) ~= (ffb.jPrev > 0) and math.abs(hp) + math.abs(ffb.jPrev) > 0.004 then ffb.jCross = (ffb.jCross or 0) + 1 end
+    ffb.jPrev = hp
+    ffb.jT = (ffb.jT or 0) + dt
+    if ffb.jT >= 1 then ffb.jHz, ffb.jCross, ffb.jT = (ffb.jCross or 0) / 2, 0, 0 end
+    ffb.jN = (ffb.jN or 0) + 1
+    ffb.jFps = 1 / math.max(dt, 1e-4)
+  end
   ffb.posStart = ffb.posStart or pos
   if math.abs(pos - ffb.posStart) > 0.02 then ffb.everMoved = true end
   -- the wheel never moves although we push at length: the game isn't passing our force to the device
@@ -586,6 +602,13 @@ local function ffbUpdate(dt, targetInput)
       ffb.posStart, ffb.everMoved = nil, false
       ffbGiveBack()
       ffb.lastForce = nil
+      if ffb.savedPSC == nil then ffb.savedPSC = hydros.wheelPowerSteeringCoef end
+      hydros.wheelPowerSteeringCoef = 0
+      ffb.spring:reset()
+      if not ffb.spring.confirmed and (ffb.spring.flips or 0) == 0 then ffb.spring.sign = -1 end
+      ffb.spring.stiffness, ffb.spring.damping, ffb.spring.integMax = 0.09, 0.28, 0.3
+      ffb.spring.velTau, ffb.spring.deadband, ffb.spring.slew = 0.05, 0.006, 0.03
+      ffb.spring.gripErr = nil
       geEvent('notice', { detail = 'wheel ignores raw force feedback in this car: using the game force feedback plus our torque (hydros external force)' })
     elseif ffb.stuckT > 2.5 and not ffb.dead then
       -- keep pushing (the wheel may be turning where we can't see it) but never read "not moving" as a grab
@@ -833,6 +856,7 @@ local function buildState(s)
       calibrated = ffb.spring.confirmed,
       -- the device the game itself drives (>= 0: normal game force feedback is on)
       gameId = (not ffb.held) and hydrosId() or nil, rangeDeg = ffb.rangeDeg,
+      jitter = ffb.held and { amp = math.sqrt(ffb.jRms or 0), hz = ffb.jHz, fps = ffb.jFps, sign = ffb.spring.sign, flips = ffb.spring.flips, soft = ffb.spring.soft } or nil,
     },
   }
 end
@@ -883,6 +907,10 @@ local function disengage(reason, detail)
   if savedGearboxMode and mc and mc.setGearboxMode then pcall(mc.setGearboxMode, savedGearboxMode) end
   savedGearboxMode = nil
   lastDisengage = { reason = reason, time = now }
+  if reason == 'brake' and mode ~= 'tacc' and (detail == nil or detail == '') then
+    -- a tap on the brake: if it is over quickly and light, FSD comes back by itself
+    watch = { kind = 'brake', t = now, mode = mode, profile = profile, speed = electrics.values.wheelspeed or 0, peakB = 0, lastB = now }
+  end
   if reason == 'steer' and mode ~= 'tacc' then
     -- watch the next moments: an accidental bump at speed gets FSD back on
     local speed = electrics.values.wheelspeed or 0
@@ -1194,15 +1222,16 @@ local function checkTakeover(dt)
     local dv
     if ap.mode ~= 'tacc' then
       if ffb.held then
-        -- while the wheel is still moving to follow FSD the gap is lag, not a hand
-        if abs(ffb.spring.vel or 0) < 0.25 then dv = (ffb.pos or 0) - (ffb.target or 0) end
+        -- the slow copy of the error (jitter of the wheel is not a hand); while the wheel is still moving to follow FSD
+        -- the gap is lag, not a hand
+        if abs(ffb.spring.vel or 0) < 0.25 and ffb.spring.eLP then dv = -ffb.spring.eLP end
       elseif st and lastOut then
         local a1, b1 = st - baseline.steering, st - wheelTarget(lastOut.steer or 0)
         dv = abs(a1) < abs(b1) and a1 or b1
       end
     end
-    if dv and abs(dv) > 0.012 and abs(dv) < Wh.takeoverLimit(takeoverLevel) then
-      steerBias = (dv > 0 and 1 or -1) * (abs(dv) - 0.012) * 0.8
+    if dv and abs(dv) > 0.035 and abs(dv) < Wh.takeoverLimit(takeoverLevel) then
+      steerBias = (dv > 0 and 1 or -1) * math.min(0.03, (abs(dv) - 0.035) * 0.8)
     end
   end
   if ffb.helper and ap.mode ~= 'tacc' then
@@ -1254,6 +1283,19 @@ local function checkAccidental()
   if not watch then return end
   local age = now - watch.t
   if age > 2.5 then watch = nil; return end
+  if watch.kind == 'brake' then
+    local b = math.max(rawValue('brake') or 0, tonumber(electrics.values.brake_input) or 0)
+    watch.peakB = math.max(watch.peakB, b)
+    if b > 0.04 then watch.lastB = now end
+    if (rawValue('throttle') or 0) > 0.15 or watch.peakB > 0.45 or now - watch.t > 1.2 and b > 0.04 then watch = nil; return end
+    -- let go for a moment after a short, light press -> it was an accident
+    if now - watch.lastB > 0.3 and watch.lastB - watch.t < 0.9 and watch.speed > 4 and now - lastReengage > 5 then
+      lastReengage = now
+      geEvent('reengage', { mode = watch.mode, profile = watch.profile })
+      watch = nil
+    end
+    return
+  end
   local br, th = rawValue('brake') or 0, rawValue('throttle') or 0
   if (raw.brake and raw.brake.t > watch.t and br > 0.1) or (raw.throttle and raw.throttle.t > watch.t and th > 0.15) then watch = nil; return end
   local st = rawValue('steering') or 0
@@ -1396,6 +1438,28 @@ local function driveFeel(dt, s)
   inject('brake', br)
 end
 
+-- Plaid in the app = Sport here; and if the car has its own drive modes (BeamNG's driveModes controller), Sport too
+local sportPrev = nil
+local function carSportMode(on)
+  local dm = controller and controller.getController and controller.getController('driveModes')
+  if not dm or not dm.setDriveMode then return false end
+  if on then
+    local cur = dm.getCurrentDriveModeKey and dm.getCurrentDriveModeKey()
+    for _, k in ipairs({ 'sport', 'Sport', 'sportPlus', 'dynamic', 'performance' }) do
+      if cur == k then return true end
+      if dm.getDriveModeData and dm.getDriveModeData(k) then
+        sportPrev = sportPrev or cur
+        dm.setDriveMode(k)
+        return true
+      end
+    end
+  elseif sportPrev then
+    dm.setDriveMode(sportPrev)
+    sportPrev = nil
+  end
+  return false
+end
+
 handlers.drive = function(cmd)
   if cmd.stopping == 'roll' or cmd.stopping == 'creep' or cmd.stopping == 'hold' then feel.stopping = cmd.stopping end
   if cmd.regenLevel == 'low' or cmd.regenLevel == 'standard' then feel.regenLevel = cmd.regenLevel end
@@ -1408,6 +1472,7 @@ handlers.drive = function(cmd)
     end
   end
   if cmd.accel == 'chill' or cmd.accel == 'standard' or cmd.accel == 'sport' then feel.accel = cmd.accel end
+  if cmd.accel == 'chill' or cmd.accel == 'standard' or cmd.accel == 'sport' then pcall(carSportMode, cmd.accel == 'sport') end
 end
 
 handlers.handover = function(cmd) ap.handover = cmd.on and true or false end
@@ -1479,7 +1544,7 @@ local function updateGFX(dt)
           ffb.target = wheelTarget(out.steer)
           ffb.pos = rawValue('steering') or ffb.pos
         end
-        if ffbUpdate(dt, out.steer) then disengage('steer', 'wheel grabbed') end
+        if ffbUpdate(dt, out.steer) then disengage('steer', string.format('wheel grabbed pos %.3f tgt %.3f eLP %.3f vel %.2f rms %.3f', ffb.pos or 0, ffb.target or 0, ffb.spring.eLP or 0, ffb.spring.vel or 0, math.sqrt(ffb.jRms or 0))) end
       end
       detectNudge()
     end
@@ -1643,7 +1708,8 @@ function M.diag()
     mainController = mainController() and keysOf(mainController(), 80) or 'none',
     couplers = cps,
     hydros = hydros and keysOf(hydros, 80) or 'none',
-    ffbEnabled = hydros and hydros.enableFFB,
+    ffbEnabled = hydros and hydros.enableFFB, psc = hydros and hydros.wheelPowerSteeringCoef, ffbExt = ffb.ext, ffbHeld = ffb.held, pscSaved = ffb.savedPSC,
+    
     ev = isEV(),
     ownRegen = carHasOwnRegen(),
     wiperKeys = (function() local o = {} for k in pairs(electrics.values or {}) do if type(k) == 'string' and k:lower():find('wiper') then o[#o + 1] = k end end table.sort(o) return o end)(),

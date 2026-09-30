@@ -62,7 +62,7 @@ function M.new(opts)
 end
 
 function Spring:reset()
-  self.ramp, self.vel, self.lastPos = 0, 0, nil
+  self.ramp, self.vel, self.lastPos, self.eLP = 0, 0, nil, nil
   self.tf, self.fPrev, self.integ = nil, 0, 0
   self.wrongT, self.gripT, self.goodT = 0, 0, 0
 end
@@ -74,7 +74,7 @@ function Spring:update(dt, target, pos, fcap, strength)
   local prevSpeed = abs(self.vel)
   if self.lastPos then
     local v = (pos - self.lastPos) / dt
-    local a = clamp(dt / 0.03, 0, 1)
+    local a = clamp(dt / (self.velTau or 0.03), 0, 1)
     self.vel = self.vel + (v - self.vel) * a
   end
   self.lastPos = pos
@@ -86,10 +86,12 @@ function Spring:update(dt, target, pos, fcap, strength)
   local want = self.tf + (target - self.tf) * clamp(dt / 0.06, 0, 1)
   self.tf = self.tf + clamp(want - self.tf, -6 * dt, 6 * dt)
   local e = self.tf - pos
+  -- a slow copy of the error: the grab check and the driver-bias use it, so wheel jitter is never mistaken for a hand
+  self.eLP = (self.eLP or e) + (e - (self.eLP or e)) * clamp(dt / 0.15, 0, 1)
   local kp = cap / self.stiffness
   -- a hair of deadband so the motor doesn't buzz around the target
   local eUse = e
-  local DB = 0.004
+  local DB = self.deadband or 0.004
   if abs(eUse) < DB then eUse = 0 else eUse = eUse - (eUse > 0 and DB or -DB) end
   -- friction: a small steady error with the wheel not moving builds extra push (wheels
   -- with a stiff rim otherwise stop a few degrees short)
@@ -117,7 +119,7 @@ function Spring:update(dt, target, pos, fcap, strength)
     if self.softUntil <= 0 then self.soft, self.softUntil = 1, nil end
   end
   -- slew limit: full swing in ~0.15 s, not in one frame (that's the shake)
-  local maxStep = cap * dt / 0.03
+  local maxStep = cap * dt / (self.slew or 0.03)
   f = clamp(f, self.fPrev - maxStep, self.fPrev + maxStep)
   self.fPrev = f
   local converging = e * self.vel > 0 -- |target - pos| shrinking
@@ -153,7 +155,7 @@ function Spring:update(dt, target, pos, fcap, strength)
   if self.gripErr then
     -- soft spring (the hydros path): its force stays small for small errors, so judge the driver's hand by how far the
     -- wheel is pulled from where FSD holds it, unless it is just lagging behind a quick turn
-    held = abs(e) > self.gripErr and not (converging and abs(self.vel) > 0.1)
+    held = abs(self.eLP or e) > self.gripErr and not (converging and abs(self.vel) > 0.1)
     resisting = false
   end
   if self.ramp >= 1 and (held or resisting) then
