@@ -558,7 +558,6 @@ function Planner:finishUnresponsive(out)
   local kind = self.unresponsive.kind
   self.unresponsive = nil
   self.chosenSpot = nil
-  out.commands[#out.commands + 1] = { t = 'signal', dir = 'hazard' }
   for _, ev in ipairs(self.nag:strike()) do self:emit(ev.kind, ev) end
   self:emit('unresponsive', { action = kind == 'park' and 'parked' or 'pulledOver' })
   self:disengage('attention', 'driver did not respond')
@@ -1334,7 +1333,7 @@ function Planner:tick(snap)
     -- unresponsive driver: hazards and alarm (the app beeps on the alert), slow down, then
     --  setting unresponsive = 'park' and a free spot within 500 m: drive there, park, P
     --  otherwise (or 'pullOver'): pull over to the curb a little ahead, stop, P
-    hazard = true
+    -- (no hazard lights here: they are for a crash only)
     if not self.unresponsive then
       self.unresponsive = { t = t, saved = { dest = self.dest, stops = self.stops, arrival = self.arrival } }
       local kind = 'pullOver'

@@ -1061,7 +1061,8 @@ function M.onVehicleState(vid, json)
       tripScore:update(dtS, { v = st.speed or 0, yawRate = yawState.rate, gap = drive and drive.gapT,
         fsd = st.autopilot and st.autopilot.engaged and st.autopilot.mode == 'fsd' })
     end
-    if tripScore.hazard ~= tripHazardSent and veh then
+    -- hazards come on only in a crash (see the collision check above), not for hard braking
+    if false and tripScore.hazard ~= tripHazardSent and veh then
       tripHazardSent = tripScore.hazard
       toVehicle(veh, 'command', tripScore.hazard and { t = 'signal', dir = 'hazard' } or { t = 'signal' })
       if tripScore.hazard then relayEvent({ kind = 'notice', detail = 'hazards on: emergency braking' }) end

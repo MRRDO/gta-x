@@ -32,7 +32,8 @@ function M.roadTexture(hp, v, t, gain)
   return clamp(tex * gain, -0.35 * gain, 0.35 * gain) * ((hp or 0) < 0 and -1 or 1)
 end
 
-M.TAKEOVER = { light = 0.09, normal = 0.14, firm = 0.25 }
+-- raw axis error (of a 900 deg wheel) that takes over from FSD: 0.07 is about 30 degrees. Sensitive on purpose.
+M.TAKEOVER = { light = 0.05, normal = 0.07, firm = 0.14 }
 function M.takeoverLimit(level) return M.TAKEOVER[level] or M.TAKEOVER.normal end
 
 -- Steering the driver adds on top of FSD's while they lean on the wheel lightly.
@@ -93,7 +94,7 @@ function Spring:update(dt, target, pos, fcap, strength)
   -- friction: a small steady error with the wheel not moving builds extra push (wheels
   -- with a stiff rim otherwise stop a few degrees short)
   if abs(e) > 0.01 and abs(self.vel) < 0.05 then
-    self.integ = clamp(self.integ + e * dt * 4, -0.3, 0.3)
+    self.integ = clamp(self.integ + e * dt * 4, -(self.integMax or 0.3), self.integMax or 0.3)
   else
     self.integ = self.integ * max(0, 1 - dt * 4)
   end
@@ -154,7 +155,7 @@ function Spring:update(dt, target, pos, fcap, strength)
   else
     self.gripT = max(0, self.gripT - dt * 2)
   end
-  return self.sign * f, self.gripT > (resisting and not held and 0.45 or 0.35), e
+  return self.sign * f, self.gripT > (resisting and not held and 0.25 or 0.15), e
 end
 
 M.Spring = Spring

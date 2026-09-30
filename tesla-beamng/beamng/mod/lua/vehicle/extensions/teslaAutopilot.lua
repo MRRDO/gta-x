@@ -408,7 +408,12 @@ local function ffbTake()
   ffb.held = true
   ffb.spring:reset()
   -- hydros' external force pushes the axis the other way round from a raw send (measured: -force ran the wheel to the +lock)
-  if ffb.ext and not ffb.extSignSet then ffb.extSignSet = true; ffb.spring.sign = -1 end
+  if ffb.ext and not ffb.spring.confirmed and (ffb.spring.flips or 0) == 0 then ffb.spring.sign = -1 end
+  if ffb.ext then
+    -- the force goes through the game's own smoothing (~0.1 s of lag): a soft, well damped spring so the wheel follows
+    -- FSD without the shake a stiff one gives with that delay
+    ffb.spring.stiffness, ffb.spring.damping, ffb.spring.integMax = 0.30, 0.34, 0.1
+  end
   ffb.lastForce = nil
   ffb.status = ffb.helper and 'helper' or 'active'
   return true
@@ -1180,13 +1185,13 @@ local function checkTakeover(dt)
     if not takeover.brakeArmed then br = 0 end
   end
   local steerDev = st and abs(st - baseline.steering) or 0
-  local devLimit, holdT = Wh.takeoverLimit(takeoverLevel), 0.15
+  local devLimit, holdT = Wh.takeoverLimit(takeoverLevel), 0.08
   steerBias = 0
   if ffb.helper and ap.mode ~= 'tacc' then
     -- the external helper turns the wheel to FSD's angle: a takeover is the wheel
     -- being well away from that (it lags a little in quick turns, hence the margin)
     steerDev = st and abs(st - wheelTarget(lastOut and lastOut.steer or 0)) or 0
-    devLimit, holdT = devLimit + 0.05, 0.3
+    devLimit, holdT = devLimit + 0.04, 0.15
   elseif ffb.held or ap.mode == 'tacc' then
     -- the spring moves the wheel; grips are caught by it. A light push shows up as the wheel's
     -- distance from where the spring holds it
@@ -1200,10 +1205,10 @@ local function checkTakeover(dt)
   -- no steering bias from the driver's hands: FSD's steering is FSD's alone (a hand on the
   -- wheel only counts as "hands on" for the nag, or a takeover when strong)
   takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
-  takeover.brake = (br > 0.1) and takeover.brake + dt or 0
+  takeover.brake = (br > 0.04) and takeover.brake + dt or 0
   takeover.throttle = 0 -- the accelerator never disengages (like a Tesla): it speeds you up
   if takeover.steering > holdT then disengage('steer', string.format('wheel %.3f start %.3f fsd %.3f limit %.3f held %s', st or 0, baseline.steering, wheelTarget(lastOut and lastOut.steer or 0), devLimit, tostring(ffb.held))); return true end
-  if takeover.brake > 0.15 then disengage('brake'); return true end
+  if takeover.brake > 0.05 then disengage('brake'); return true end
   if override.active and override.value < -0.1 then disengage('brake', 'app brake'); return true end
   return false
 end
