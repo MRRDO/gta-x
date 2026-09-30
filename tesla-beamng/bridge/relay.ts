@@ -220,7 +220,8 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
       // Logitech G29 / G920 / G923 in PC mode: the red dial is buttons 21 (clockwise), 22 (counter-clockwise) and 23 (press).
       // Map them on first sight so the dial works without going through Settings (relearn there if yours differ).
       if (/g29|g920|g923|driving force/i.test(companion.name) && companion.buttons >= 24) {
-        const defaults: [ActionName, number][] = [['dialUp', 21], ['dialDown', 22], ['dialClick', 23]]
+        // the paddles are the turn signals (left paddle = button 5, right = button 4): with FSD they ask for that turn
+        const defaults: [ActionName, number][] = [['dialUp', 21], ['dialDown', 22], ['dialClick', 23], ['laneLeft', 5], ['laneRight', 4]]
         for (const [a, b] of defaults) {
           const taken = (Object.keys(buttonMap) as ActionName[]).some((k) => buttonMap[k] === b)
           if (buttonMap[a] === undefined && !taken) assignButton(a, b)

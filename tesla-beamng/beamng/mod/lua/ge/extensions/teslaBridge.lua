@@ -1623,7 +1623,11 @@ runAction = function(name)
   elseif name == 'voiceNote' then M.voiceNote()
   elseif name == 'nudge' then M.nudge()
   elseif name == 'laneLeft' or name == 'laneRight' then
-    handleCommand({ t = 'signal', dir = name == 'laneLeft' and 'left' or 'right' })
+    local dir = name == 'laneLeft' and 'left' or 'right'
+    -- the paddles: with FSD / Autosteer it asks for that turn / lane change; otherwise it is a normal stalk (press again = off)
+    local fsdOn = planner and (planner.mode == 'fsd' or planner.mode == 'autosteer')
+    if not fsdOn and lastVehSt and lastVehSt.signal == dir then dir = nil end
+    handleCommand({ t = 'signal', dir = dir })
   elseif name == 'profileNext' then stepProfile(1)
   elseif name == 'profilePrev' then stepProfile(-1)
   elseif name == 'speedUp' or name == 'speedDown' then
