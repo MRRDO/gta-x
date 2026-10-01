@@ -60,7 +60,12 @@ async function ensureGame() {
       try { running = /BeamNG/i.test(execSync('tasklist /FI "IMAGENAME eq BeamNG.drive.x64.exe" /NH').toString()) } catch {}
       if (!running) {
         log('game is not running: starting it')
-        spawn(GAME, ['-gfx', 'dx11', '-level', 'east_coast_usa/main.level.json'], { detached: true, stdio: 'ignore' }).unref()
+        // lightweight: small window, below-normal priority so it never competes with what you are doing
+        const args = ['-gfx', process.env.PRACTICE_GFX || 'dx11', '-level', 'east_coast_usa/main.level.json']
+        if (!process.env.PRACTICE_FULL) args.push('-windowed', '-resx', '640', '-resy', '360')
+        const g = spawn(GAME, args, { detached: true, stdio: 'ignore' })
+        g.unref()
+        setTimeout(lowPriority, 20000); setTimeout(lowPriority, 60000)
       }
       await sleep(15000)
       continue
@@ -68,6 +73,11 @@ async function ensureGame() {
     if (st && st.pos) return true
     await sleep(1000)
   }
+}
+
+function lowPriority() {
+  const cmd = 'Get-Process BeamNG* | ForEach-Object { $_.PriorityClass = "BelowNormal" }'
+  try { execSync('powershell -NoProfile -Command "' + cmd.replace(/"/g, '\\"') + '"', { stdio: 'ignore' }) } catch {}
 }
 
 async function loadMap() {
@@ -102,12 +112,12 @@ async function waitEnd(timeout) {
   return (Date.now() - t0) / 1000
 }
 
-async function parkEpisode(tune) {
+async function parkEpisode(tune, kindWanted) {
   const sp = pick(spots.filter((s) => s.free))
   const a = sp.dir ? [sp.dir[0], sp.dir[1]] : [1, 0]
   const n = Math.hypot(a[0], a[1]) || 1
   a[0] /= n; a[1] /= n
-  const p = [-a[1], a[0]], side = pick([1, -1]), kind = pick(['near', 'aisle', 'far'])
+  const p = [-a[1], a[0]], side = pick([1, -1]), kind = kindWanted || pick(['near', 'aisle', 'far'])
   const out = kind === 'near' ? rnd(3.5, 6) : kind === 'aisle' ? rnd(7, 11) : rnd(12, 16)
   const along = rnd(-8, 8), ang = rnd(0, Math.PI * 2)
   const pos = [sp.pos[0] + a[0] * out * side + p[0] * along, sp.pos[1] + a[1] * out * side + p[1] * along, sp.pos[2] - 0.4]
@@ -126,26 +136,43 @@ async function parkEpisode(tune) {
   const arrived = evs.some((e) => e.kind === 'arrived')
   const errs = evs.filter((e) => e.kind === 'error').map((e) => String(e.detail || '').slice(0, 80))
   const score = arrived ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - secs / 6, 5, 100) : 0
-  return { type: 'park', spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
+  return { type: 'park', cat: 'park:' + kind, spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
 }
 
-async function p2pEpisode() {
+// --- scenarios -----------------------------------------------------------------------------------------------------------
+// Each scenario has a category; the runner keeps a running score per category and picks weak ones more often.
+async function p2pEpisode(opts = {}) {
   const here = st.pos
   const d = rnd(150, 400)
   const c = (map.nodes || []).filter((nd) => Math.abs(Math.hypot(nd.pos[0] - here[0], nd.pos[1] - here[1]) - d) < 40 && nd.radius > 3.5)
   if (!c.length) return null
-  const to = pick(c).pos, arrival = pick(['Street', 'Parking Lot'])
-  await reset()
+  const to = pick(c).pos
+  const arrival = opts.arrival || pick(['Street', 'Parking Lot', 'Curbside', 'Driveway'])
+  const profile = opts.profile || pick(['chill', 'standard', 'standard', 'hurry'])
+  if (!opts.fromPark) await reset()
   evs = []
-  send({ t: 'gear', gear: 'D' }); await settle(0.5)
+  send({ t: 'gear', gear: opts.fromPark ? 'P' : 'D' }); await settle(0.5)
   send({ t: 'navigate', to, arrival }); await settle(0.5)
-  send({ t: 'autopilot', mode: 'fsd' })
-  const secs = await waitEnd(180000)
+  send({ t: 'autopilot', mode: 'fsd', profile, fromPark: !!opts.fromPark })
+  const secs = await waitEnd(200000)
   const arrived = evs.some((e) => e.kind === 'arrived')
   const dist = Math.hypot(st.pos[0] - to[0], st.pos[1] - to[1])
-  const errs = evs.filter((e) => e.kind === 'error' || e.kind === 'disengage').map((e) => `${e.kind}:${String(e.detail || e.reason || '').slice(0, 60)}`).slice(0, 4)
-  return { type: 'p2p', arrival, dist0: Math.round(d), arrived, distEnd: +dist.toFixed(0), secs: +secs.toFixed(1), score: arrived ? 100 : 0, errs }
+  const bad = evs.filter((e) => e.kind === 'error' || (e.kind === 'disengage' && e.reason !== 'arrived'))
+  const errs = bad.map((e) => `${e.kind}:${String(e.detail || e.reason || '').slice(0, 60)}`).slice(0, 4)
+  const score = arrived ? clamp(100 - 15 * bad.length - secs / 20, 20, 100) : 0
+  return { type: opts.fromPark ? 'leave' : 'p2p', cat: `${opts.fromPark ? 'leave' : 'p2p'}:${arrival}`, arrival, profile, dist0: Math.round(d), arrived, distEnd: +dist.toFixed(0), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
 }
+
+const CATS = ['park:near', 'park:aisle', 'park:far', 'p2p:Street', 'p2p:Parking Lot', 'p2p:Curbside', 'p2p:Driveway', 'leave:Street']
+state.cats = state.cats || {}
+function weakCat() { // scores 0-100 -> weight = how much room is left to learn; untried categories first
+  const w = CATS.map((c) => { const x = state.cats[c]; return x && x.n >= 3 ? 12 + (100 - x.avg) : 120 })
+  const tot = w.reduce((a, b) => a + b, 0)
+  let r = Math.random() * tot
+  for (let i = 0; i < CATS.length; i++) { r -= w[i]; if (r <= 0) return CATS[i] }
+  return CATS[0]
+}
+function note(cat, score) { const x = state.cats[cat] || { n: 0, avg: 50 }; x.n++; x.avg = +(x.avg + (score - x.avg) * (x.n < 10 ? 1 / x.n : 0.1)).toFixed(1); state.cats[cat] = x }
 
 function jitter(b) { // one knob moved a little
   const t = { ...b }, k = pick(Object.keys(RANGE)), [lo, hi] = RANGE[k]
@@ -154,34 +181,45 @@ function jitter(b) { // one knob moved a little
 }
 const mean = (x) => x.reduce((s, v) => s + v, 0) / x.length
 
+// The knob search: a cycle is 8 parking episodes with the current best, then 8 with one knob changed (same kinds of starts);
+// the change is kept only when it scores clearly higher AND arrives at least as often. state.best is what the game uses.
+const cyc = { phase: 'base', cand: null, key: null, base: [], trial: [] }
+function cycleStep(r) {
+  const arr = (x) => x.filter((v) => v > 0).length / Math.max(1, x.length)
+  if (cyc.phase === 'base') {
+    cyc.base.push(r.score)
+    if (cyc.base.length >= 8) { [cyc.cand, cyc.key] = jitter(state.best); cyc.phase = 'trial'; cyc.trial = []; log('trying', cyc.key, '->', cyc.cand[cyc.key]) }
+  } else {
+    cyc.trial.push(r.score)
+    if (cyc.trial.length >= 8) {
+      const better = mean(cyc.trial) > mean(cyc.base) + 3 && arr(cyc.trial) >= arr(cyc.base)
+      log(`trial ${cyc.key}=${cyc.cand[cyc.key]}: ${mean(cyc.trial).toFixed(1)} vs ${mean(cyc.base).toFixed(1)} -> ${better ? 'KEPT' : 'dropped'}`)
+      if (better) { state.best = cyc.cand; state.bestScore = mean(cyc.trial); state.history = [...(state.history || []).slice(-50), { t: new Date().toISOString(), best: state.best, score: state.bestScore }] }
+      cyc.phase = 'base'; cyc.base = []; cyc.trial = []; cyc.cand = null
+    }
+  }
+}
+
 async function main() {
   process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); save(); process.exit(0) })
   log('practice runner: stop with Ctrl-C or by creating', STOP)
-  let cand = null, candKey = null, candScores = [], baseScores = []
   while (!existsSync(STOP)) {
     if (!(await ensureGame()) || !(await loadMap())) { await sleep(5000); continue }
     let r = null
     try {
-      if (state.episodes % 4 === 3) r = await p2pEpisode()
-      else {
-        const tune = cand || state.best
-        r = await parkEpisode(tune)
-        r.tune = tune; r.trial = cand ? candKey : null
-        ;(cand ? candScores : baseScores).push(r.score)
-        // 6 episodes for the current best, then 6 with one knob changed; the change is kept only when it scored better
-        if (cand && candScores.length >= 6) {
-          const ref = state.bestScore ?? mean(baseScores)
-          const better = mean(candScores) > ref + 2
-          log(`trial ${candKey}: ${mean(candScores).toFixed(1)} vs best ${ref.toFixed(1)} -> ${better ? 'kept' : 'dropped'}`)
-          if (better) { state.best = cand; state.bestScore = mean(candScores) }
-          cand = null; candScores = []; baseScores = []
-        } else if (!cand && baseScores.length >= 6) {
-          state.bestScore = mean(baseScores);
-          [cand, candKey] = jitter(state.best)
-          candScores = []
-          log('trying', candKey, '->', cand[candKey])
-        }
-      }
+      const cat = weakCat()
+      if (cat.startsWith('park')) {
+        const tune = cyc.phase === 'trial' ? cyc.cand : state.best
+        r = await parkEpisode(tune, cat.split(':')[1])
+        r.tune = tune; r.trial = cyc.phase === 'trial' ? cyc.key : null
+        cycleStep(r)
+      } else if (cat.startsWith('leave')) {
+        // park first (so the car sits in a spot), then drive away from it
+        const pr = await parkEpisode(state.best, 'near')
+        if (pr.arrived) r = await p2pEpisode({ fromPark: true, arrival: 'Street' })
+        if (r) { r.cat = 'leave:Street' } else r = { ...pr, cat: 'leave:Street', score: 0, errs: ['could not park to start'] }
+      } else r = await p2pEpisode({ arrival: cat.split(':')[1] })
+      if (r) note(r.cat || cat, r.score)
     } catch (e) { log('episode error', e.message); await sleep(3000) }
     if (r) {
       state.episodes++
