@@ -613,7 +613,7 @@ end
 -- end are not checked with rays (the back of a spot is a wall on purpose).
 function Planner:pathClear(pts, ego, cars, skipEnd, overhang)
   local cast = self.castRay
-  local wid = (ego.wid or 1.9) * 0.5 + 0.1
+  local wid = (ego.wid or 1.9) * 0.5 + 0.1 + ((self.apActive and tonumber(self.apActive.margin)) or 0)
   local over = overhang or 2.6
   local total = Mv.length(pts)
   local run = 0
@@ -677,8 +677,8 @@ end
 
 -- The learned parking policy (trained by the practice runner, tools/practice): a linear Gaussian policy over a few features of
 -- where the car is relative to the spot; its mean picks the autopark knobs. Must match features() in practice.mjs.
-local AP_RANGE = { rmin = { 5, 8 }, fwdSpeed = { 1.4, 3.2 }, revSpeed = { 0.9, 1.9 }, tail = { 3, 6 } }
-local AP_ORDER = { 'rmin', 'fwdSpeed', 'revSpeed', 'tail' }
+local AP_RANGE = { rmin = { 5, 8 }, fwdSpeed = { 1.4, 3.2 }, revSpeed = { 0.9, 1.9 }, tail = { 3, 6 }, margin = { 0, 0.8 } }
+local AP_ORDER = { 'rmin', 'fwdSpeed', 'revSpeed', 'tail', 'margin' }
 local function apFeatures(ego, sx, sy, ax, ay)
   local dx, dy = sx - ego.x, sy - ego.y
   local dist = math.max(0.5, sqrt(dx * dx + dy * dy))
@@ -1615,6 +1615,7 @@ function Planner:tick(snap)
     gapTime = gap, throttleMax = clamp(prof.throttle * ACCEL[self.settings.accelMode or 'standard'].th, 0.2, 1), decel = prof.decel,
     accel = (prof.accel or 1.9) * ACCEL[self.settings.accelMode or 'standard'].th,
     rise = prof.rise * ACCEL[self.settings.accelMode or 'standard'].rise, feel = self.settings.steerFeel,
+    driftTune = self.settings.driftTune,
     drift = (self.profile == 'furious' and self.settings.drift == true and not lead and not stopS and not hold and not hazard and not (st.weather and (st.weather.rain > 0.3 or st.weather.fog > 0.3)) and (self.mode == 'fsd')) or nil,
     maxSpeed = maxSpeed, wiggle = wiggle or nil,
     urgent = (self.urgentUntil and t < self.urgentUntil) or nil,

@@ -231,7 +231,7 @@ function Driver:update(dt, sense, opts)
       if si >= 12 then kAhead = math.max(kAhead, abs(P.curvatureAt(path.pts, i, 3))) end
     end
     self.drift = self.drift or Dr.new()
-    local r = self.drift:update(dt, { allowed = true, v = v, kAhead = kAhead, yawRate = sense.yawRate or 0, t = self.t })
+    local r = self.drift:update(dt, { allowed = true, v = v, kAhead = kAhead, yawRate = sense.yawRate or 0, t = self.t, tune = plan.driftTune })
     if r.pb > 0 then out.parkingbrake = 1 end
     if r.throttleMin > 0 then out.throttle, out.brake = math.max(out.throttle, r.throttleMin), 0 end
     out.driftPhase = r.phase

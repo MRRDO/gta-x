@@ -849,6 +849,7 @@ local function buildState(s)
       engaged = ap.engaged, mode = ap.mode, profile = ap.profile,
       accelOverride = (ap.engaged and ap.accelOverride) and true or false,
       targetSpeed = lastOut and lastOut.targetSpeed or 0,
+      drift = lastOut and lastOut.driftPhase or nil,
       lastDisengage = lastDisengage,
       steerSign = driver and driver.steerSign, steerGain = driver and driver.kmax[2],
     },

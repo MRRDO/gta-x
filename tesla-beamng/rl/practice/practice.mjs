@@ -26,14 +26,15 @@ const pick = (a) => a[Math.floor(Math.random() * a.length)]
 if (existsSync(STOP)) unlinkSync(STOP)
 
 // knobs the autopark reads (settings.apTune) and the range each may take
-const RANGE = { rmin: [5, 8], fwdSpeed: [1.4, 3.2], revSpeed: [0.9, 1.9], tail: [3, 6] }
+const RANGE = { rmin: [5, 8], fwdSpeed: [1.4, 3.2], revSpeed: [0.9, 1.9], tail: [3, 6], margin: [0, 0.8] }
+const DRANGE = { kick: [0.2, 0.7], slideMax: [1.2, 3.5], vMin: [7, 14], kMin: [0.025, 0.07], yawBail: [0.9, 1.6] }
 const state = { best: { rmin: 6, fwdSpeed: 2.2, revSpeed: 1.3, tail: 4.5 }, bestScore: null, episodes: 0, ...(existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {}) }
 state.tally = state.tally || { pass: 0, fail: 0 }
 state.retryWins = state.retryWins || 0
 state.fixes = state.fixes || []
 state.hard = state.hard || []
-const live = { now: 'starting', started: Date.now(), recent: [], lastState: Date.now() }
-const save = () => writeFileSync(STATE, JSON.stringify(state, null, 1))
+const live = { now: 'starting', started: Date.now(), recent: [], lastState: Date.now(), kicks: 0, slip: 0, prevDrift: null }
+const save = () => { try { state.driftBest = actOn(state.dpol, DRANGE, [1], false).tune } catch {} writeFileSync(STATE, JSON.stringify(state, null, 1)) }
 
 let ws = null, st = null, map = null, spots = null, evs = []
 const send = (o) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)) }
@@ -47,7 +48,17 @@ function connect() {
     w.on('message', (d) => {
       let m
       try { m = JSON.parse(d) } catch { return }
-      if (m.t === 'state') { st = m; live.lastState = Date.now() }
+      if (m.t === 'state') {
+        // drift bookkeeping: kicks (handbrake starts) and the biggest angle between where the car points and where it moves
+        const dr = m.autopilot?.drift
+        if (dr === 'kick' && live.prevDrift !== 'kick') live.kicks++
+        live.prevDrift = dr
+        if (st && m.speed > 4) {
+          const mv = [m.pos[0] - st.pos[0], m.pos[1] - st.pos[1]], ml = Math.hypot(mv[0], mv[1])
+          if (ml > 0.05) live.slip = Math.max(live.slip, Math.acos(clamp((mv[0] * m.dir[0] + mv[1] * m.dir[1]) / ml, -1, 1)) * 180 / Math.PI)
+        }
+        st = m; live.lastState = Date.now()
+      }
       else if (m.t === 'map') map = m
       else if (m.t === 'parkingSpots') spots = m.spots
       else if (m.t === 'event' && !/cameras/.test(m.detail || '')) {
@@ -100,7 +111,7 @@ async function reset() {
   send({ t: 'gear', gear: 'P' }); await settle(0.6)
 }
 async function teleport(p, h) {
-  send({ t: 'teleport', x: p[0], y: p[1], z: p[2], hx: h[0], hy: h[1] }); await settle(2.5)
+  send({ t: 'teleport', x: p[0], y: p[1], z: p[2], hx: h[0], hy: h[1], repair: true }); await settle(2.5)
   if (st.dir[0] * h[0] + st.dir[1] * h[1] < 0) {
     send({ t: 'teleport', x: p[0], y: p[1], z: p[2], hx: h[0], hy: h[1], flip: true }); await settle(2.5)
   }
@@ -113,6 +124,7 @@ async function waitEnd(timeout) {
   for (let i = 0; Date.now() - t0 < timeout && st; i++) {
     await sleep(500)
     if (existsSync(STOP)) break
+    if (live.dmg0 != null && (st.damage || 0) - live.dmg0 > 8000) { log('hard crash: ending this attempt'); break }
     if (i > 12 && !st.autopilot?.engaged && Math.abs(st.speed) < 0.3) break
     // never sit stuck: nothing has moved for 30 s -> give up on this attempt (the next one starts with a reset)
     if (last && Math.hypot(st.pos[0] - last[0], st.pos[1] - last[1]) > 0.5) { last = [...st.pos]; lastMove = Date.now() }
@@ -122,8 +134,25 @@ async function waitEnd(timeout) {
   return (Date.now() - t0) / 1000
 }
 
+// Go to a random parking lot somewhere on the map (hundreds of them) and return a free spot there.
+async function randomSpot() {
+  const lots = map.parking || []
+  for (let tries = 0; tries < 5 && lots.length; tries++) {
+    const lot = pick(lots)
+    await reset()
+    await teleport([lot.pos[0], lot.pos[1], lot.pos[2] + 0.4], lot.dir ? [lot.dir[0], lot.dir[1]] : [1, 0])
+    spots = null
+    send({ t: 'requestParkingSpots' })
+    for (let i = 0; i < 12 && !spots; i++) await sleep(250)
+    const free = (spots || []).filter((q) => q.free).sort((u, v) => Math.hypot(u.pos[0] - lot.pos[0], u.pos[1] - lot.pos[1]) - Math.hypot(v.pos[0] - lot.pos[0], v.pos[1] - lot.pos[1]))
+    if (free.length) return free[0]
+  }
+  return pick((spots || []).filter((q) => q.free))
+}
+
 async function parkEpisode(kindWanted, fixed, greedy) {
-  const sp = fixed ? fixed.sp : pick(spots.filter((s) => s.free))
+  const sp = fixed ? fixed.sp : await randomSpot()
+  if (!sp) throw new Error('no parking spot found')
   const a = sp.dir ? [sp.dir[0], sp.dir[1]] : [1, 0]
   const n = Math.hypot(a[0], a[1]) || 1
   a[0] /= n; a[1] /= n
@@ -136,6 +165,7 @@ async function parkEpisode(kindWanted, fixed, greedy) {
   await reset()
   evs = []
   await teleport(pos, h)
+  live.dmg0 = st.damage || 0
   const f0 = features(st.pos, [st.dir[0], st.dir[1]], sp, a)
   const x = act(f0, !greedy)
   send({ t: 'settings', apTune: x.tune, nags: false })
@@ -148,22 +178,36 @@ async function parkEpisode(kindWanted, fixed, greedy) {
   const hdeg = Math.acos(Math.min(1, Math.abs(hd[0] * a[0] + hd[1] * a[1]))) * 180 / Math.PI
   const arrived = evs.some((e) => e.kind === 'arrived')
   const errs = evs.filter((e) => e.kind === 'error').map((e) => String(e.detail || '').slice(0, 80))
-  const score = arrived ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - secs / 6, 5, 100) : 0
-  return { type: 'park', cat: 'park:' + kind, spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h }, tune: x.tune, act: x }
+  const hit = Math.max(0, (st.damage || 0) - live.dmg0)
+  if (hit > 600) errs.push(`hit something (damage +${Math.round(hit)})`)
+  // hitting a curb or a wall costs points; a hard hit fails the run outright
+  const score = arrived && hit < 6000 ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - secs / 6 - hit / 80, 5, 100) : 0
+  return { type: 'park', cat: 'park:' + kind, hit: Math.round(hit), spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h }, tune: x.tune, act: x }
 }
 
 // --- scenarios -----------------------------------------------------------------------------------------------------------
 // Each scenario has a category; the runner keeps a running score per category and picks weak ones more often.
 async function p2pEpisode(opts = {}) {
+  if (!opts.fromPark && !opts.here) {
+    // a random start somewhere on the map (a road node), not always the same place
+    const nodes = (map.nodes || []).filter((nd) => nd.radius > 3.5)
+    if (nodes.length) {
+      const nd = pick(nodes), ang = rnd(0, 6.28)
+      await reset()
+      await teleport([nd.pos[0], nd.pos[1], nd.pos[2] + 0.6], [Math.cos(ang), Math.sin(ang)])
+    }
+  } else if (!opts.fromPark) await reset()
   const here = st.pos
-  const d = rnd(150, 400)
+  const d = opts.drift ? rnd(250, 600) : rnd(150, 400)
   const c = (map.nodes || []).filter((nd) => Math.abs(Math.hypot(nd.pos[0] - here[0], nd.pos[1] - here[1]) - d) < 40 && nd.radius > 3.5)
   if (!c.length) return null
   const to = pick(c).pos
   const arrival = opts.arrival || pick(['Street', 'Parking Lot', 'Curbside', 'Driveway'])
   const profile = opts.profile || pick(['chill', 'standard', 'standard', 'hurry'])
-  if (!opts.fromPark) await reset()
   evs = []
+  live.dmg0 = st.damage || 0; live.kicks = 0; live.slip = 0
+  const dx = opts.drift ? actOn(state.dpol, DRANGE, [1], true) : null
+  send({ t: 'settings', ...(opts.drift ? { drift: true } : {}), ...(dx ? { driftTune: dx.tune } : {}), nags: false })
   send({ t: 'gear', gear: opts.fromPark ? 'P' : 'D' }); await settle(0.5)
   send({ t: 'navigate', to, arrival }); await settle(0.5)
   send({ t: 'autopilot', mode: 'fsd', profile, fromPark: !!opts.fromPark })
@@ -172,12 +216,22 @@ async function p2pEpisode(opts = {}) {
   const dist = Math.hypot(st.pos[0] - to[0], st.pos[1] - to[1])
   const bad = evs.filter((e) => e.kind === 'error' || (e.kind === 'disengage' && e.reason !== 'arrived'))
   const errs = bad.map((e) => `${e.kind}:${String(e.detail || e.reason || '').slice(0, 60)}`).slice(0, 4)
-  const score = arrived ? clamp(100 - 15 * bad.length - secs / 20, 20, 100) : 0
-  return { type: opts.fromPark ? 'leave' : 'p2p', cat: `${opts.fromPark ? 'leave' : 'p2p'}:${arrival}`, arrival, profile, dist0: Math.round(d), arrived, distEnd: +dist.toFixed(0), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
+  const hit = Math.max(0, (st.damage || 0) - live.dmg0)
+  if (hit > 600) errs.push(`hit something (damage +${Math.round(hit)})`)
+  let score = arrived && hit < 6000 ? clamp(100 - 15 * bad.length - secs / 20 - hit / 80, 20, 100) : 0
+  if (opts.drift) {
+    // Furious: arriving cleanly is worth 40; drifting (handbrake kicks with a real slide, 12-60 degrees) the other 60; spinning out is not drifting
+    const slid = live.slip >= 12 && live.slip <= 60
+    const dscore = arrived && hit < 1500 ? Math.min(60, live.kicks * 15 + (slid ? 15 : 0)) : 0
+    score = arrived && hit < 6000 ? clamp(40 - hit / 80 + dscore - 10 * bad.length, 0, 100) : 0
+    learn(dx, score)
+    errs.push(`kicks ${live.kicks}, slip ${Math.round(live.slip)} deg`)
+  }
+  return { type: opts.fromPark ? 'leave' : 'p2p', hit: Math.round(hit), cat: opts.drift ? 'furious:drift' : `${opts.fromPark ? 'leave' : 'p2p'}:${arrival}`, arrival, profile, dist0: Math.round(d), arrived, distEnd: +dist.toFixed(0), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
 }
 
 const PASS = 60 // a run counts as passed when it arrived and scored at least this
-const CATS = ['park:near', 'park:aisle', 'park:far', 'p2p:Street', 'p2p:Parking Lot', 'p2p:Curbside', 'p2p:Driveway', 'leave:Street']
+const CATS = ['park:near', 'park:aisle', 'park:far', 'p2p:Street', 'p2p:Parking Lot', 'p2p:Curbside', 'p2p:Driveway', 'leave:Street', 'furious:drift']
 state.cats = state.cats || {}
 function weakCat() { // scores 0-100 -> weight = how much room is left to learn; untried categories first
   const w = CATS.map((c) => { const x = state.cats[c]; return x && x.n >= 3 ? 12 + (100 - x.avg) : 120 })
@@ -189,44 +243,52 @@ function weakCat() { // scores 0-100 -> weight = how much room is left to learn;
 function note(cat, score) { const x = state.cats[cat] || { n: 0, avg: 50 }; x.n++; x.pass = (x.pass || 0) + (score >= PASS ? 1 : 0); x.avg = +(x.avg + (score - x.avg) * (x.n < 10 ? 1 / x.n : 0.1)).toFixed(1); state.cats[cat] = x }
 
 
-// --- the policy: linear Gaussian over 7 features of where the car is relative to the spot, one output per autopark knob -----
+// --- the policies: linear Gaussian over a few features, one output per knob -------------------------------------------------
 // z_k = w_k . f ; knob_k = lo + (hi - lo) * sigmoid(z_k). Trained with REINFORCE (reward = score/100, running baseline).
-// features() must match apFeatures() in planner.lua, which uses the learned weights in normal play.
+//  parking: 7 features of where the car is relative to the spot (features() must match apFeatures() in planner.lua)
+//  drift (Furious Max): the stunt's timing/limits, no features (a bandit)
 const KNOBS = Object.keys(RANGE), NF = 7
 const sig = (z) => 1 / (1 + Math.exp(-z))
 const randn = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random())
-const DEFAULTS = { rmin: 6, fwdSpeed: 2.2, revSpeed: 1.3, tail: 4.5 }
-if (!state.pol) {
-  state.pol = { w: {}, baseline: 0.5, n: 0 }
-  for (const k of KNOBS) { const [lo, hi] = RANGE[k], u = (DEFAULTS[k] - lo) / (hi - lo); state.pol.w[k] = [Math.log(u / (1 - u)), ...Array(NF - 1).fill(0)] }
+const DEFAULTS = { rmin: 6, fwdSpeed: 2.2, revSpeed: 1.3, tail: 4.5, margin: 0.1 }
+const DDEFAULTS = { kick: 0.35, slideMax: 2.4, vMin: 9, kMin: 0.04, yawBail: 1.3 }
+function initPol(range, defs, nf) {
+  const w = {}
+  for (const k of Object.keys(range)) { const [lo, hi] = range[k], u = clamp((defs[k] - lo) / (hi - lo), 0.02, 0.98); w[k] = [Math.log(u / (1 - u)), ...Array(nf - 1).fill(0)] }
+  return { w, baseline: 0.5, n: 0 }
 }
+function fixPol(pol, range, defs, nf) { // a saved policy from an older version: add the knobs it lacks
+  const fresh = initPol(range, defs, nf)
+  for (const k of Object.keys(range)) if (!pol.w[k] || pol.w[k].length !== nf) pol.w[k] = fresh.w[k]
+  return pol
+}
+state.pol = fixPol(state.pol || initPol(RANGE, DEFAULTS, NF), RANGE, DEFAULTS, NF)
+state.dpol = fixPol(state.dpol || initPol(DRANGE, DDEFAULTS, 1), DRANGE, DDEFAULTS, 1)
 function features(pos, h, sp, a) {
   const dx = sp.pos[0] - pos[0], dy = sp.pos[1] - pos[1], dist = Math.max(0.5, Math.hypot(dx, dy))
   const rx = pos[0] - sp.pos[0], ry = pos[1] - sp.pos[1]
   return [1, Math.min(dist, 25) / 15, (h[0] * dx + h[1] * dy) / dist, (h[0] * dy - h[1] * dx) / dist, (rx * a[0] + ry * a[1]) / 15, (-rx * a[1] + ry * a[0]) / 15, Math.abs(h[0] * a[0] + h[1] * a[1])]
 }
-const sigma = () => Math.max(0.12, 0.6 * Math.pow(0.999, state.pol.n))
-function act(f, explore = true) {
-  const sg = explore ? sigma() : 0, eps = {}, tune = {}
-  for (const k of KNOBS) {
-    const mu = state.pol.w[k].reduce((s2, w, i) => s2 + w * f[i], 0)
+const sigma = (pol) => Math.max(0.12, 0.6 * Math.pow(0.999, pol.n))
+function actOn(pol, range, f, explore = true) {
+  const sg = explore ? sigma(pol) : 0, eps = {}, tune = {}
+  for (const k of Object.keys(range)) {
+    const mu = pol.w[k].reduce((s2, w, i) => s2 + w * f[i], 0)
     eps[k] = explore ? randn() : 0
-    const [lo, hi] = RANGE[k]
+    const [lo, hi] = range[k]
     tune[k] = +(lo + (hi - lo) * sig(mu + sg * eps[k])).toFixed(3)
   }
-  return { tune, eps, f, sg }
+  return { tune, eps, f, sg, pol, range }
 }
+const act = (f, explore = true) => actOn(state.pol, RANGE, f, explore)
 function learn(x, score) { // one REINFORCE step for one episode
   if (!x || !x.sg) return
-  const adv = score / 100 - state.pol.baseline, lr = 0.04
-  for (const k of KNOBS) for (let i = 0; i < NF; i++) state.pol.w[k][i] = clamp(state.pol.w[k][i] + lr * adv * (x.eps[k] / x.sg) * x.f[i], -4, 4)
-  state.pol.baseline += 0.05 * (score / 100 - state.pol.baseline)
-  state.pol.n++
+  const pol = x.pol, adv = score / 100 - pol.baseline, lr = 0.04
+  for (const k of Object.keys(x.range)) for (let i = 0; i < x.f.length; i++) pol.w[k][i] = clamp(pol.w[k][i] + lr * adv * (x.eps[k] / x.sg) * x.f[i], -4, 4)
+  pol.baseline += 0.05 * (score / 100 - pol.baseline)
+  pol.n++
 }
-const typical = () => { // what the policy picks for an ordinary start (shown on the page)
-  const f = [1, 0.5, 0.3, 0.3, 0.2, 0.3, 0.5], t = act(f, false).tune
-  return t
-}
+const typical = () => act([1, 0.5, 0.3, 0.3, 0.2, 0.3, 0.5], false).tune
 
 function record(r, cat) {
   r.t = new Date().toISOString()
@@ -265,7 +327,7 @@ async function tick(){try{const s=await (await fetch('/status')).json()
 e('now').textContent=s.now+' - running '+s.uptime+', '+s.episodes+' runs'
 const n=s.pass+s.fail;e('acc').textContent=n?Math.round(100*s.pass/n)+'%':'-';e('p').textContent=s.pass;e('f').textContent=s.fail;e('rw').textContent=s.retryWins
 e('cats').innerHTML='<tr><th>scenario<th>runs<th>pass<th>avg score<th></tr>'+s.cats.map(c=>'<tr><td>'+c.name+'<td>'+c.n+'<td>'+(c.n?Math.round(100*(c.pass||0)/c.n)+'%':'-')+'<td>'+c.avg+'<td style="width:25%"><div class=bar><i style="width:'+c.avg+'%"></i></div></tr>').join('')
-e('best').textContent='policy trained on '+s.policy.n+' runs, exploration '+s.policy.sigma+', expected score '+s.policy.baseline+' - picks for a typical start: '+Object.entries(s.best).map(([k,v])=>k+' '+(+v).toFixed(2)).join(', ')
+e('best').textContent='parking policy: '+s.policy.n+' runs, exploration '+s.policy.sigma+', expected score '+s.policy.baseline+'; Furious Max drift policy: '+s.policy.dn+' runs, expected score '+s.policy.dbase+' - parking picks for a typical start: '+Object.entries(s.best).map(([k,v])=>k+' '+(+v).toFixed(2)).join(', ')
 e('rec').innerHTML=s.recent.map(r=>'<tr><td>'+r.t.slice(11,19)+'<td>'+r.cat+(r.attempt>1?' (try '+r.attempt+')':'')+'<td class='+(r.pass?'ok':'bad')+'>'+(r.pass?'passed':'failed')+'<td>'+r.score+'<td class=mu>'+r.why+'</tr>').join('')
 }catch(x){e('now').textContent='runner not reachable'}}
 tick();setInterval(tick,2000)
@@ -275,7 +337,7 @@ createServer((req, res) => {
   if (req.url === '/status') {
     const up = Math.round((Date.now() - live.started) / 60000)
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ now: live.now, uptime: up >= 60 ? `${Math.floor(up / 60)} h ${up % 60} min` : `${up} min`, episodes: state.episodes, pass: state.tally.pass, fail: state.tally.fail, retryWins: state.retryWins, best: typical(), policy: { n: state.pol.n, sigma: +sigma().toFixed(2), baseline: +(state.pol.baseline * 100).toFixed(0) }, recent: live.recent, cats: CATS.map((c) => ({ name: c, n: state.cats[c]?.n || 0, pass: state.cats[c]?.pass || 0, avg: state.cats[c]?.avg ?? 0 })) }))
+    res.end(JSON.stringify({ now: live.now, uptime: up >= 60 ? `${Math.floor(up / 60)} h ${up % 60} min` : `${up} min`, episodes: state.episodes, pass: state.tally.pass, fail: state.tally.fail, retryWins: state.retryWins, best: typical(), policy: { n: state.pol.n, sigma: +sigma(state.pol).toFixed(2), baseline: +(state.pol.baseline * 100).toFixed(0), dn: state.dpol.n, dbase: +(state.dpol.baseline * 100).toFixed(0) }, recent: live.recent, cats: CATS.map((c) => ({ name: c, n: state.cats[c]?.n || 0, pass: state.cats[c]?.pass || 0, avg: state.cats[c]?.avg ?? 0 })) }))
   } else { res.setHeader('content-type', 'text/html'); res.end(PAGE) }
 }).on('error', () => {}).listen(8780, '127.0.0.1')
 
@@ -297,7 +359,7 @@ function keepAwake() {
 }
 
 async function main() {
-  process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); save(); process.exit(0) })
+  process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); send({ t: 'settings', nags: true }); save(); process.exit(0) })
   log('practice runner: stop with Ctrl-C or by creating', STOP)
   keepAwake()
   while (!existsSync(STOP)) {
@@ -332,6 +394,10 @@ async function main() {
           const lr = await p2pEpisode({ fromPark: true, arrival: 'Street' })
           if (lr) { lr.attempt = k; record(lr, 'leave:Street'); if (lr.score >= PASS) break }
         }
+      } else if (cat === 'furious:drift') {
+        live.now = 'Furious Max: driving fast and drifting'
+        const pr = await p2pEpisode({ drift: true, profile: 'furious', arrival: 'Street' })
+        if (pr) record(pr, cat)
       } else {
         live.now = `driving to a destination (${cat.split(':')[1]})`
         const pr = await p2pEpisode({ arrival: cat.split(':')[1] })
@@ -339,7 +405,7 @@ async function main() {
       }
     } catch (e) { log('episode error', e.message); await sleep(3000) }
   }
-  send({ t: 'autopilot', mode: 'off' }); save(); log('stopped')
+  send({ t: 'autopilot', mode: 'off' }); send({ t: 'settings', nags: true }); save(); log('stopped')
   process.exit(0)
 }
 main()

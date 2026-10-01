@@ -1145,6 +1145,7 @@ function M.onVehicleState(vid, json)
   st.trip = { score = tripScore:score(), km = num(tripScore.dist / 1000, 2), fsdPercent = num(tripScore.dist > 0 and tripScore.fsdDist / tripScore.dist * 100 or 0, 0), hardBrakes = tripScore.hardBrakes }
   local okA, alert = pcall(computeAlert, vid, st, ps, nag)
   st.autopilot.alert = okA and alert or nil
+  st.damage = damageOf(vid) -- (practice runner: curb and wall hits)
   -- while FSD is asking for a takeover, tapping the accelerator hands the car over
   local wantHandover = st.autopilot.alert and (st.autopilot.alert.kind == 'takeover' or st.autopilot.alert.kind == 'lowConfidence'
     or (st.autopilot.alert.kind == 'attention' and (st.autopilot.alert.level or 0) >= 3)) or false
@@ -1551,6 +1552,7 @@ handleCommand = function(msg)
   elseif t == 'teleport' then
     -- (testing) put the player's car somewhere: x, y, z, heading (hx, hy)
     if not veh or not msg.x then return end
+    if msg.repair then pcall(function() veh:resetBrokenFlexMesh() end) end -- (practice runner) fixes the damage first
     local ok, err = pcall(function()
       local dir = vec3(tonumber(msg.hx) or 1, tonumber(msg.hy) or 0, 0)
       if msg.flip then dir = -dir end
