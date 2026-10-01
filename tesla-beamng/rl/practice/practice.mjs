@@ -6,6 +6,7 @@
 import { createRequire } from 'node:module'
 import { spawn, execSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -27,6 +28,11 @@ if (existsSync(STOP)) unlinkSync(STOP)
 // knobs the autopark reads (settings.apTune) and the range each may take
 const RANGE = { rmin: [5, 8], fwdSpeed: [1.4, 3.2], revSpeed: [0.9, 1.9], tail: [3, 6] }
 const state = { best: { rmin: 6, fwdSpeed: 2.2, revSpeed: 1.3, tail: 4.5 }, bestScore: null, episodes: 0, ...(existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {}) }
+state.tally = state.tally || { pass: 0, fail: 0 }
+state.retryWins = state.retryWins || 0
+state.fixes = state.fixes || []
+state.hard = state.hard || []
+const live = { now: 'starting', started: Date.now(), recent: [], lastState: Date.now() }
 const save = () => writeFileSync(STATE, JSON.stringify(state, null, 1))
 
 let ws = null, st = null, map = null, spots = null, evs = []
@@ -41,7 +47,7 @@ function connect() {
     w.on('message', (d) => {
       let m
       try { m = JSON.parse(d) } catch { return }
-      if (m.t === 'state') st = m
+      if (m.t === 'state') { st = m; live.lastState = Date.now() }
       else if (m.t === 'map') map = m
       else if (m.t === 'parkingSpots') spots = m.spots
       else if (m.t === 'event' && !/cameras/.test(m.detail || '')) {
@@ -103,25 +109,30 @@ async function teleport(p, h) {
 
 async function waitEnd(timeout) {
   const t0 = Date.now()
+  let last = st ? [...st.pos] : null, lastMove = Date.now()
   for (let i = 0; Date.now() - t0 < timeout && st; i++) {
     await sleep(500)
     if (existsSync(STOP)) break
     if (i > 12 && !st.autopilot?.engaged && Math.abs(st.speed) < 0.3) break
+    // never sit stuck: nothing has moved for 30 s -> give up on this attempt (the next one starts with a reset)
+    if (last && Math.hypot(st.pos[0] - last[0], st.pos[1] - last[1]) > 0.5) { last = [...st.pos]; lastMove = Date.now() }
+    else if (Date.now() - lastMove > 30000) { log('no movement for 30 s: giving up on this attempt'); break }
   }
   await sleep(1000)
   return (Date.now() - t0) / 1000
 }
 
-async function parkEpisode(tune, kindWanted) {
-  const sp = pick(spots.filter((s) => s.free))
+async function parkEpisode(tune, kindWanted, fixed) {
+  const sp = fixed ? fixed.sp : pick(spots.filter((s) => s.free))
   const a = sp.dir ? [sp.dir[0], sp.dir[1]] : [1, 0]
   const n = Math.hypot(a[0], a[1]) || 1
   a[0] /= n; a[1] /= n
   const p = [-a[1], a[0]], side = pick([1, -1]), kind = kindWanted || pick(['near', 'aisle', 'far'])
   const out = kind === 'near' ? rnd(3.5, 6) : kind === 'aisle' ? rnd(7, 11) : rnd(12, 16)
   const along = rnd(-8, 8), ang = rnd(0, Math.PI * 2)
-  const pos = [sp.pos[0] + a[0] * out * side + p[0] * along, sp.pos[1] + a[1] * out * side + p[1] * along, sp.pos[2] - 0.4]
-  const h = [Math.cos(ang), Math.sin(ang)]
+  const pos = fixed ? fixed.pos : [sp.pos[0] + a[0] * out * side + p[0] * along, sp.pos[1] + a[1] * out * side + p[1] * along, sp.pos[2] - 0.4]
+  const h = fixed ? fixed.h : [Math.cos(ang), Math.sin(ang)]
+  live.now = `parking at spot ${sp.id} (${kind})`
   await reset()
   evs = []
   send({ t: 'settings', apTune: tune, nags: false })
@@ -136,7 +147,7 @@ async function parkEpisode(tune, kindWanted) {
   const arrived = evs.some((e) => e.kind === 'arrived')
   const errs = evs.filter((e) => e.kind === 'error').map((e) => String(e.detail || '').slice(0, 80))
   const score = arrived ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - secs / 6, 5, 100) : 0
-  return { type: 'park', cat: 'park:' + kind, spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
+  return { type: 'park', cat: 'park:' + kind, spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h } }
 }
 
 // --- scenarios -----------------------------------------------------------------------------------------------------------
@@ -163,6 +174,7 @@ async function p2pEpisode(opts = {}) {
   return { type: opts.fromPark ? 'leave' : 'p2p', cat: `${opts.fromPark ? 'leave' : 'p2p'}:${arrival}`, arrival, profile, dist0: Math.round(d), arrived, distEnd: +dist.toFixed(0), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
 }
 
+const PASS = 60 // a run counts as passed when it arrived and scored at least this
 const CATS = ['park:near', 'park:aisle', 'park:far', 'p2p:Street', 'p2p:Parking Lot', 'p2p:Curbside', 'p2p:Driveway', 'leave:Street']
 state.cats = state.cats || {}
 function weakCat() { // scores 0-100 -> weight = how much room is left to learn; untried categories first
@@ -172,7 +184,7 @@ function weakCat() { // scores 0-100 -> weight = how much room is left to learn;
   for (let i = 0; i < CATS.length; i++) { r -= w[i]; if (r <= 0) return CATS[i] }
   return CATS[0]
 }
-function note(cat, score) { const x = state.cats[cat] || { n: 0, avg: 50 }; x.n++; x.avg = +(x.avg + (score - x.avg) * (x.n < 10 ? 1 / x.n : 0.1)).toFixed(1); state.cats[cat] = x }
+function note(cat, score) { const x = state.cats[cat] || { n: 0, avg: 50 }; x.n++; x.pass = (x.pass || 0) + (score >= PASS ? 1 : 0); x.avg = +(x.avg + (score - x.avg) * (x.n < 10 ? 1 / x.n : 0.1)).toFixed(1); state.cats[cat] = x }
 
 function jitter(b) { // one knob moved a little
   const t = { ...b }, k = pick(Object.keys(RANGE)), [lo, hi] = RANGE[k]
@@ -200,6 +212,67 @@ function cycleStep(r) {
   }
 }
 
+function record(r, cat) {
+  r.t = new Date().toISOString()
+  const pass = r.score >= PASS
+  state.episodes++
+  state.tally[pass ? 'pass' : 'fail']++
+  note(r.cat || cat, r.score)
+  delete r.setup
+  live.recent = [{ t: r.t, cat: r.cat || cat, pass, score: r.score, secs: r.secs, attempt: r.attempt || 1, why: (r.errs || [])[0] || '' }, ...live.recent].slice(0, 25)
+  appendFileSync(LOG, JSON.stringify(r) + '\n')
+  log(pass ? 'PASS' : 'fail', r.cat || cat, 'score', r.score, (r.errs || [])[0] || '')
+  save()
+}
+
+const PAGE = `<!doctype html><meta charset="utf-8"><title>FSD practice</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>:root{color-scheme:dark light;--bg:#14161a;--fg:#e8eaed;--mu:#9aa0a6;--ok:#3fb950;--bad:#f85149;--card:#1e2126}
+@media(prefers-color-scheme:light){:root{--bg:#f4f5f7;--fg:#1b1d21;--mu:#5f6368;--card:#fff}}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px system-ui,sans-serif;padding:16px;max-width:760px}
+h1{font-size:18px;margin:0 0 4px}.mu{color:var(--mu)}.row{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+.card{background:var(--card);border-radius:10px;padding:12px 14px;min-width:120px;flex:1}.big{font-size:26px;font-weight:600}
+table{width:100%;border-collapse:collapse}td,th{padding:5px 6px;text-align:left;font-size:13px}th{color:var(--mu);font-weight:500}
+.bar{height:6px;background:#8884;border-radius:3px;overflow:hidden}.bar i{display:block;height:100%;background:var(--ok)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}</style>
+<h1>FSD practice</h1><div id=now class=mu>connecting</div>
+<div class=row><div class=card><div class=mu>Accuracy</div><div class=big id=acc>-</div></div>
+<div class=card><div class=mu>Passed</div><div class="big ok" id=p>-</div></div>
+<div class=card><div class=mu>Failed</div><div class="big bad" id=f>-</div></div>
+<div class=card><div class=mu>Fixed on retry</div><div class=big id=rw>-</div></div></div>
+<div class=card><b>By scenario</b><table id=cats></table></div>
+<div class=card style="margin-top:10px"><b>Learned settings</b><div id=best class=mu></div></div>
+<div class=card style="margin-top:10px"><b>Recent runs</b><table id=rec></table></div>
+<script>
+const e=(i)=>document.getElementById(i)
+async function tick(){try{const s=await (await fetch('/status')).json()
+e('now').textContent=s.now+' - running '+s.uptime+', '+s.episodes+' runs'
+const n=s.pass+s.fail;e('acc').textContent=n?Math.round(100*s.pass/n)+'%':'-';e('p').textContent=s.pass;e('f').textContent=s.fail;e('rw').textContent=s.retryWins
+e('cats').innerHTML='<tr><th>scenario<th>runs<th>pass<th>avg score<th></tr>'+s.cats.map(c=>'<tr><td>'+c.name+'<td>'+c.n+'<td>'+(c.n?Math.round(100*(c.pass||0)/c.n)+'%':'-')+'<td>'+c.avg+'<td style="width:25%"><div class=bar><i style="width:'+c.avg+'%"></i></div></tr>').join('')
+e('best').textContent=Object.entries(s.best).map(([k,v])=>k+' '+v).join(', ')+(s.bestScore?'  (score '+Math.round(s.bestScore)+')':'')
+e('rec').innerHTML=s.recent.map(r=>'<tr><td>'+r.t.slice(11,19)+'<td>'+r.cat+(r.attempt>1?' (try '+r.attempt+')':'')+'<td class='+(r.pass?'ok':'bad')+'>'+(r.pass?'passed':'failed')+'<td>'+r.score+'<td class=mu>'+r.why+'</tr>').join('')
+}catch(x){e('now').textContent='runner not reachable'}}
+tick();setInterval(tick,2000)
+</script>`
+
+createServer((req, res) => {
+  if (req.url === '/status') {
+    const up = Math.round((Date.now() - live.started) / 60000)
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ now: live.now, uptime: up >= 60 ? `${Math.floor(up / 60)} h ${up % 60} min` : `${up} min`, episodes: state.episodes, pass: state.tally.pass, fail: state.tally.fail, retryWins: state.retryWins, best: state.best, bestScore: state.bestScore, recent: live.recent, cats: CATS.map((c) => ({ name: c, n: state.cats[c]?.n || 0, pass: state.cats[c]?.pass || 0, avg: state.cats[c]?.avg ?? 0 })) }))
+  } else { res.setHeader('content-type', 'text/html'); res.end(PAGE) }
+}).on('error', () => {}).listen(8780, '127.0.0.1')
+
+// A hung game (no state for 90 s although it is running) is restarted
+setInterval(() => {
+  if (ws && Date.now() - live.lastState > 90000) {
+    log('game stopped answering: restarting it')
+    live.now = 'restarting the game'
+    try { execSync('taskkill /IM BeamNG.drive.x64.exe /F', { stdio: 'ignore' }) } catch {}
+    try { ws.close() } catch {}
+    ws = null; st = null; map = null; spots = null; live.lastState = Date.now()
+  }
+}, 15000)
+
 async function main() {
   process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); save(); process.exit(0) })
   log('practice runner: stop with Ctrl-C or by creating', STOP)
@@ -209,24 +282,41 @@ async function main() {
     try {
       const cat = weakCat()
       if (cat.startsWith('park')) {
+        const kind = cat.split(':')[1]
         const tune = cyc.phase === 'trial' ? cyc.cand : state.best
-        r = await parkEpisode(tune, cat.split(':')[1])
+        r = await parkEpisode(tune, kind)
         r.tune = tune; r.trial = cyc.phase === 'trial' ? cyc.key : null
         cycleStep(r)
+        const setup = r.setup
+        record(r, cat)
+        // not right yet: the same start again, a different knob setting each time, until it works (4 more tries at most)
+        let ok = r.score >= PASS, lastR = r
+        for (let k = 1; k <= 4 && !ok && !existsSync(STOP); k++) {
+          let t2 = jitter(state.best)[0]
+          if (Math.random() < 0.5) t2 = jitter(t2)[0]
+          live.now = `retry ${k}: same start, different settings`
+          const r2 = await parkEpisode(t2, kind, setup)
+          r2.tune = t2; r2.attempt = k + 1; r2.retry = true
+          lastR = r2
+          record(r2, cat)
+          if (r2.score >= PASS) { ok = true; state.retryWins++; state.fixes = [...state.fixes.slice(-29), { cat, tune: t2, score: r2.score }] }
+        }
+        if (!ok) state.hard = [...state.hard.slice(-19), { t: new Date().toISOString(), cat, spot: lastR.spot, start: lastR.start, errs: lastR.errs }]
       } else if (cat.startsWith('leave')) {
-        // park first (so the car sits in a spot), then drive away from it
-        const pr = await parkEpisode(state.best, 'near')
-        if (pr.arrived) r = await p2pEpisode({ fromPark: true, arrival: 'Street' })
-        if (r) { r.cat = 'leave:Street' } else r = { ...pr, cat: 'leave:Street', score: 0, errs: ['could not park to start'] }
-      } else r = await p2pEpisode({ arrival: cat.split(':')[1] })
-      if (r) note(r.cat || cat, r.score)
+        // park first (so the car sits in a spot), then drive away from it; up to 3 tries
+        for (let k = 1; k <= 3 && !existsSync(STOP); k++) {
+          live.now = `leaving a spot (try ${k})`
+          const pr = await parkEpisode(state.best, 'near')
+          if (!pr.arrived) { record(pr, 'park:near'); continue }
+          const lr = await p2pEpisode({ fromPark: true, arrival: 'Street' })
+          if (lr) { lr.attempt = k; record(lr, 'leave:Street'); if (lr.score >= PASS) break }
+        }
+      } else {
+        live.now = `driving to a destination (${cat.split(':')[1]})`
+        const pr = await p2pEpisode({ arrival: cat.split(':')[1] })
+        if (pr) record(pr, cat)
+      }
     } catch (e) { log('episode error', e.message); await sleep(3000) }
-    if (r) {
-      state.episodes++
-      appendFileSync(LOG, JSON.stringify({ t: new Date().toISOString(), ...r }) + '\n')
-      log(JSON.stringify(r))
-      save()
-    }
   }
   send({ t: 'autopilot', mode: 'off' }); save(); log('stopped')
   process.exit(0)
