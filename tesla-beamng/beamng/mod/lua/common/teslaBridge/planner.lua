@@ -653,7 +653,7 @@ function Planner:autoparkStage(pose, ego, cars, spot, o, rmin, why)
     local d = { x = -o.y * ds, y = o.x * ds }
     for _, extra in ipairs({ 1.5, 4, 7, 10 }) do
       for _, r in ipairs({ R, R + 1.2 }) do
-        local Q, rev = Mv.backInArc(spot, o, d, r, extra, self.settings.apTune and tonumber(self.settings.apTune.tail) or 4.5)
+        local Q, rev = Mv.backInArc(spot, o, d, r, extra, self.apActive and tonumber(self.apActive.tail) or 4.5)
         local fwd, kf = Mv.feasibleBezier(pose, pose.hx, pose.hy, Q, d.x, d.y, rmin)
         local q = sqrt((Q.x - pose.x) ^ 2 + (Q.y - pose.y) ^ 2)
         local head0 = q > 0.1 and (pose.hx * (Q.x - pose.x) + pose.hy * (Q.y - pose.y)) / q or 1
@@ -675,6 +675,33 @@ function Planner:autoparkStage(pose, ego, cars, spot, o, rmin, why)
   return best
 end
 
+-- The learned parking policy (trained by the practice runner, tools/practice): a linear Gaussian policy over a few features of
+-- where the car is relative to the spot; its mean picks the autopark knobs. Must match features() in practice.mjs.
+local AP_RANGE = { rmin = { 5, 8 }, fwdSpeed = { 1.4, 3.2 }, revSpeed = { 0.9, 1.9 }, tail = { 3, 6 } }
+local AP_ORDER = { 'rmin', 'fwdSpeed', 'revSpeed', 'tail' }
+local function apFeatures(ego, sx, sy, ax, ay)
+  local dx, dy = sx - ego.x, sy - ego.y
+  local dist = math.max(0.5, sqrt(dx * dx + dy * dy))
+  local rx, ry = ego.x - sx, ego.y - sy
+  return {
+    1, math.min(dist, 25) / 15,
+    (ego.hx * dx + ego.hy * dy) / dist, (ego.hx * dy - ego.hy * dx) / dist,
+    (rx * ax + ry * ay) / 15, (-rx * ay + ry * ax) / 15,
+    math.abs(ego.hx * ax + ego.hy * ay),
+  }
+end
+local function apPolicyAction(pol, f)
+  local out = {}
+  for _, k in ipairs(AP_ORDER) do
+    local w = pol[k]
+    local z = 0
+    if type(w) == 'table' then for i = 1, #f do z = z + (tonumber(w[i]) or 0) * f[i] end end
+    local r = AP_RANGE[k]
+    out[k] = r[1] + (r[2] - r[1]) / (1 + math.exp(-z))
+  end
+  return out
+end
+
 function Planner:autopark(ego, cars, want, retry)
   local best, bd
   if not retry then self.apBlocked, self.apRetries = nil, 0 end
@@ -694,12 +721,19 @@ function Planner:autopark(ego, cars, want, retry)
   end
   if not best then return false, 'no free parking spot nearby' end
   self.autoparkTries = self.autoparkTries or 0
-  local tune = self.settings.apTune or {} -- (practice runner) autopark knobs
-  local rmin = tonumber(tune.rmin) or 6
   local z = best.z or ego.z or 0
   -- the spot's axis: the direction the car ends in (either way); without data: the way from the car to the spot
   local ax, ay
   if best.known and ((best.dx or 0) ~= 0 or (best.dy or 0) ~= 0) then ax, ay = unitv(best.dx, best.dy) else ax, ay = unitv(best.x - ego.x, best.y - ego.y) end
+  -- the knobs: an explicit setting (the practice runner exploring), else the learned policy's mean, else the defaults
+  local tune = self.settings.apTune
+  if not tune and type(self.settings.apPolicy) == 'table' then
+    local okp, act = pcall(function() return apPolicyAction(self.settings.apPolicy, apFeatures(ego, best.x, best.y, ax, ay)) end)
+    if okp then tune = act end
+  end
+  tune = tune or {}
+  self.apActive = tune
+  local rmin = tonumber(tune.rmin) or 6
   -- the open side: where there is room in front of the spot; on a tie, the side the car is on
   local fPlus, fMinus = self:freeDist(best.x, best.y, z, ax, ay, 14), self:freeDist(best.x, best.y, z, -ax, -ay, 14)
   local onPlus = ((ego.x - best.x) * ax + (ego.y - best.y) * ay) >= 0

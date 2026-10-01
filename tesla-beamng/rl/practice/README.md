@@ -4,6 +4,6 @@
 
 Scenarios (8 categories; weak ones get picked more): park near / aisle / far from random poses around random spots, point-to-point to Street / Parking Lot / Curbside / Driveway with random profiles, and leaving a spot (park, then drive away with fromPark).
 
-Learning: a hill-climb on `settings.apTune` (rmin, fwdSpeed, revSpeed, tail). 8 episodes with the current best, then 8 with one knob changed; kept only if clearly better and not arriving less often. It is not a neural network. Traffic (spawned AI cars) is not part of it yet.
+Learning: REINFORCE on a linear Gaussian policy. 7 features of where the car is relative to the spot (distance, bearing, position along/across the spot axis, heading) -> the autopark knobs (rmin, fwdSpeed, revSpeed, tail). Reward = episode score / 100 with a running baseline, exploration noise decays to a floor. The same weights are evaluated in planner.lua (`settings.apPolicy`, `apFeatures` must match `features()` in practice.mjs). The low-level driving stays classical; it learns how to plan the parking. Traffic (spawned AI cars) is not part of it yet.
 
-Persistence: `~/.tesla-beamng/practice/state.json` (best knobs, per-category scores, history), `episodes.jsonl` (every run). The laptop service (`auto.mjs`) pushes `state.json`'s best knobs to the game whenever it connects, so what it learned is used in normal play.
+Persistence: `~/.tesla-beamng/practice/state.json` (best knobs, per-category scores, history), `episodes.jsonl` (every run). The laptop service (`auto.mjs`) pushes `state.json`'s policy weights to the game whenever it connects, so what it learned is used in normal play.

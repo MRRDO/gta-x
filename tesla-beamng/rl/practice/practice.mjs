@@ -122,7 +122,7 @@ async function waitEnd(timeout) {
   return (Date.now() - t0) / 1000
 }
 
-async function parkEpisode(tune, kindWanted, fixed) {
+async function parkEpisode(kindWanted, fixed, greedy) {
   const sp = fixed ? fixed.sp : pick(spots.filter((s) => s.free))
   const a = sp.dir ? [sp.dir[0], sp.dir[1]] : [1, 0]
   const n = Math.hypot(a[0], a[1]) || 1
@@ -135,8 +135,10 @@ async function parkEpisode(tune, kindWanted, fixed) {
   live.now = `parking at spot ${sp.id} (${kind})`
   await reset()
   evs = []
-  send({ t: 'settings', apTune: tune, nags: false })
   await teleport(pos, h)
+  const f0 = features(st.pos, [st.dir[0], st.dir[1]], sp, a)
+  const x = act(f0, !greedy)
+  send({ t: 'settings', apTune: x.tune, nags: false })
   send({ t: 'gear', gear: 'D' }); await settle(0.3)
   send({ t: 'autopark', spot: sp.id })
   const secs = await waitEnd(110000)
@@ -147,7 +149,7 @@ async function parkEpisode(tune, kindWanted, fixed) {
   const arrived = evs.some((e) => e.kind === 'arrived')
   const errs = evs.filter((e) => e.kind === 'error').map((e) => String(e.detail || '').slice(0, 80))
   const score = arrived ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - secs / 6, 5, 100) : 0
-  return { type: 'park', cat: 'park:' + kind, spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h } }
+  return { type: 'park', cat: 'park:' + kind, spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h }, tune: x.tune, act: x }
 }
 
 // --- scenarios -----------------------------------------------------------------------------------------------------------
@@ -186,30 +188,44 @@ function weakCat() { // scores 0-100 -> weight = how much room is left to learn;
 }
 function note(cat, score) { const x = state.cats[cat] || { n: 0, avg: 50 }; x.n++; x.pass = (x.pass || 0) + (score >= PASS ? 1 : 0); x.avg = +(x.avg + (score - x.avg) * (x.n < 10 ? 1 / x.n : 0.1)).toFixed(1); state.cats[cat] = x }
 
-function jitter(b) { // one knob moved a little
-  const t = { ...b }, k = pick(Object.keys(RANGE)), [lo, hi] = RANGE[k]
-  t[k] = +clamp(t[k] + rnd(-0.15, 0.15) * (hi - lo), lo, hi).toFixed(2)
-  return [t, k]
-}
-const mean = (x) => x.reduce((s, v) => s + v, 0) / x.length
 
-// The knob search: a cycle is 8 parking episodes with the current best, then 8 with one knob changed (same kinds of starts);
-// the change is kept only when it scores clearly higher AND arrives at least as often. state.best is what the game uses.
-const cyc = { phase: 'base', cand: null, key: null, base: [], trial: [] }
-function cycleStep(r) {
-  const arr = (x) => x.filter((v) => v > 0).length / Math.max(1, x.length)
-  if (cyc.phase === 'base') {
-    cyc.base.push(r.score)
-    if (cyc.base.length >= 8) { [cyc.cand, cyc.key] = jitter(state.best); cyc.phase = 'trial'; cyc.trial = []; log('trying', cyc.key, '->', cyc.cand[cyc.key]) }
-  } else {
-    cyc.trial.push(r.score)
-    if (cyc.trial.length >= 8) {
-      const better = mean(cyc.trial) > mean(cyc.base) + 3 && arr(cyc.trial) >= arr(cyc.base)
-      log(`trial ${cyc.key}=${cyc.cand[cyc.key]}: ${mean(cyc.trial).toFixed(1)} vs ${mean(cyc.base).toFixed(1)} -> ${better ? 'KEPT' : 'dropped'}`)
-      if (better) { state.best = cyc.cand; state.bestScore = mean(cyc.trial); state.history = [...(state.history || []).slice(-50), { t: new Date().toISOString(), best: state.best, score: state.bestScore }] }
-      cyc.phase = 'base'; cyc.base = []; cyc.trial = []; cyc.cand = null
-    }
+// --- the policy: linear Gaussian over 7 features of where the car is relative to the spot, one output per autopark knob -----
+// z_k = w_k . f ; knob_k = lo + (hi - lo) * sigmoid(z_k). Trained with REINFORCE (reward = score/100, running baseline).
+// features() must match apFeatures() in planner.lua, which uses the learned weights in normal play.
+const KNOBS = Object.keys(RANGE), NF = 7
+const sig = (z) => 1 / (1 + Math.exp(-z))
+const randn = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random())
+const DEFAULTS = { rmin: 6, fwdSpeed: 2.2, revSpeed: 1.3, tail: 4.5 }
+if (!state.pol) {
+  state.pol = { w: {}, baseline: 0.5, n: 0 }
+  for (const k of KNOBS) { const [lo, hi] = RANGE[k], u = (DEFAULTS[k] - lo) / (hi - lo); state.pol.w[k] = [Math.log(u / (1 - u)), ...Array(NF - 1).fill(0)] }
+}
+function features(pos, h, sp, a) {
+  const dx = sp.pos[0] - pos[0], dy = sp.pos[1] - pos[1], dist = Math.max(0.5, Math.hypot(dx, dy))
+  const rx = pos[0] - sp.pos[0], ry = pos[1] - sp.pos[1]
+  return [1, Math.min(dist, 25) / 15, (h[0] * dx + h[1] * dy) / dist, (h[0] * dy - h[1] * dx) / dist, (rx * a[0] + ry * a[1]) / 15, (-rx * a[1] + ry * a[0]) / 15, Math.abs(h[0] * a[0] + h[1] * a[1])]
+}
+const sigma = () => Math.max(0.12, 0.6 * Math.pow(0.999, state.pol.n))
+function act(f, explore = true) {
+  const sg = explore ? sigma() : 0, eps = {}, tune = {}
+  for (const k of KNOBS) {
+    const mu = state.pol.w[k].reduce((s2, w, i) => s2 + w * f[i], 0)
+    eps[k] = explore ? randn() : 0
+    const [lo, hi] = RANGE[k]
+    tune[k] = +(lo + (hi - lo) * sig(mu + sg * eps[k])).toFixed(3)
   }
+  return { tune, eps, f, sg }
+}
+function learn(x, score) { // one REINFORCE step for one episode
+  if (!x || !x.sg) return
+  const adv = score / 100 - state.pol.baseline, lr = 0.04
+  for (const k of KNOBS) for (let i = 0; i < NF; i++) state.pol.w[k][i] = clamp(state.pol.w[k][i] + lr * adv * (x.eps[k] / x.sg) * x.f[i], -4, 4)
+  state.pol.baseline += 0.05 * (score / 100 - state.pol.baseline)
+  state.pol.n++
+}
+const typical = () => { // what the policy picks for an ordinary start (shown on the page)
+  const f = [1, 0.5, 0.3, 0.3, 0.2, 0.3, 0.5], t = act(f, false).tune
+  return t
 }
 
 function record(r, cat) {
@@ -219,6 +235,7 @@ function record(r, cat) {
   state.tally[pass ? 'pass' : 'fail']++
   note(r.cat || cat, r.score)
   delete r.setup
+  if (r.act) { r.f = r.act.f.map((v) => +v.toFixed(2)); r.sg = +r.act.sg.toFixed(2); delete r.act }
   live.recent = [{ t: r.t, cat: r.cat || cat, pass, score: r.score, secs: r.secs, attempt: r.attempt || 1, why: (r.errs || [])[0] || '' }, ...live.recent].slice(0, 25)
   appendFileSync(LOG, JSON.stringify(r) + '\n')
   log(pass ? 'PASS' : 'fail', r.cat || cat, 'score', r.score, (r.errs || [])[0] || '')
@@ -240,7 +257,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:5px 6px;text-align:left;
 <div class=card><div class=mu>Failed</div><div class="big bad" id=f>-</div></div>
 <div class=card><div class=mu>Fixed on retry</div><div class=big id=rw>-</div></div></div>
 <div class=card><b>By scenario</b><table id=cats></table></div>
-<div class=card style="margin-top:10px"><b>Learned settings</b><div id=best class=mu></div></div>
+<div class=card style="margin-top:10px"><b>Learned policy</b><div id=best class=mu></div></div>
 <div class=card style="margin-top:10px"><b>Recent runs</b><table id=rec></table></div>
 <script>
 const e=(i)=>document.getElementById(i)
@@ -248,7 +265,7 @@ async function tick(){try{const s=await (await fetch('/status')).json()
 e('now').textContent=s.now+' - running '+s.uptime+', '+s.episodes+' runs'
 const n=s.pass+s.fail;e('acc').textContent=n?Math.round(100*s.pass/n)+'%':'-';e('p').textContent=s.pass;e('f').textContent=s.fail;e('rw').textContent=s.retryWins
 e('cats').innerHTML='<tr><th>scenario<th>runs<th>pass<th>avg score<th></tr>'+s.cats.map(c=>'<tr><td>'+c.name+'<td>'+c.n+'<td>'+(c.n?Math.round(100*(c.pass||0)/c.n)+'%':'-')+'<td>'+c.avg+'<td style="width:25%"><div class=bar><i style="width:'+c.avg+'%"></i></div></tr>').join('')
-e('best').textContent=Object.entries(s.best).map(([k,v])=>k+' '+v).join(', ')+(s.bestScore?'  (score '+Math.round(s.bestScore)+')':'')
+e('best').textContent='policy trained on '+s.policy.n+' runs, exploration '+s.policy.sigma+', expected score '+s.policy.baseline+' - picks for a typical start: '+Object.entries(s.best).map(([k,v])=>k+' '+(+v).toFixed(2)).join(', ')
 e('rec').innerHTML=s.recent.map(r=>'<tr><td>'+r.t.slice(11,19)+'<td>'+r.cat+(r.attempt>1?' (try '+r.attempt+')':'')+'<td class='+(r.pass?'ok':'bad')+'>'+(r.pass?'passed':'failed')+'<td>'+r.score+'<td class=mu>'+r.why+'</tr>').join('')
 }catch(x){e('now').textContent='runner not reachable'}}
 tick();setInterval(tick,2000)
@@ -258,7 +275,7 @@ createServer((req, res) => {
   if (req.url === '/status') {
     const up = Math.round((Date.now() - live.started) / 60000)
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ now: live.now, uptime: up >= 60 ? `${Math.floor(up / 60)} h ${up % 60} min` : `${up} min`, episodes: state.episodes, pass: state.tally.pass, fail: state.tally.fail, retryWins: state.retryWins, best: state.best, bestScore: state.bestScore, recent: live.recent, cats: CATS.map((c) => ({ name: c, n: state.cats[c]?.n || 0, pass: state.cats[c]?.pass || 0, avg: state.cats[c]?.avg ?? 0 })) }))
+    res.end(JSON.stringify({ now: live.now, uptime: up >= 60 ? `${Math.floor(up / 60)} h ${up % 60} min` : `${up} min`, episodes: state.episodes, pass: state.tally.pass, fail: state.tally.fail, retryWins: state.retryWins, best: typical(), policy: { n: state.pol.n, sigma: +sigma().toFixed(2), baseline: +(state.pol.baseline * 100).toFixed(0) }, recent: live.recent, cats: CATS.map((c) => ({ name: c, n: state.cats[c]?.n || 0, pass: state.cats[c]?.pass || 0, avg: state.cats[c]?.avg ?? 0 })) }))
   } else { res.setHeader('content-type', 'text/html'); res.end(PAGE) }
 }).on('error', () => {}).listen(8780, '127.0.0.1')
 
@@ -273,9 +290,16 @@ setInterval(() => {
   }
 }, 15000)
 
+// keep the PC awake while this runs (a child that holds the "system required" flag and ends when this process does)
+function keepAwake() {
+  const ps = `Add-Type -Namespace W -Name K -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);'; while (Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue) { [W.K]::SetThreadExecutionState(2147483649) | Out-Null; Start-Sleep 30 }`
+  try { spawn('powershell', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', ps], { stdio: 'ignore', windowsHide: true }).unref() } catch {}
+}
+
 async function main() {
   process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); save(); process.exit(0) })
   log('practice runner: stop with Ctrl-C or by creating', STOP)
+  keepAwake()
   while (!existsSync(STOP)) {
     if (!(await ensureGame()) || !(await loadMap())) { await sleep(5000); continue }
     let r = null
@@ -283,30 +307,27 @@ async function main() {
       const cat = weakCat()
       if (cat.startsWith('park')) {
         const kind = cat.split(':')[1]
-        const tune = cyc.phase === 'trial' ? cyc.cand : state.best
-        r = await parkEpisode(tune, kind)
-        r.tune = tune; r.trial = cyc.phase === 'trial' ? cyc.key : null
-        cycleStep(r)
+        r = await parkEpisode(kind)
+        learn(r.act, r.score)
         const setup = r.setup
         record(r, cat)
-        // not right yet: the same start again, a different knob setting each time, until it works (4 more tries at most)
+        // not right yet: the same start again (the policy samples a different action each time), up to 4 more tries
         let ok = r.score >= PASS, lastR = r
         for (let k = 1; k <= 4 && !ok && !existsSync(STOP); k++) {
-          let t2 = jitter(state.best)[0]
-          if (Math.random() < 0.5) t2 = jitter(t2)[0]
-          live.now = `retry ${k}: same start, different settings`
-          const r2 = await parkEpisode(t2, kind, setup)
-          r2.tune = t2; r2.attempt = k + 1; r2.retry = true
+          live.now = `retry ${k}: same start, a different action`
+          const r2 = await parkEpisode(kind, setup)
+          learn(r2.act, r2.score)
+          r2.attempt = k + 1; r2.retry = true
           lastR = r2
           record(r2, cat)
-          if (r2.score >= PASS) { ok = true; state.retryWins++; state.fixes = [...state.fixes.slice(-29), { cat, tune: t2, score: r2.score }] }
+          if (r2.score >= PASS) { ok = true; state.retryWins++ }
         }
         if (!ok) state.hard = [...state.hard.slice(-19), { t: new Date().toISOString(), cat, spot: lastR.spot, start: lastR.start, errs: lastR.errs }]
       } else if (cat.startsWith('leave')) {
         // park first (so the car sits in a spot), then drive away from it; up to 3 tries
         for (let k = 1; k <= 3 && !existsSync(STOP); k++) {
           live.now = `leaving a spot (try ${k})`
-          const pr = await parkEpisode(state.best, 'near')
+          const pr = await parkEpisode('near', null, true)
           if (!pr.arrived) { record(pr, 'park:near'); continue }
           const lr = await p2pEpisode({ fromPark: true, arrival: 'Street' })
           if (lr) { lr.attempt = k; record(lr, 'leave:Street'); if (lr.score >= PASS) break }
