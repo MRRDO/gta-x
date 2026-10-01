@@ -653,7 +653,7 @@ function Planner:autoparkStage(pose, ego, cars, spot, o, rmin, why)
     local d = { x = -o.y * ds, y = o.x * ds }
     for _, extra in ipairs({ 1.5, 4, 7, 10 }) do
       for _, r in ipairs({ R, R + 1.2 }) do
-        local Q, rev = Mv.backInArc(spot, o, d, r, extra, 4.5)
+        local Q, rev = Mv.backInArc(spot, o, d, r, extra, self.settings.apTune and tonumber(self.settings.apTune.tail) or 4.5)
         local fwd, kf = Mv.feasibleBezier(pose, pose.hx, pose.hy, Q, d.x, d.y, rmin)
         local q = sqrt((Q.x - pose.x) ^ 2 + (Q.y - pose.y) ^ 2)
         local head0 = q > 0.1 and (pose.hx * (Q.x - pose.x) + pose.hy * (Q.y - pose.y)) / q or 1
@@ -694,7 +694,8 @@ function Planner:autopark(ego, cars, want, retry)
   end
   if not best then return false, 'no free parking spot nearby' end
   self.autoparkTries = self.autoparkTries or 0
-  local rmin = 6
+  local tune = self.settings.apTune or {} -- (practice runner) autopark knobs
+  local rmin = tonumber(tune.rmin) or 6
   local z = best.z or ego.z or 0
   -- the spot's axis: the direction the car ends in (either way); without data: the way from the car to the spot
   local ax, ay
@@ -742,7 +743,7 @@ function Planner:autopark(ego, cars, want, retry)
     self.mode = 'fsd'
     self.spot = best
     self.autoparkTries = 0
-    self:startManeuver({ { dir = 1, pts = plan.fwd, maxSpeed = 2.2, kind = 'autoparkApproach' }, { dir = -1, pts = plan.rev, maxSpeed = 1.3, kind = 'backIn' } }, 'park', 'autopark')
+    self:startManeuver({ { dir = 1, pts = plan.fwd, maxSpeed = tonumber(tune.fwdSpeed) or 2.2, kind = 'autoparkApproach' }, { dir = -1, pts = plan.rev, maxSpeed = tonumber(tune.revSpeed) or 1.3, kind = 'backIn' } }, 'park', 'autopark')
     return true
   end
   if pre then

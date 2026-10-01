@@ -1311,13 +1311,16 @@ end
 
 -- "Hands on the wheel": a small wheel movement (or a push against the spring)
 -- that isn't a takeover. Feeds the nag timer on the GE side.
-local function detectNudge()
+local function detectNudge(dt)
   if now - lastNudgeT < 1 then return end
   local hit = false
   if ffb.held then
     -- slow copy of the error, wheel settled: following FSD's own movement does not count as hands
     local e = abs(ffb.spring.eLP or 0)
-    hit = e > 0.03 and e < 0.1 and abs(ffb.spring.vel or 0) < 0.25 and not ffb.grip
+    -- a hand on the wheel keeps it a little off FSD's target for a moment (FSD's own movement is tracked closely, so it doesn't)
+    local off = e > 0.022 and e < 0.12 and abs(ffb.spring.vel or 0) < 0.8 and not ffb.grip
+    ffb.handT = off and (ffb.handT or 0) + (dt or 0.016) or 0
+    hit = ffb.handT >= 0.15
   else
     local r = raw.steering
     if r and r.t > ap.engagedAt and now - r.t < 0.1 then
@@ -1597,7 +1600,7 @@ local function updateGFX(dt)
         end
         if ffbUpdate(dt, out.steer) then disengage('steer', string.format('wheel grabbed pos %.3f tgt %.3f eLP %.3f vel %.2f rms %.3f', ffb.pos or 0, ffb.target or 0, ffb.spring.eLP or 0, ffb.spring.vel or 0, math.sqrt(ffb.jRms or 0))) end
       end
-      detectNudge()
+      detectNudge(dt)
     end
     if ap.engaged and lastOut then
       local out = lastOut
