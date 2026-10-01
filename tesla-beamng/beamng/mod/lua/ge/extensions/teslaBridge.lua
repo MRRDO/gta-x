@@ -1549,6 +1549,10 @@ handleCommand = function(msg)
     -- the car's own extension too when asked. Done on the next frame: this extension is replaced while it is running.
     reloadRequested = { vehicle = msg.vehicle ~= false }
     relayEvent({ kind = 'notice', detail = 'reloading the Tesla bridge' })
+  elseif t == 'traffic' then
+    -- (practice runner) AI cars around the player: count 0 removes them
+    local okT, res = pcall(setTraffic, math.max(0, math.min(14, tonumber(msg.count) or 0)))
+    relayEvent({ kind = 'notice', detail = 'traffic ' .. tostring(msg.count) .. ': ' .. tostring(okT and res or ('failed: ' .. tostring(res))) })
   elseif t == 'teleport' then
     -- (testing) put the player's car somewhere: x, y, z, heading (hx, hy)
     if not veh or not msg.x then return end
@@ -1676,6 +1680,48 @@ end
 -- Bound to "Tesla: voice note": the app starts/stops recording a note for later.
 function M.voiceNote()
   send({ t = 'event', kind = 'voiceNote', detail = 'toggle', data = { lastDisengage = planner and planner.lastDisengage or nil } })
+end
+
+-- (practice runner) AI traffic around the player's car: `count` cars spawned on the road graph 70-250 m away that drive on their own.
+local trafficIds = {}
+local TRAFFIC_MODELS = { 'vivace', 'sunburst2', 'etk800', 'pickup', 'roamer', 'miramar', 'legran', 'bx', 'covet' }
+local function clearTraffic()
+  for _, id in ipairs(trafficIds) do
+    local o = be and be.getObjectByID and be:getObjectByID(id)
+    if o then pcall(function() o:delete() end) end
+  end
+  trafficIds = {}
+end
+local function setTraffic(count)
+  clearTraffic()
+  if count <= 0 then return 'cleared' end
+  local pv = be:getPlayerVehicle(0)
+  if not pv or not graph or not graph.nodes then return 'no car or no road graph' end
+  local pp = pv:getPosition()
+  local cands = {}
+  for id, n in pairs(graph.nodes) do
+    local d = math.sqrt((n.x - pp.x) ^ 2 + (n.y - pp.y) ^ 2)
+    if d > 70 and d < 250 then cands[#cands + 1] = n end
+  end
+  if #cands == 0 then return 'no road nodes nearby' end
+  local made = 0
+  for _ = 1, count do
+    local n = cands[math.random(#cands)]
+    local model = TRAFFIC_MODELS[math.random(#TRAFFIC_MODELS)]
+    local ang = math.random() * 6.283
+    local q = quatFromDir(vec3(math.cos(ang), math.sin(ang), 0), vec3(0, 0, 1))
+    local ok, v = pcall(function()
+      return core_vehicles.spawnNewVehicle(model, { pos = vec3(n.x, n.y, n.z + 0.5), rot = q, autoEnterVeh = false, cling = true })
+    end)
+    if ok and v then
+      trafficIds[#trafficIds + 1] = v:getID()
+      v:queueLuaCommand("if ai then ai.setMode('traffic') end")
+      made = made + 1
+    end
+  end
+  -- make sure the player stays in their own car
+  pcall(function() be:enterVehicle(0, pv) end)
+  return 'spawned ' .. made
 end
 
 -- The G29 paddles (bound to "Tesla: paddle left / right"): the turn signal; with FSD it asks for that turn / lane change.

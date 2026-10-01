@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { spawn, execSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { homedir } from 'node:os'
+import { homedir, cpus, setPriority, constants } from 'node:os'
 import { join } from 'node:path'
 
 const require = createRequire(join(homedir(), 'tesla-beamng', 'package.json'))
@@ -27,7 +27,7 @@ if (existsSync(STOP)) unlinkSync(STOP)
 
 // knobs the autopark reads (settings.apTune) and the range each may take
 const RANGE = { rmin: [5, 8], fwdSpeed: [1.4, 3.2], revSpeed: [0.9, 1.9], tail: [3, 6], margin: [0, 0.8] }
-const DRANGE = { kick: [0.2, 0.7], slideMax: [1.2, 3.5], vMin: [7, 14], kMin: [0.025, 0.07], yawBail: [0.9, 1.6] }
+const DRANGE = { kick: [0.2, 0.7], slideMax: [1.2, 3.5], vMin: [7, 14], kMin: [0.025, 0.07], yawBail: [0.9, 1.6], weaveAmp: [0.8, 2.0], weaveGap: [25, 60], stuntEvery: [12, 40] }
 const state = { best: { rmin: 6, fwdSpeed: 2.2, revSpeed: 1.3, tail: 4.5 }, bestScore: null, episodes: 0, ...(existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {}) }
 state.tally = state.tally || { pass: 0, fail: 0 }
 state.retryWins = state.retryWins || 0
@@ -93,9 +93,13 @@ async function ensureGame() {
 }
 
 function lowPriority() {
-  const cmd = 'Get-Process BeamNG* | ForEach-Object { $_.PriorityClass = "BelowNormal" }'
+  // the game gets Idle priority (it only uses what nothing else wants) and half of the cores, so a browser stays smooth
+  const half = Math.max(2, Math.floor(cpus().length / 2))
+  const mask = (2 ** half) - 1
+  const cmd = `Get-Process BeamNG* | ForEach-Object { $_.PriorityClass = "Idle"; $_.ProcessorAffinity = ${mask} }`
   try { execSync('powershell -NoProfile -Command "' + cmd.replace(/"/g, '\\"') + '"', { stdio: 'ignore' }) } catch {}
 }
+try { setPriority(0, constants.priority.PRIORITY_BELOW_NORMAL) } catch {}
 
 async function loadMap() {
   if (map && spots) return true
@@ -187,6 +191,11 @@ async function parkEpisode(kindWanted, fixed, greedy) {
 
 // --- scenarios -----------------------------------------------------------------------------------------------------------
 // Each scenario has a category; the runner keeps a running score per category and picks weak ones more often.
+async function setTraffic(n) {
+  send({ t: 'traffic', count: n })
+  await settle(n > 0 ? 6 : 1.5)
+}
+
 async function p2pEpisode(opts = {}) {
   if (!opts.fromPark && !opts.here) {
     // a random start somewhere on the map (a road node), not always the same place
@@ -205,14 +214,18 @@ async function p2pEpisode(opts = {}) {
   const arrival = opts.arrival || pick(['Street', 'Parking Lot', 'Curbside', 'Driveway'])
   const profile = opts.profile || pick(['chill', 'standard', 'standard', 'hurry'])
   evs = []
-  live.dmg0 = st.damage || 0; live.kicks = 0; live.slip = 0
+  const nTraffic = opts.traffic ? Math.round(rnd(opts.traffic[0], opts.traffic[1])) : 0
+  await setTraffic(nTraffic)
+  live.dmg0 = st.damage || 0; live.kicks = 0; live.slip = 0; live.stunts = 0
   const dx = opts.drift ? actOn(state.dpol, DRANGE, [1], true) : null
   send({ t: 'settings', ...(opts.drift ? { drift: true } : {}), ...(dx ? { driftTune: dx.tune } : {}), nags: false })
   send({ t: 'gear', gear: opts.fromPark ? 'P' : 'D' }); await settle(0.5)
   send({ t: 'navigate', to, arrival }); await settle(0.5)
   send({ t: 'autopilot', mode: 'fsd', profile, fromPark: !!opts.fromPark })
   const secs = await waitEnd(200000)
+  if (nTraffic) await setTraffic(0)
   const arrived = evs.some((e) => e.kind === 'arrived')
+  const stunts = evs.filter((e) => e.kind === 'stunt').length
   const dist = Math.hypot(st.pos[0] - to[0], st.pos[1] - to[1])
   const bad = evs.filter((e) => e.kind === 'error' || (e.kind === 'disengage' && e.reason !== 'arrived'))
   const errs = bad.map((e) => `${e.kind}:${String(e.detail || e.reason || '').slice(0, 60)}`).slice(0, 4)
@@ -222,16 +235,17 @@ async function p2pEpisode(opts = {}) {
   if (opts.drift) {
     // Furious: arriving cleanly is worth 40; drifting (handbrake kicks with a real slide, 12-60 degrees) the other 60; spinning out is not drifting
     const slid = live.slip >= 12 && live.slip <= 60
-    const dscore = arrived && hit < 1500 ? Math.min(60, live.kicks * 15 + (slid ? 15 : 0)) : 0
+    // Furious: arriving cleanly 40; drift kicks + a real slide up to 30; weaves / darts (10 each) up to 30; any real damage kills it
+    const dscore = arrived && hit < 1500 ? Math.min(30, live.kicks * 10 + (slid ? 10 : 0)) + Math.min(30, stunts * 10) : 0
     score = arrived && hit < 6000 ? clamp(40 - hit / 80 + dscore - 10 * bad.length, 0, 100) : 0
     learn(dx, score)
-    errs.push(`kicks ${live.kicks}, slip ${Math.round(live.slip)} deg`)
+    errs.push(`kicks ${live.kicks}, slip ${Math.round(live.slip)} deg, stunts ${stunts}`)
   }
-  return { type: opts.fromPark ? 'leave' : 'p2p', hit: Math.round(hit), cat: opts.drift ? 'furious:drift' : `${opts.fromPark ? 'leave' : 'p2p'}:${arrival}`, arrival, profile, dist0: Math.round(d), arrived, distEnd: +dist.toFixed(0), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
+  return { type: opts.fromPark ? 'leave' : 'p2p', hit: Math.round(hit), cat: opts.drift ? (opts.traffic ? 'furious:traffic' : 'furious:drift') : opts.traffic ? 'p2p:traffic' : `${opts.fromPark ? 'leave' : 'p2p'}:${arrival}`, arrival, profile, dist0: Math.round(d), arrived, distEnd: +dist.toFixed(0), secs: +secs.toFixed(1), score: +score.toFixed(1), errs }
 }
 
 const PASS = 60 // a run counts as passed when it arrived and scored at least this
-const CATS = ['park:near', 'park:aisle', 'park:far', 'p2p:Street', 'p2p:Parking Lot', 'p2p:Curbside', 'p2p:Driveway', 'leave:Street', 'furious:drift']
+const CATS = ['park:near', 'park:aisle', 'park:far', 'p2p:Street', 'p2p:Parking Lot', 'p2p:Curbside', 'p2p:Driveway', 'leave:Street', 'p2p:traffic', 'furious:drift', 'furious:traffic']
 state.cats = state.cats || {}
 function weakCat() { // scores 0-100 -> weight = how much room is left to learn; untried categories first
   const w = CATS.map((c) => { const x = state.cats[c]; return x && x.n >= 3 ? 12 + (100 - x.avg) : 120 })
@@ -251,7 +265,7 @@ const KNOBS = Object.keys(RANGE), NF = 7
 const sig = (z) => 1 / (1 + Math.exp(-z))
 const randn = () => Math.sqrt(-2 * Math.log(1 - Math.random())) * Math.cos(2 * Math.PI * Math.random())
 const DEFAULTS = { rmin: 6, fwdSpeed: 2.2, revSpeed: 1.3, tail: 4.5, margin: 0.1 }
-const DDEFAULTS = { kick: 0.35, slideMax: 2.4, vMin: 9, kMin: 0.04, yawBail: 1.3 }
+const DDEFAULTS = { kick: 0.35, slideMax: 2.4, vMin: 9, kMin: 0.04, yawBail: 1.3, weaveAmp: 1.3, weaveGap: 38, stuntEvery: 22 }
 function initPol(range, defs, nf) {
   const w = {}
   for (const k of Object.keys(range)) { const [lo, hi] = range[k], u = clamp((defs[k] - lo) / (hi - lo), 0.02, 0.98); w[k] = [Math.log(u / (1 - u)), ...Array(nf - 1).fill(0)] }
@@ -342,6 +356,7 @@ createServer((req, res) => {
 }).on('error', () => {}).listen(8780, '127.0.0.1')
 
 // A hung game (no state for 90 s although it is running) is restarted
+setInterval(lowPriority, 120000)
 setInterval(() => {
   if (ws && Date.now() - live.lastState > 90000) {
     log('game stopped answering: restarting it')
@@ -359,7 +374,7 @@ function keepAwake() {
 }
 
 async function main() {
-  process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); send({ t: 'settings', nags: true }); save(); process.exit(0) })
+  process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); send({ t: 'traffic', count: 0 }); send({ t: 'settings', nags: true }); save(); process.exit(0) })
   log('practice runner: stop with Ctrl-C or by creating', STOP)
   keepAwake()
   while (!existsSync(STOP)) {
@@ -394,18 +409,18 @@ async function main() {
           const lr = await p2pEpisode({ fromPark: true, arrival: 'Street' })
           if (lr) { lr.attempt = k; record(lr, 'leave:Street'); if (lr.score >= PASS) break }
         }
-      } else if (cat === 'furious:drift') {
-        live.now = 'Furious Max: driving fast and drifting'
-        const pr = await p2pEpisode({ drift: true, profile: 'furious', arrival: 'Street' })
+      } else if (cat === 'furious:drift' || cat === 'furious:traffic') {
+        live.now = cat === 'furious:traffic' ? 'Furious Max in traffic: cutting up, weaving' : 'Furious Max: drifting and weaving'
+        const pr = await p2pEpisode({ drift: true, profile: 'furious', arrival: 'Street', traffic: cat === 'furious:traffic' ? [3, 8] : null })
         if (pr) record(pr, cat)
       } else {
         live.now = `driving to a destination (${cat.split(':')[1]})`
-        const pr = await p2pEpisode({ arrival: cat.split(':')[1] })
+        const pr = await p2pEpisode(cat === 'p2p:traffic' ? { arrival: 'Street', traffic: [4, 10], profile: pick(['standard', 'hurry', 'madmax']) } : { arrival: cat.split(':')[1], traffic: Math.random() < 0.4 ? [1, 4] : null })
         if (pr) record(pr, cat)
       }
     } catch (e) { log('episode error', e.message); await sleep(3000) }
   }
-  send({ t: 'autopilot', mode: 'off' }); send({ t: 'settings', nags: true }); save(); log('stopped')
+  send({ t: 'autopilot', mode: 'off' }); send({ t: 'traffic', count: 0 }); send({ t: 'settings', nags: true }); save(); log('stopped')
   process.exit(0)
 }
 main()

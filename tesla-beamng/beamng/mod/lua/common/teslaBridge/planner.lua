@@ -1605,6 +1605,39 @@ function Planner:tick(snap)
   if self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
   if wary then gap = gap * 1.4 end
   if lead and lead.cutIn and (self.profile == 'sloth' or self.profile == 'chill' or self.profile == 'standard') then gap = gap * 1.25 end -- let it in
+  -- Furious Max stunts: on a clear, straight stretch it weaves (swings from side to side) or darts across the lane. Only the driven
+  -- line is moved (inside the lane); the safety layer, the stops and the cars ahead are still obeyed. Knobs: settings.driftTune.
+  if self.profile == 'furious' and self.settings.stunts ~= false and self.mode == 'fsd' and not lead and not hold and not hazard
+     and not (st.weather and (st.weather.rain > 0.3 or st.weather.fog > 0.3)) and (not stopS or stopS - sCar > 160)
+     and (ego.v or 0) > 12 and (ego.v or 0) < 34 and self.t >= (self.stuntCool or 0) then
+    local tn = self.settings.driftTune or {}
+    local clear = true
+    for _, c in ipairs(cars or {}) do
+      if (c.x - ego.x) ^ 2 + (c.y - ego.y) ^ 2 < 70 ^ 2 then clear = false; break end
+    end
+    if clear and self:junctionNear(ego.x, ego.y, 110) then clear = false end
+    if clear then
+      for i = pr.i, #path.pts - 1 do
+        local si = path.s[i] - sCar
+        if si > 130 then break end
+        if si > 0 and math.abs(P.curvatureAt(path.pts, i, 3)) > 0.006 then clear = false; break end
+      end
+    end
+    if clear then
+      local _, w = self:laneAt(pr.i)
+      local amp = math.min(tonumber(tn.weaveAmp) or 1.3, (w or 3.4) * 0.45)
+      local gap = tonumber(tn.weaveGap) or 38
+      local kind = (math.random() < 0.65) and 'weave' or 'dart'
+      local n = (kind == 'weave') and 3 or 1
+      local sgn = (math.random() < 0.5) and 1 or -1
+      for k = 1, n do
+        local s0 = sCar + 45 + (k - 1) * gap
+        self.bumps[#self.bumps + 1] = { s0 = s0, s1 = s0 + 6, off = sgn * amp * ((k % 2 == 1) and 1 or -1), ramp = (kind == 'dart') and 9 or 15, kind = 'stunt' }
+      end
+      self.stuntCool = self.t + (tonumber(tn.stuntEvery) or 22)
+      self:emit('stunt', { kind = kind })
+    end
+  end
   st.brain = (wary or (lead and lead.cutIn)) and { wary = wary or nil, cutIn = lead.cutIn or nil } or nil
   out.plan = {
     seq = self.seq, pts = flat, vcap = vcap, dir = 1,

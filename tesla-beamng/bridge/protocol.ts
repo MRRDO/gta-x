@@ -185,7 +185,7 @@ export type Minimap = { t: 'minimap'; url: string; offset?: number[]; size?: num
 export type EventKind =
   | 'disengage' | 'engaged' | 'reengaged' | 'arrived' | 'vehicleChanged' | 'levelLoaded' | 'levelUnloaded' | 'error' | 'settings' | 'wheelMedia' | 'wheelDial'
   // FSD behavior
-  | 'laneChange' | 'creeping' | 'nudge' | 'goAround' | 'emergencyVehicle' | 'schoolBus' | 'maneuver' | 'summon'
+  | 'stunt' | 'laneChange' | 'creeping' | 'nudge' | 'goAround' | 'emergencyVehicle' | 'schoolBus' | 'maneuver' | 'summon'
   | 'phantomBrake' | 'yellowHesitation' | 'collisionEvasion'
   // supervision
   | 'nag' | 'strike' | 'lockout'
@@ -331,6 +331,7 @@ export type Command =
   | { t: 'autopilot'; mode: AutopilotMode; profile?: Profile; fromPark?: boolean } // fromPark: Start Self-Driving from P (the car picks D/R and backs out itself)
   | { t: 'navigate'; to: Vec3 | { node: string }; stops?: Vec3[]; arrival?: Arrival }
   | { t: 'cancelRoute' }
+  | { t: 'traffic'; count: number } // (practice runner) AI cars around the player, 0 removes them
   | { t: 'reloadMod'; vehicle?: boolean } // (update while playing) reload the bridge from disk (unpacked mod folder)
   | { t: 'teleport'; x: number; y: number; z?: number; hx: number; hy: number; flip?: boolean; repair?: boolean } // (testing) put the car somewhere
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
@@ -431,7 +432,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard',
 ])
 
 export const MPH = 0.44704
