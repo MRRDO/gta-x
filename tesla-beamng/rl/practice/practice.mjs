@@ -57,6 +57,7 @@ function connect() {
           const mv = [m.pos[0] - st.pos[0], m.pos[1] - st.pos[1]], ml = Math.hypot(mv[0], mv[1])
           if (ml > 0.05) live.slip = Math.max(live.slip, Math.acos(clamp((mv[0] * m.dir[0] + mv[1] * m.dir[1]) / ml, -1, 1)) * 180 / Math.PI)
         }
+        if (live.dmg0 != null && !live.firstHit && (m.damage || 0) - live.dmg0 > 300) live.firstHit = { dmg: Math.round((m.damage || 0) - live.dmg0), phase: m.maneuver?.kind || m.autopilot?.mode || '', step: m.maneuver ? `${m.maneuver.step}/${m.maneuver.total}` : '', v: +(m.speed || 0).toFixed(1), gear: m.gear, pos: m.pos.map((x) => +x.toFixed(1)) }
         st = m; live.lastState = Date.now()
       }
       else if (m.t === 'map') map = m
@@ -74,15 +75,15 @@ async function ensureGame() {
     if (existsSync(STOP)) return false
     if (!ws && !(await connect())) {
       let running = false
-      try { running = /BeamNG/i.test(execSync('tasklist /FI "IMAGENAME eq BeamNG.drive.x64.exe" /NH').toString()) } catch {}
-      if (!running) {
+      try { running = /BeamNG/i.test(execSync('tasklist /FI "IMAGENAME eq BeamNG.drive.x64.exe" /NH').toString()) || /BeamNG/i.test(execSync('tasklist /FI "IMAGENAME eq BeamNG.drive.exe" /NH').toString()) } catch {}
+      // a game that was started less than 4 minutes ago is still loading: never start a second one
+      if (!running && Date.now() - (live.launched || 0) > 240000) {
         log('game is not running: starting it')
-        // lightweight: small window, below-normal priority so it never competes with what you are doing
+        live.launched = Date.now()
+        // (-windowed crashes this BeamNG version; the window is minimized instead, and the game runs at Idle priority)
         const args = ['-gfx', process.env.PRACTICE_GFX || 'dx11', '-level', 'east_coast_usa/main.level.json']
-        if (!process.env.PRACTICE_FULL) args.push('-windowed', '-resx', '640', '-resy', '360')
-        const g = spawn(GAME, args, { detached: true, stdio: 'ignore' })
-        g.unref()
-        setTimeout(lowPriority, 20000); setTimeout(lowPriority, 60000)
+        spawn(GAME, args, { detached: true, stdio: 'ignore' }).unref()
+        setTimeout(() => lowPriority(true), 30000); setTimeout(() => lowPriority(true), 80000); setTimeout(() => lowPriority(true), 150000)
       }
       await sleep(15000)
       continue
@@ -92,11 +93,13 @@ async function ensureGame() {
   }
 }
 
-function lowPriority() {
+function lowPriority(placeWindow) {
   // the game gets Idle priority (it only uses what nothing else wants) and half of the cores, so a browser stays smooth
   const half = Math.max(2, Math.floor(cpus().length / 2))
   const mask = (2 ** half) - 1
-  const cmd = `Get-Process BeamNG* | ForEach-Object { $_.PriorityClass = "Idle"; $_.ProcessorAffinity = ${mask} }`
+  // a small framed window in the top-left corner so it can be watched (-windowed crashes this version, so it is resized after it starts)
+  const mini = !placeWindow ? '' : `; Add-Type -Name U -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(System.IntPtr h, int c); [DllImport("user32.dll")] public static extern bool MoveWindow(System.IntPtr h, int x, int y, int w, int hh, bool r); [DllImport("user32.dll")] public static extern int GetWindowLong(System.IntPtr h, int i); [DllImport("user32.dll")] public static extern int SetWindowLong(System.IntPtr h, int i, int v);'; Get-Process BeamNG.drive.x64 -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [W.U]::ShowWindowAsync($_.MainWindowHandle, 9) | Out-Null; [W.U]::SetWindowLong($_.MainWindowHandle, -16, ([W.U]::GetWindowLong($_.MainWindowHandle, -16) -bor 0xCF0000)) | Out-Null; [W.U]::MoveWindow($_.MainWindowHandle, 20, 60, 800, 470, $true) | Out-Null }`
+  const cmd = `Get-Process BeamNG* | ForEach-Object { $_.PriorityClass = "Idle"; $_.ProcessorAffinity = ${mask} }${mini}`
   try { execSync('powershell -NoProfile -Command "' + cmd.replace(/"/g, '\\"') + '"', { stdio: 'ignore' }) } catch {}
 }
 try { setPriority(0, constants.priority.PRIORITY_BELOW_NORMAL) } catch {}
@@ -162,14 +165,18 @@ async function parkEpisode(kindWanted, fixed, greedy) {
   a[0] /= n; a[1] /= n
   const p = [-a[1], a[0]], side = pick([1, -1]), kind = kindWanted || pick(['near', 'aisle', 'far'])
   const out = kind === 'near' ? rnd(3.5, 6) : kind === 'aisle' ? rnd(7, 11) : rnd(12, 16)
-  const along = rnd(-8, 8), ang = rnd(0, Math.PI * 2)
+  const along = rnd(-8, 8)
+  // drivers line up with the road: mostly along the aisle / street (either way), sometimes any direction
+  const base = Math.atan2(p[1], p[0]) + (Math.random() < 0.5 ? 0 : Math.PI)
+  const ang = Math.random() < 0.3 ? rnd(0, Math.PI * 2) : (Math.random() < 0.5 ? base : Math.atan2(a[1], a[0]) + (Math.random() < 0.5 ? 0 : Math.PI)) + rnd(-0.25, 0.25)
   const pos = fixed ? fixed.pos : [sp.pos[0] + a[0] * out * side + p[0] * along, sp.pos[1] + a[1] * out * side + p[1] * along, sp.pos[2] - 0.4]
   const h = fixed ? fixed.h : [Math.cos(ang), Math.sin(ang)]
   live.now = `parking at spot ${sp.id} (${kind})`
   await reset()
   evs = []
   await teleport(pos, h)
-  live.dmg0 = st.damage || 0
+  if (!fixed && (st.damage || 0) > 300) return { invalid: true, type: 'park', cat: 'park:' + kind, score: 0, errs: ['bad start pose'] }
+  live.dmg0 = st.damage || 0; live.firstHit = null
   const f0 = features(st.pos, [st.dir[0], st.dir[1]], sp, a)
   const x = act(f0, !greedy)
   send({ t: 'settings', apTune: x.tune, nags: false })
@@ -183,10 +190,11 @@ async function parkEpisode(kindWanted, fixed, greedy) {
   const arrived = evs.some((e) => e.kind === 'arrived')
   const errs = evs.filter((e) => e.kind === 'error').map((e) => String(e.detail || '').slice(0, 80))
   const hit = Math.max(0, (st.damage || 0) - live.dmg0)
-  if (hit > 600) errs.push(`hit something (damage +${Math.round(hit)})`)
+  if (hit > 600) errs.push(`hit something (damage +${Math.round(hit)}) ${JSON.stringify(live.firstHit)}`)
   // hitting a curb or a wall costs points; a hard hit fails the run outright
   const score = arrived && hit < 6000 ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - secs / 6 - hit / 80, 5, 100) : 0
-  return { type: 'park', cat: 'park:' + kind, hit: Math.round(hit), spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h }, tune: x.tune, act: x }
+  const noRoom = !arrived && secs < 14 && hit < 100 && errs.some((e) => /no room|no free parking/.test(e))
+  return { type: 'park', invalid: noRoom, cat: 'park:' + kind, hit: Math.round(hit), spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h }, tune: x.tune, act: x }
 }
 
 // --- scenarios -----------------------------------------------------------------------------------------------------------
@@ -201,9 +209,19 @@ async function p2pEpisode(opts = {}) {
     // a random start somewhere on the map (a road node), not always the same place
     const nodes = (map.nodes || []).filter((nd) => nd.radius > 3.5)
     if (nodes.length) {
-      const nd = pick(nodes), ang = rnd(0, 6.28)
+      // on the road, pointing along it (towards a neighbouring node), in the right-hand lane
+      const byId = (map._byId ||= new Map((map.nodes || []).map((q) => [q.id, q])))
+      const adj = (map._adj ||= (() => { const m = new Map(); for (const l of map.links || []) { if (!(l.drivability > 0.3)) continue; (m.get(l.a) || m.set(l.a, []).get(l.a)).push(l.b); if (!l.oneWay) (m.get(l.b) || m.set(l.b, []).get(l.b)).push(l.a) } return m })())
+      const withLinks = nodes.filter((q) => (adj.get(q.id) || []).length)
+      const nd = pick(withLinks.length ? withLinks : nodes)
+      const nb = byId.get(pick(adj.get(nd.id) || [nd.id])) || nd
+      let hx = nb.pos[0] - nd.pos[0], hy = nb.pos[1] - nd.pos[1]
+      const hl = Math.hypot(hx, hy) || 1
+      hx /= hl; hy /= hl
+      const off = Math.min(1.8, nd.radius * 0.4) // right of the road's centre line
       await reset()
-      await teleport([nd.pos[0], nd.pos[1], nd.pos[2] + 0.6], [Math.cos(ang), Math.sin(ang)])
+      await teleport([nd.pos[0] + hy * off, nd.pos[1] - hx * off, nd.pos[2] + 0.6], [hx, hy])
+      if ((st.damage || 0) > 300) { log('start pose damaged the car (inside something): trying another'); return { invalid: true, type: 'p2p', cat: 'p2p:start', score: 0, errs: ['bad start pose'] } }
     }
   } else if (!opts.fromPark) await reset()
   const here = st.pos
@@ -216,7 +234,7 @@ async function p2pEpisode(opts = {}) {
   evs = []
   const nTraffic = opts.traffic ? Math.round(rnd(opts.traffic[0], opts.traffic[1])) : 0
   await setTraffic(nTraffic)
-  live.dmg0 = st.damage || 0; live.kicks = 0; live.slip = 0; live.stunts = 0
+  live.dmg0 = st.damage || 0; live.kicks = 0; live.slip = 0; live.stunts = 0; live.firstHit = null
   const dx = opts.drift ? actOn(state.dpol, DRANGE, [1], true) : null
   send({ t: 'settings', ...(opts.drift ? { drift: true } : {}), ...(dx ? { driftTune: dx.tune } : {}), nags: false })
   send({ t: 'gear', gear: opts.fromPark ? 'P' : 'D' }); await settle(0.5)
@@ -225,6 +243,7 @@ async function p2pEpisode(opts = {}) {
   const secs = await waitEnd(200000)
   if (nTraffic) await setTraffic(0)
   const arrived = evs.some((e) => e.kind === 'arrived')
+  const hitInfo = live.firstHit
   const stunts = evs.filter((e) => e.kind === 'stunt').length
   const dist = Math.hypot(st.pos[0] - to[0], st.pos[1] - to[1])
   const bad = evs.filter((e) => e.kind === 'error' || (e.kind === 'disengage' && e.reason !== 'arrived'))
@@ -306,6 +325,11 @@ const typical = () => act([1, 0.5, 0.3, 0.3, 0.2, 0.3, 0.5], false).tune
 
 function record(r, cat) {
   r.t = new Date().toISOString()
+  if (r.invalid) { // not the policy's fault (no room there, or a bad start pose): log it, do not count or learn
+    appendFileSync(LOG, JSON.stringify({ ...r, setup: undefined, act: undefined }) + '\n')
+    state.skipped = (state.skipped || 0) + 1
+    return
+  }
   const pass = r.score >= PASS
   state.episodes++
   state.tally[pass ? 'pass' : 'fail']++
@@ -356,7 +380,7 @@ createServer((req, res) => {
 }).on('error', () => {}).listen(8780, '127.0.0.1')
 
 // A hung game (no state for 90 s although it is running) is restarted
-setInterval(lowPriority, 120000)
+setInterval(() => lowPriority(false), 120000)
 setInterval(() => {
   if (ws && Date.now() - live.lastState > 90000) {
     log('game stopped answering: restarting it')
@@ -376,6 +400,7 @@ function keepAwake() {
 async function main() {
   process.on('SIGINT', () => { send({ t: 'autopilot', mode: 'off' }); send({ t: 'traffic', count: 0 }); send({ t: 'settings', nags: true }); save(); process.exit(0) })
   log('practice runner: stop with Ctrl-C or by creating', STOP)
+  lowPriority(true)
   keepAwake()
   while (!existsSync(STOP)) {
     if (!(await ensureGame()) || !(await loadMap())) { await sleep(5000); continue }
@@ -385,15 +410,15 @@ async function main() {
       if (cat.startsWith('park')) {
         const kind = cat.split(':')[1]
         r = await parkEpisode(kind)
-        learn(r.act, r.score)
+        if (!r.invalid) learn(r.act, r.score)
         const setup = r.setup
         record(r, cat)
         // not right yet: the same start again (the policy samples a different action each time), up to 4 more tries
-        let ok = r.score >= PASS, lastR = r
+        let ok = r.score >= PASS || r.invalid, lastR = r
         for (let k = 1; k <= 4 && !ok && !existsSync(STOP); k++) {
           live.now = `retry ${k}: same start, a different action`
           const r2 = await parkEpisode(kind, setup)
-          learn(r2.act, r2.score)
+          if (!r2.invalid) learn(r2.act, r2.score)
           r2.attempt = k + 1; r2.retry = true
           lastR = r2
           record(r2, cat)

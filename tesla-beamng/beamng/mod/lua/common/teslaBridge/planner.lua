@@ -611,12 +611,25 @@ end
 
 -- Is the stretch of path free of walls, curbs and cars? `pts` in the order of travel (forward or reverse); `skipEnd` metres at the
 -- end are not checked with rays (the back of a spot is a wall on purpose).
+-- Height of the ground at (x, y), from a ray cast straight down from zTop; nil when nothing is hit within 5 m. Cached per autopark.
+function Planner:groundAt(cast, x, y, zTop)
+  self.gcache = self.gcache or {}
+  local key = math.floor(x / 0.3) * 100003 + math.floor(y / 0.3)
+  local c = self.gcache[key]
+  if c ~= nil then return c or nil end
+  local d = cast(x, y, zTop, 0, 0, -1, 5)
+  local g = d and (zTop - d) or false
+  self.gcache[key] = g
+  return g or nil
+end
+
 function Planner:pathClear(pts, ego, cars, skipEnd, overhang)
   local cast = self.castRay
   local wid = (ego.wid or 1.9) * 0.5 + 0.1 + ((self.apActive and tonumber(self.apActive.margin)) or 0)
   local over = overhang or 2.6
   local total = Mv.length(pts)
   local run = 0
+  local prevG = {}
   for i = 1, #pts - 1 do
     local a, b = pts[i], pts[i + 1]
     local dx, dy = unitv(b.x - a.x, b.y - a.y)
@@ -626,9 +639,35 @@ function Planner:pathClear(pts, ego, cars, skipEnd, overhang)
       if (c.x - a.x) ^ 2 + (c.y - a.y) ^ 2 < rr * rr then return false, 'car' end
     end
     if cast and i % 2 == 1 and run < total - (skipEnd or 0) then
+      -- curbs, steps and drops: the ground under the car's line and both sides must not jump between neighbouring samples
+      local zTop = ((a.z or ego.z or 0) + (ego.z or a.z or 0)) * 0.5 + 1.5
+      for k, off in ipairs({ 0, wid, -wid }) do
+        local ox, oy = a.x + -dy * off, a.y + dx * off
+        local g = self:groundAt(cast, ox, oy, zTop)
+        local pg = prevG[k]
+        if pg ~= nil and g ~= nil and math.abs(g - pg) > 0.09 then return false, 'curb' end
+        if pg ~= nil and g == nil then return false, 'drop' end
+        prevG[k] = g
+      end
+      -- the car's footprint: rays from the centre out to the body outline at every sample (an object that would end up inside the car,
+      -- e.g. a wall or pole the nose or a corner swings into on a turn)
+      if i % 3 == 1 then
+        local zf = (a.z or ego.z or 0) + 0.5
+        local hl, hw = (ego.len or 4.8) * 0.5, wid
+        for _, ang in ipairs({ 0, 0.4, -0.4, 1.57, -1.57, 2.74, -2.74, 3.14159 }) do
+          local ca, sa = math.cos(ang), math.sin(ang)
+          -- distance from the centre to the outline of the rectangle in this direction
+          local tx = math.abs(ca) > 1e-6 and hl / math.abs(ca) or 1e9
+          local ty = math.abs(sa) > 1e-6 and hw / math.abs(sa) or 1e9
+          local reach = math.min(tx, ty) + 0.2
+          local rx, ry = dx * ca - dy * sa, dx * sa + dy * ca
+          if cast(a.x, a.y, zf, rx, ry, 0, reach) then return false, 'body' end
+        end
+      end
       for _, h in ipairs({ 0.6, 0.22 }) do
         local z = (a.z or ego.z or 0) + h
-        for _, off in ipairs({ 0, wid, -wid }) do
+        -- close together (poles are thin): 7 rays across the car's width
+        for _, off in ipairs({ 0, wid * 0.33, -wid * 0.33, wid * 0.66, -wid * 0.66, wid, -wid }) do
           local ox, oy = a.x + -dy * off, a.y + dx * off
           local hit = cast(ox, oy, z, dx, dy, 0, over)
           if hit then return false, 'wall' end
@@ -702,9 +741,71 @@ local function apPolicyAction(pol, f)
   return out
 end
 
+-- A spot beside the road (open at both ends along its axis): parallel park into it from the lane the car is in.
+function Planner:autoparkParallel(ego, cars, best, ax, ay, z)
+  local px, py = -ay, ax -- across the spot's axis
+  local side = (ego.x - best.x) * px + (ego.y - best.y) * py
+  local nx, ny = px, py
+  if side < 0 then nx, ny = -px, -py end -- toward the road (where the car is)
+  local dxv, dyv = ny, -nx -- the driving direction: the spot is on its right
+  local off = max(2.4, min(3.6, math.abs(side)))
+  local spot = { x = best.x, y = best.y, z = z }
+  local rmin = 6
+  local q, segs = Mv.parallel(spot, { dx = dxv, dy = dyv, off = off }, rmin)
+  local function stage(pose)
+    local fwd, kf = Mv.feasibleBezier(pose, pose.hx, pose.hy, q, dxv, dyv, rmin)
+    local q0 = sqrt((q.x - pose.x) ^ 2 + (q.y - pose.y) ^ 2)
+    local head0 = q0 > 0.1 and (pose.hx * (q.x - pose.x) + pose.hy * (q.y - pose.y)) / q0 or 1
+    if not (kf and kf <= 1.1 / rmin and head0 > 0.05) then self.apWhy = string.format('kf %.3f/%.3f head0 %.2f', kf or -1, 1.1 / rmin, head0); return nil end
+    local okc, whyc = self:pathClear(fwd, ego, cars, 0, 2.6)
+    if not okc then self.apWhy = 'path ' .. tostring(whyc); return nil end
+    return fwd
+  end
+  local egoP = { x = ego.x, y = ego.y, z = ego.z or z, hx = ego.hx, hy = ego.hy }
+  local fwd = stage(egoP)
+  local revOk = self:pathClear(segs[1].pts, ego, cars, 3.5, 2.6)
+  self:emit('autoparkPlan', { parallel = true, spot = { best.x, best.y }, found = fwd ~= nil and revOk, rev = revOk, why = self.apWhy, q = { q.x, q.y }, d = { dxv, dyv }, ego = { ego.x, ego.y, ego.hx, ego.hy } })
+  if not revOk then return false, 'no room to parallel park there' end
+  if fwd then
+    self.mode = 'fsd'
+    self.spot = best
+    self.autoparkTries = 0
+    self:startManeuver({ { dir = 1, pts = fwd, maxSpeed = 2.2, kind = 'autoparkApproach' }, segs[1], segs[2] }, 'park', 'autopark')
+    return true
+  end
+  -- not reachable from here: a short straight move forward (or back) first, then again
+  if (self.autoparkTries or 0) < 3 then
+    local psi0 = math.atan2(ego.hy, ego.hx)
+    local bestPre, bestCost
+    for _, dirSign in ipairs({ 1, -1 }) do
+      for _, cv in ipairs({ 0, 1 / (rmin * 1.15), -1 / (rmin * 1.15), 1 / (rmin * 0.95), -1 / (rmin * 0.95) }) do
+        for _, len in ipairs({ 3, 5, 8, 12, 16 }) do
+          local pts, ex, ey, epsi = Mv.rollOut(ego.x, ego.y, psi0, dirSign, cv, len)
+          for _, pt in ipairs(pts) do pt.z = ego.z or z end
+          local cost = len * (dirSign < 0 and 1.3 or 1)
+          if (not bestCost or cost < bestCost) and self:pathClear(pts, ego, cars, 0, 2.6)
+             and stage({ x = ex, y = ey, z = ego.z or z, hx = math.cos(epsi), hy = math.sin(epsi) }) then
+            bestPre, bestCost = { pts = pts, dir = dirSign }, cost
+          end
+        end
+      end
+    end
+    if bestPre then
+      self.autoparkTries = (self.autoparkTries or 0) + 1
+      self.mode = 'fsd'
+      self.spot = best
+      self:startManeuver({ { dir = bestPre.dir, pts = bestPre.pts, maxSpeed = bestPre.dir > 0 and 2.0 or 1.5, kind = 'autoparkReposition' } }, 'repeat', 'autopark')
+      return true
+    end
+  end
+  self.autoparkTries = 0
+  return false, 'no room to maneuver into that spot'
+end
+
 function Planner:autopark(ego, cars, want, retry)
   local best, bd
   if not retry then self.apBlocked, self.apRetries = nil, 0 end
+  self.gcache = {}
   if self.apBlocked then -- places where an earlier try got stuck count as obstacles
     local c2 = {}
     for _, c in ipairs(cars or {}) do c2[#c2 + 1] = c end
@@ -736,6 +837,15 @@ function Planner:autopark(ego, cars, want, retry)
   local rmin = tonumber(tune.rmin) or 6
   -- the open side: where there is room in front of the spot; on a tie, the side the car is on
   local fPlus, fMinus = self:freeDist(best.x, best.y, z, ax, ay, 14), self:freeDist(best.x, best.y, z, -ax, -ay, 14)
+  -- a spot on the roadside (the road runs along its axis, close by): parallel parking; lots have the axis across the aisle
+  if self.graph then
+    local e, _, ed = P.nearestEdge(self.graph, best.x, best.y, nil, nil, 12)
+    if e then
+      local na, nb = self.graph.nodes[e.a], self.graph.nodes[e.b]
+      local ex, ey = unitv(nb.x - na.x, nb.y - na.y)
+      if ed < (na.r or 4) + 3.5 and math.abs(ex * ax + ey * ay) > 0.85 then return self:autoparkParallel(ego, cars, best, ax, ay, z) end
+    end
+  end
   local onPlus = ((ego.x - best.x) * ax + (ego.y - best.y) * ay) >= 0
   local o
   if fPlus > fMinus + 3 then o = { x = ax, y = ay } elseif fMinus > fPlus + 3 then o = { x = -ax, y = -ay } else o = { x = (onPlus and ax or -ax), y = (onPlus and ay or -ay) } end
@@ -1029,6 +1139,21 @@ function Planner:tick(snap)
   local ego = snap.ego
   local cars = snap.cars or {}
   local out = { commands = {} }
+  -- hit guard: the car's damage jumped while it was driving itself: stop at once instead of pushing on (curb, wall, another car)
+  if ego.damage then
+    if not self.dmgBase or self.mode == 'off' or ego.damage < self.dmgBase - 100 then self.dmgBase = ego.damage end
+    local lim = self.maneuver and 450 or 2500
+    local jump = ego.damage - self.dmgBase
+    if self.mode ~= 'off' and jump > lim then
+      self.dmgBase = ego.damage
+      self.maneuver, self.kturn = nil, nil
+      self.activity = 'drive'
+      out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+      self:emit('error', { detail = 'hit something (damage +' .. math.floor(jump) .. '), stopped' })
+      self:disengage('error', 'collision')
+      return out
+    end
+  end
   self.brain:observe(t, cars) -- read the traffic: swerving, cutting in, hard braking, parked
   self.tailCar = self.brain:tailgater(ego, cars) -- someone riding our bumper?
   for id, t0 in pairs(self.hangBack) do if t - t0 > 60 then self.hangBack[id] = nil end end
@@ -1605,6 +1730,19 @@ function Planner:tick(snap)
   if self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
   if wary then gap = gap * 1.4 end
   if lead and lead.cutIn and (self.profile == 'sloth' or self.profile == 'chill' or self.profile == 'standard') then gap = gap * 1.25 end -- let it in
+  -- stuck while it should be moving (against a curb or wall, wheels spinning): stop instead of pushing on
+  do
+    local wantsMove = (maxSpeed or 0) > 2 and not hold and not hazard and not lead and not wary and not self.maneuver
+      and not (stopS and stopS - sCar < 30) and ego.gear ~= 'P'
+    if self.mode == 'fsd' and wantsMove and (ego.v or 0) < 0.35 then self.stuckT = (self.stuckT or 0) + dt else self.stuckT = 0 end
+    if self.stuckT > 6 then
+      self.stuckT = 0
+      out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+      self:emit('error', { detail = 'stuck: something is blocking the car, stopped' })
+      self:disengage('error', 'stuck')
+      return out
+    end
+  end
   -- Furious Max stunts: on a clear, straight stretch it weaves (swings from side to side) or darts across the lane. Only the driven
   -- line is moved (inside the lane); the safety layer, the stops and the cars ahead are still obeyed. Knobs: settings.driftTune.
   if self.profile == 'furious' and self.settings.stunts ~= false and self.mode == 'fsd' and not lead and not hold and not hazard

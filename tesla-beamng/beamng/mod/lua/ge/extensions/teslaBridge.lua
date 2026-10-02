@@ -64,6 +64,8 @@ local CAM_DIR = 'temp/teslaBridge'
 -- FSD brain, safety, and what we last told the car
 local planner = nil
 local reloadRequested = nil -- (update while playing) set by the reloadMod command, handled in onUpdate
+local setTraffic -- (practice runner) AI traffic, defined further down
+local castRay -- static ray cast, defined further down (the planner's closure needs it declared up here)
 local plannerSettings = {}   -- kept across level loads
 local safetySettings = {}
 local safety = Sf.new()
@@ -638,7 +640,7 @@ end
 
 local rayFn = nil
 local rayProbed = false
-local function castRay(px, py, pz, dx, dy, dz, dist)
+castRay = function(px, py, pz, dx, dy, dz, dist)
   if not rayProbed then
     rayProbed = true
     if rawget(_G, 'castRayStatic') then
@@ -760,6 +762,7 @@ local function planTick()
   local veh = playerVehicle()
   if not veh then return end
   local ego = egoSnapshot(veh)
+  do local mo = map and map.objects and map.objects[veh:getID()]; ego.damage = mo and tonumber(mo.damage) or nil end
   local out = planner:tick({ t = gameTime, dt = 0.1, ego = ego, cars = trafficList(), weather = weather, overhead = overhead })
   applyPlannerOut(veh, out)
 end
@@ -1549,6 +1552,39 @@ handleCommand = function(msg)
     -- the car's own extension too when asked. Done on the next frame: this extension is replaced while it is running.
     reloadRequested = { vehicle = msg.vehicle ~= false }
     relayEvent({ kind = 'notice', detail = 'reloading the Tesla bridge' })
+  elseif t == 'traffic' and (tonumber(msg.count) or 0) < -1 then
+    -- (debug) fan of static rays around a point (x, y from hx/hy fields): shortest hit per height; also which other ray APIs exist
+    local fx, fy = tonumber(msg.x) or 0, tonumber(msg.y) or 0
+    local pv = be:getPlayerVehicle(0)
+    local z0 = (pv and pv:getPosition().z or 0)
+    local out = { 'apis: be.castRay=' .. type(be.castRay) .. ' castRay=' .. type(rawget(_G, 'castRay')) .. ' castRayDown=' .. type(rawget(_G, 'castRayDown')) .. ' be.castRayStatic=' .. type(be.castRayStatic) }
+    for _, h in ipairs({ 0.1, 0.4, 0.8, 1.4 }) do
+      local best, bestA = 99, nil
+      for k = 0, 15 do
+        local a2 = k * math.pi / 8
+        local okr, r = pcall(function() return rayFn(vec3(fx, fy, z0 + h), vec3(math.cos(a2), math.sin(a2), 0), 4) end)
+        if okr and type(r) == 'number' and r < best then best, bestA = r, k end
+      end
+      out[#out + 1] = string.format('h%.1f: %.2f@%s', h, best, tostring(bestA))
+    end
+    relayEvent({ kind = 'notice', detail = 'fan ' .. table.concat(out, ' | ') })
+  elseif t == 'traffic' and (tonumber(msg.count) or 0) < 0 then
+    -- (debug) raw results of the ray function from the player's car in 8 directions at 3 heights
+    local pv = be:getPlayerVehicle(0)
+    if pv then
+      local pp = pv:getPosition()
+      local out = { 'rayFn=' .. tostring(rayFn ~= nil) .. ' G=' .. tostring(rawget(_G, 'castRayStatic') ~= nil) .. ' be=' .. tostring(be and be.castRayStatic ~= nil) }
+      for k = 0, 7 do
+        local a = k * math.pi / 4
+        local row = {}
+        for _, h in ipairs({ 0.2, 0.6, 1.2 }) do
+          local okr, r = pcall(function() return (rayFn or function() end)(vec3(pp.x, pp.y, pp.z + h), vec3(math.cos(a), math.sin(a), 0), 20) end)
+          row[#row + 1] = okr and tostring(type(r) == 'number' and string.format('%.1f', r) or r) or ('ERR ' .. tostring(r))
+        end
+        out[#out + 1] = k .. ':' .. table.concat(row, '/')
+      end
+      relayEvent({ kind = 'notice', detail = 'rayTest ' .. table.concat(out, ' ') })
+    end
   elseif t == 'traffic' then
     -- (practice runner) AI cars around the player: count 0 removes them
     local okT, res = pcall(setTraffic, math.max(0, math.min(14, tonumber(msg.count) or 0)))
@@ -1692,7 +1728,7 @@ local function clearTraffic()
   end
   trafficIds = {}
 end
-local function setTraffic(count)
+setTraffic = function(count)
   clearTraffic()
   if count <= 0 then return 'cleared' end
   local pv = be:getPlayerVehicle(0)
