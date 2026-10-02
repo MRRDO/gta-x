@@ -175,7 +175,7 @@ async function parkEpisode(kindWanted, fixed, greedy) {
   await reset()
   evs = []
   await teleport(pos, h)
-  if (!fixed && (st.damage || 0) > 300) return { invalid: true, type: 'park', cat: 'park:' + kind, score: 0, errs: ['bad start pose'] }
+  if (!fixed && (st.damage || 0) > 1500) return { invalid: true, type: 'park', cat: 'park:' + kind, score: 0, errs: ['bad start pose'] }
   live.dmg0 = st.damage || 0; live.firstHit = null
   const f0 = features(st.pos, [st.dir[0], st.dir[1]], sp, a)
   const x = act(f0, !greedy)
@@ -227,7 +227,7 @@ async function p2pEpisode(opts = {}) {
       const off = Math.min(1.8, nd.radius * 0.4) // right of the road's centre line
       await reset()
       await teleport([nd.pos[0] + hy * off, nd.pos[1] - hx * off, nd.pos[2] + 0.6], [hx, hy])
-      if ((st.damage || 0) > 300) { log('start pose damaged the car (inside something): trying another'); return { invalid: true, type: 'p2p', cat: 'p2p:start', score: 0, errs: ['bad start pose'] } }
+      if ((st.damage || 0) > 1500) { log('start pose damaged the car (inside something): trying another'); return { invalid: true, type: 'p2p', cat: 'p2p:start', score: 0, errs: ['bad start pose'] } }
     }
   } else if (!opts.fromPark) await reset()
   if (!to) {

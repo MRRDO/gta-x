@@ -377,8 +377,13 @@ function Planner:parallelPark(path, cars)
           if abs(along) < GAP * 0.5 + CAR_L * 0.5 - 0.3 and abs(side) < 2.2 then ok = false; break end
         end
       end
+      local q, segs
       if ok then
-        local q, segs = Mv.parallel(spot, { dx = c.dx, dy = c.dy, off = curb - lane }, 6)
+        q, segs = Mv.parallel(spot, { dx = c.dx, dy = c.dy, off = curb - lane }, 6)
+        local pe = { z = c.z, wid = 1.9, len = 4.8 }
+        if not self:pathClear(segs[1].pts, pe, cars, 3.5, 2.6) then ok = false end
+      end
+      if ok then
         -- run the route on (in the lane) to q, then do the maneuver
         local pr = P.project(path, c.x, c.y)
         local cut = {}
@@ -498,6 +503,11 @@ function Planner:engage(mode, profile, ego, cars)
       local road = { x = cx + dy * off, y = cy - dx * off, z = a.z, dx = dx, dy = dy }
       local segs = Mv.backOut(ego, road, 6)
       if segs then
+        local okc, whyc = self:segsClear(segs, ego, cars)
+        if not okc then
+          self.mode = 'off'
+          return false, 'not enough room to back out safely (' .. tostring(whyc) .. ')'
+        end
         self:startManeuver(segs, 'drive', 'backOut')
       end
     elseif loc and self.uturnNeeded and not loc.ow and loc.r < 9 then
@@ -505,6 +515,10 @@ function Planner:engage(mode, profile, ego, cars)
       local latRight = P.laneCenter(loc.r, false, loc.lane) - loc.lat
       local road = { cx = ego.x - loc.dy * latRight, cy = ego.y + loc.dx * latRight, dx = loc.dx, dy = loc.dy, r = loc.r }
       local seg = Mv.kTurnNext(ego, road, 6, nil)
+      if seg and not self:segsClear({ seg }, ego, cars) then
+        self.mode = 'off'
+        return false, 'not enough room to turn around safely'
+      end
       if seg then
         self.kturn = { road = road, lastDir = seg.dir }
         self:startManeuver({ seg }, 'drive', 'kTurn')
@@ -529,6 +543,35 @@ function Planner:disengage(reason, detail)
   end
   self.nag:onDisengage()
   self:emit('disengage', { reason = reason, detail = detail })
+end
+
+-- Is something (a wall, a pole, a curb or step) right in the way of the car moving `dirSign` (1 forward, -1 back)?
+function Planner:aheadBlocked(ego, dirSign)
+  local cast = self.castRay
+  if not cast then return false end
+  local hx, hy = ego.hx * dirSign, ego.hy * dirSign
+  local half, wid = (ego.len or 4.6) * 0.5, (ego.wid or 1.9) * 0.5
+  local z0 = ego.z or 0
+  local reach = half + 0.8
+  for _, h in ipairs({ 0.5, 0.2 }) do
+    for _, off in ipairs({ 0, wid * 0.5, -wid * 0.5, wid * 0.95, -wid * 0.95 }) do
+      if cast(ego.x - hy * off, ego.y + hx * off, z0 + h, hx, hy, 0, reach) then return true end
+    end
+  end
+  -- a step or drop under the nose
+  local g0 = self:groundAt(cast, ego.x, ego.y, z0 + 1.5)
+  local g1 = self:groundAt(cast, ego.x + hx * (half + 0.7), ego.y + hy * (half + 0.7), z0 + 1.5)
+  if g0 and g1 and math.abs(g1 - g0) > 0.12 then return true end
+  return false
+end
+
+-- Are all the legs of a maneuver clear of walls, curbs and cars?
+function Planner:segsClear(segs, ego, cars)
+  for _, sg in ipairs(segs or {}) do
+    local ok, why = self:pathClear(sg.pts, ego, cars, 0, 2.6)
+    if not ok then return false, why end
+  end
+  return true
 end
 
 function Planner:startManeuver(segs, after, kind)
@@ -2264,11 +2307,22 @@ function Planner:tickManeuver(ego, cars, out)
     local lat = abs(-rx * hy + ry * hx)
     if lon > 0 and lon - ((ego.len or 4.6) + (c.l or 4.6)) * 0.5 < 1.5 and lat < ((ego.wid or 1.9) + (c.w or 1.9)) * 0.5 + 0.2 then blocked = true end
   end
+  -- anything solid close ahead in the direction of travel (walls, poles, curbs) also holds the car; not at the very end of a leg
+  -- (the spot's back wall is meant to be that close)
+  if not blocked and remaining > 1.8 and self:aheadBlocked(ego, seg.dir) then blocked = true end
   if remaining < 0.6 and not moving then
     mv.dwell = mv.dwell + (self.t - (mv.lastT or self.t))
     if mv.dwell > 0.4 then
       if mv.kind == 'kTurn' and self.kturn then
         local nxt = Mv.kTurnNext(ego, self.kturn.road, 6, self.kturn.lastDir)
+        if nxt and not self:segsClear({ nxt }, ego, cars) then
+          self.maneuver, self.kturn = nil, nil
+          self.activity = 'drive'
+          out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+          self:emit('error', { detail = 'turn around: no room to continue, stopped' })
+          self:disengage('error', 'no room')
+          return
+        end
         if nxt then
           mv.segs[#mv.segs + 1] = nxt
           self.kturn.lastDir = nxt.dir
