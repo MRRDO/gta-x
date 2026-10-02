@@ -205,16 +205,22 @@ async function setTraffic(n) {
 }
 
 async function p2pEpisode(opts = {}) {
+  let to = null
   if (!opts.fromPark && !opts.here) {
-    // a random start somewhere on the map (a road node), not always the same place
+    // a random start somewhere on the map (a road node), pointing along the road towards the destination (no U-turn needed)
     const nodes = (map.nodes || []).filter((nd) => nd.radius > 3.5)
     if (nodes.length) {
-      // on the road, pointing along it (towards a neighbouring node), in the right-hand lane
       const byId = (map._byId ||= new Map((map.nodes || []).map((q) => [q.id, q])))
       const adj = (map._adj ||= (() => { const m = new Map(); for (const l of map.links || []) { if (!(l.drivability > 0.3)) continue; (m.get(l.a) || m.set(l.a, []).get(l.a)).push(l.b); if (!l.oneWay) (m.get(l.b) || m.set(l.b, []).get(l.b)).push(l.a) } return m })())
       const withLinks = nodes.filter((q) => (adj.get(q.id) || []).length)
       const nd = pick(withLinks.length ? withLinks : nodes)
-      const nb = byId.get(pick(adj.get(nd.id) || [nd.id])) || nd
+      const d = opts.drift ? rnd(250, 600) : rnd(150, 400)
+      const c = (map.nodes || []).filter((q) => Math.abs(Math.hypot(q.pos[0] - nd.pos[0], q.pos[1] - nd.pos[1]) - d) < 40 && q.radius > 3.5)
+      if (!c.length) return null
+      to = pick(c).pos
+      // the neighbour that is closest to the destination
+      const nbs = (adj.get(nd.id) || []).map((id) => byId.get(id)).filter(Boolean)
+      const nb = nbs.sort((u, v) => Math.hypot(u.pos[0] - to[0], u.pos[1] - to[1]) - Math.hypot(v.pos[0] - to[0], v.pos[1] - to[1]))[0] || nd
       let hx = nb.pos[0] - nd.pos[0], hy = nb.pos[1] - nd.pos[1]
       const hl = Math.hypot(hx, hy) || 1
       hx /= hl; hy /= hl
@@ -224,11 +230,13 @@ async function p2pEpisode(opts = {}) {
       if ((st.damage || 0) > 300) { log('start pose damaged the car (inside something): trying another'); return { invalid: true, type: 'p2p', cat: 'p2p:start', score: 0, errs: ['bad start pose'] } }
     }
   } else if (!opts.fromPark) await reset()
-  const here = st.pos
-  const d = opts.drift ? rnd(250, 600) : rnd(150, 400)
-  const c = (map.nodes || []).filter((nd) => Math.abs(Math.hypot(nd.pos[0] - here[0], nd.pos[1] - here[1]) - d) < 40 && nd.radius > 3.5)
-  if (!c.length) return null
-  const to = pick(c).pos
+  if (!to) {
+    const here = st.pos
+    const d = opts.drift ? rnd(250, 600) : rnd(150, 400)
+    const c = (map.nodes || []).filter((nd) => Math.abs(Math.hypot(nd.pos[0] - here[0], nd.pos[1] - here[1]) - d) < 40 && nd.radius > 3.5)
+    if (!c.length) return null
+    to = pick(c).pos
+  }
   const arrival = opts.arrival || pick(['Street', 'Parking Lot', 'Curbside', 'Driveway'])
   const profile = opts.profile || pick(['chill', 'standard', 'standard', 'hurry'])
   evs = []
