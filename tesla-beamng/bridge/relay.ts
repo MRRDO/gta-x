@@ -20,7 +20,8 @@ import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand } from './assistant.ts'
-import { audioStatus, chooseOutputs, testTone } from './audio.ts'
+import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq } from './audio.ts'
+import { pcPlayerAvailable, play as pcPlay, control as pcControl, status as pcStatus } from './pcplayer.ts'
 import { transcribe, sttAvailable } from './stt.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -575,16 +576,36 @@ const server = createServer((req, res) => {
     })
     return
   }
-  if (path === '/audio' || path === '/audio/test') {
+  if (path === '/audio' || path.startsWith('/audio/') || path.startsWith('/pc/')) {
     if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
     const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
-    if (req.method === 'GET') { void audioStatus().then((r) => json(200, r)); return }
+    if (req.method === 'GET') {
+      if (path === '/audio') { void audioStatus().then((r) => json(200, { ...r, player: pcPlayerAvailable() })); return }
+      if (path === '/pc/status') { void pcStatus(here).then((r) => json(200, r), (e) => json(502, { error: (e as Error).message })); return }
+      return json(404, { error: 'no such page' })
+    }
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => { if (chunks.length < 50) chunks.push(c) })
     req.on('end', async () => {
       try {
         const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        const cfg = loadConfig()
+        const devName = async (id: string | null) => (id ? (await audioStatus()).devices.find((d) => d.id === id)?.name : undefined)
         if (path === '/audio/test') { await testTone(String(b.id)); return json(200, { ok: true }) }
+        if (path === '/audio/volume') {
+          const id = b.target === 'game' ? cfg.game : cfg.music
+          if (!id) return json(409, { error: 'pick that output first' })
+          await setDeviceVolume(id, Number(b.value)); return json(200, { ok: true })
+        }
+        if (path === '/audio/duck') { await duck(!!b.on); return json(200, { ok: true }) }
+        if (path === '/audio/eq') {
+          const name = await devName(cfg.music)
+          if (!name) return json(409, { error: 'pick the music output first' })
+          writeEq(Array.isArray(b.bands) ? b.bands.slice(0, 10) : [], name); return json(200, { ok: true })
+        }
+        if (path === '/pc/play') { await pcPlay(String(b.id), here, await devName(cfg.music)); return json(200, { ok: true }) }
+        if (path === '/pc/control') { await pcControl(b.action, b.value, here); return json(200, { ok: true }) }
+        if (path !== '/audio') return json(404, { error: 'no such page' })
         json(200, { ok: true, ...(await chooseOutputs({ game: b.game, music: b.music })) })
       } catch (e) { json(400, { error: (e as Error).message }) }
     })

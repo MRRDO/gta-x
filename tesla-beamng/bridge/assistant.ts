@@ -81,15 +81,28 @@ export const INTENTS = ['navigate', 'addStop', 'park', 'parkingSpot', 'emergency
 export type VoiceIntent = { kind: (typeof INTENTS)[number]; query?: string }
 
 export function buildCommandPrompt(text: string): string {
-  return `You are the voice command parser of a car's touchscreen. The driver said: ${JSON.stringify(text)}
+  return `You are the voice command parser of a car's touchscreen. Understand what the driver MEANS, not just the words: people talk casually, use slang, and say things indirectly.
+The driver said: ${JSON.stringify(text)}
 Pick exactly one intent:
-- navigate: they want to go somewhere. query = the place or address only (e.g. "gas station", "downtown", "Walmart")
-- addStop: add a stop on the way. query = the place
-- park: park the car where it is / park for them
+- navigate: they want to go somewhere, even indirectly (hungry, need gas, need a bathroom, want coffee, going home). query = a place or kind of place a map can search ("gas station", "restaurant", "downtown", "Walmart")
+- addStop: add a stop on the way, keep the current trip. query = the place
+- park: park the car where it is / they want the car to park itself
 - parkingSpot: take them to a nearby parking spot
-- emergency: they say they are sick, hurt or need help
-- cancel: they say they are fine or want to cancel
-- unknown: anything else
+- emergency: they say or clearly imply that THEY are sick, hurt, dizzy, about to pass out, or need medical help. Complaining about traffic, the car or a route is NOT an emergency
+- cancel: they say they are fine, or want to cancel / never mind
+- unknown: chit-chat, questions, or anything you cannot act on
+Examples:
+"i'm starving" -> {"kind":"navigate","query":"restaurant"}
+"i need to fill up" -> {"kind":"navigate","query":"gas station"}
+"gotta pee" -> {"kind":"navigate","query":"restroom"}
+"let's grab a coffee" -> {"kind":"navigate","query":"coffee shop"}
+"swing by the pharmacy on the way" -> {"kind":"addStop","query":"pharmacy"}
+"can you just put the car somewhere" -> {"kind":"parkingSpot","query":""}
+"my chest feels weird and my arm is numb" -> {"kind":"emergency","query":""}
+"i feel like i'm gonna pass out" -> {"kind":"emergency","query":""}
+"i'm sick of this traffic" -> {"kind":"unknown","query":""}
+"nah i'm good, my bad" -> {"kind":"cancel","query":""}
+"what's the weather" -> {"kind":"unknown","query":""}
 Answer as JSON only: {"kind":"<intent>","query":"<place or empty>"}`
 }
 
