@@ -21,12 +21,25 @@ $groups = [ordered]@{
     @('Valve.Steam', 'Steam (BeamNG)'), @('Ollama.Ollama', 'Ollama (FSD Assistant, small local AI)'), @('LizardByte.Sunshine', 'Sunshine (stream the game to the iPad, optional)'))
 }
 
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+# winget id -> @(file pattern in ..\installers, silent arguments or 'MSI'). Anything not listed (or that fails) uses winget.
+$offline = @{
+  'Google.Chrome'          = @('ChromeStandaloneSetup64.exe', '/silent /install')
+  'AnyDesk.AnyDesk'        = @('AnyDesk.exe', '--install "C:\Program Files (x86)\AnyDesk" --start-with-win --silent')
+  'Git.Git'                = @('Git-*-64-bit.exe', '/VERYSILENT /NORESTART')
+  'OpenJS.NodeJS.LTS'      = @('node-v*-x64.msi', 'MSI')
+  'Python.Python.3.12'     = @('python-3.12.*-amd64.exe', '/quiet InstallAllUsers=1 PrependPath=1')
+  'Cloudflare.cloudflared' = @('cloudflared-windows-amd64.msi', 'MSI')
+  '7zip.7zip'              = @('7z*-x64.exe', '/S')
+  'Tailscale.Tailscale'    = @('tailscale-setup-*-amd64.msi', 'MSI')
+}
+
+if (-not (Get-Command winget -ErrorAction SilentlyContinue) -and -not (Test-Path $inst)) {
   Write-Host 'winget is not installed. Open the Microsoft Store, search "App Installer", install/update it, then run this again.' -ForegroundColor Yellow
   Start-Process 'ms-windows-store://pdp/?ProductId=9NBLGGH4NNS1'
   exit 1
 }
-winget source update | Out-Null
+$hasWinget = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+if ($hasWinget) { winget source update | Out-Null }
 $failed = @()
 foreach ($g in $groups.Keys) {
   $go = $All
@@ -35,8 +48,15 @@ foreach ($g in $groups.Keys) {
   foreach ($p in $groups[$g]) {
     $id, $name = $p
     Write-Host "== $name" -ForegroundColor Cyan
-    $local = if (Test-Path $inst) { Get-ChildItem $inst -File | Where-Object { $_.BaseName -like "*$($id.Split('.')[-1])*" } | Select-Object -First 1 } else { $null }
-    if ($local) { Write-Host "   offline installer: $($local.Name) (run it by hand if silent mode does not work)"; Start-Process $local.FullName -ArgumentList '/S' -Wait; continue }
+    $off = $offline[$id]
+    $local = if ($off -and (Test-Path $inst)) { Get-ChildItem $inst -File -Filter $off[0] | Sort-Object Name -Descending | Select-Object -First 1 } else { $null }
+    if ($local) {
+      Write-Host "   offline installer: $($local.Name)"
+      if ($off[1] -eq 'MSI') { $p = Start-Process msiexec.exe -ArgumentList "/i `"$($local.FullName)`" /qn /norestart" -Wait -PassThru }
+      else { $p = Start-Process $local.FullName -ArgumentList $off[1] -Wait -PassThru }
+      if ($p.ExitCode -in 0, 3010) { continue }
+      Write-Host "   offline installer exited with $($p.ExitCode), trying winget instead" -ForegroundColor Yellow
+    }
     winget install --id $id -e --silent --accept-package-agreements --accept-source-agreements
     if ($LASTEXITCODE -ne 0) { $failed += "$name ($id)" }
   }

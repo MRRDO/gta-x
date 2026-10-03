@@ -28,3 +28,5 @@ does not browse much; keep Chrome updated and do not read email on it.
 
 These scripts were written without a Windows machine to test them on. They only read or ask first, but if
 anything errors, copy the red text and send it to Claude.
+
+New: menu 9 in START-HERE.cmd shows the newest specs + test results on screen and opens a ready-written email to quentincpullum@gmail.com (you press Send; no password is stored). Menu 1 does this automatically after the benchmark.

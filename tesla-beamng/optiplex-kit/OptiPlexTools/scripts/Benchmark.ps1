@@ -95,7 +95,7 @@ if ($Soak -gt 0) {
   $w = Start-Watch ($Soak * 60)
   $jobs = 1..$n | ForEach-Object { Start-Job -ArgumentList $Soak -ScriptBlock { param($m) $e = (Get-Date).AddMinutes($m); $x = 0.0; while ((Get-Date) -lt $e) { for ($i = 1; $i -le 200000; $i++) { $x += [math]::Sqrt($i) } } } }
   Wait-Job $w | Out-Null
-  $r = Receive-Job $w; Remove-Job $w -Force
+  $r = Receive-Job $w | Select-Object * -ExcludeProperty RunspaceId,PSComputerName,PSShowComputerName; Remove-Job $w -Force
   $jobs | Stop-Job -ErrorAction SilentlyContinue; $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
   $r | Format-List
   $verdict = @()
@@ -151,7 +151,7 @@ if ($SampleFps -gt 0) {
   $watch = Start-Watch $SampleFps
   $out = & $node (Join-Path $here 'fps-sample.mjs') --seconds $SampleFps --label $lbl
   Wait-Job $watch -Timeout 30 | Out-Null
-  $w = Receive-Job $watch -ErrorAction SilentlyContinue; Remove-Job $watch -Force -ErrorAction SilentlyContinue
+  $w = Receive-Job $watch -ErrorAction SilentlyContinue | Select-Object * -ExcludeProperty RunspaceId,PSComputerName,PSShowComputerName; Remove-Job $watch -Force -ErrorAction SilentlyContinue
   $res = $null; try { $res = $out | ConvertFrom-Json } catch {}
   if ($res -and $res.avg) {
     if ($w) { foreach ($k in 'cpuAvg', 'cpuMax', 'perfMin', 'tempMax', 'ramFreeMinMB', 'gpu3d') { $res | Add-Member -NotePropertyName $k -NotePropertyValue $w.$k -Force } }
