@@ -5,8 +5,10 @@
 //   npm run bridge [-- --port 8765 --game-port 8766 --app ../dist --no-auth --feedback-dir ./notes]
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
+import { localTls, setupPage, type Tls } from './localtls.ts'
 import { connect, type Socket } from 'node:net'
-import { homedir, networkInterfaces } from 'node:os'
+import { homedir, hostname, networkInterfaces } from 'node:os'
 import { readFileSync, existsSync, writeFileSync, statSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, dirname, extname, normalize, resolve, basename } from 'node:path'
 import { readFile, stat } from 'node:fs/promises'
@@ -534,7 +536,7 @@ function appRoot(): string | null {
   return null
 }
 
-const server = createServer((req, res) => {
+const handler = (req: IncomingMessage, res: ServerResponse) => {
   const url = new URL(req.url ?? '/', 'http://x')
   const path = url.pathname
   // a link with ?token= (the tunnel QR) leaves a cookie, so the app's own WebSocket gets in too
@@ -568,8 +570,10 @@ const server = createServer((req, res) => {
           const ext = /webm/.test(ct) ? 'webm' : /ogg/.test(ct) ? 'ogg' : /wav/.test(ct) ? 'wav' : 'm4a'
           return json(200, { text: await transcribe(body, ext) })
         }
-        const text = String(JSON.parse(body.toString('utf8') || '{}').text ?? '')
-        return json(200, { intent: text ? await parseCommand(text) : null })
+        const b = JSON.parse(body.toString('utf8') || '{}')
+        const text = String(b.text ?? '')
+        const history = Array.isArray(b.history) ? b.history.slice(-6).filter((t: any) => t && typeof t.text === 'string' && (t.role === 'driver' || t.role === 'car')) : []
+        return json(200, { intent: text ? await parseCommand(text, history, b.context && typeof b.context === 'object' ? b.context : {}) : null })
       } catch (e: any) {
         return json(e?.status ?? 500, { error: e?.message ?? 'failed' })
       }
@@ -644,6 +648,8 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': lastMinimap.mime, 'cache-control': 'no-cache' })
     return res.end(lastMinimap.data)
   }
+  if (path === '/ca.crt' && tls) { res.writeHead(200, { 'content-type': 'application/x-x509-ca-cert', 'content-disposition': 'attachment; filename="tesla-bridge-ca.crt"' }); return res.end(tls.ca) }
+  if (path === '/https-setup' && tls) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(setupPage(String(req.headers.host ?? '').replace(/:\d+$/, ''), HTTPS_PORT)) }
   // The app (its dist-beamng build) at / with an SPA fallback (also at /app/ for old links). Same origin
   // as the relay, so it can use ws:// on the Wi-Fi, or wss:// through the tunnel.
   const root = appRoot()
@@ -660,18 +666,37 @@ const server = createServer((req, res) => {
   }
   res.writeHead(404)
   res.end('not found')
-})
+}
+const server = createServer(handler)
+
+// --no-https turns off the home-Wi-Fi https (port 8443, a certificate the iPad trusts once: see bridge/localtls.ts)
+const HTTPS_PORT = Number(arg('https-port') ?? 8443)
+let tls: Tls | null = null
+let httpsServer: ReturnType<typeof createHttpsServer> | null = null
+function startHttps(names: string[]) {
+  if (arg('no-https') === 'true' || process.env.TESLA_HTTPS === '0') return
+  try {
+    tls = localTls(join(here, '.tls'), ['localhost', '127.0.0.1', hostname(), `${hostname().toLowerCase()}.local`, ...names])
+    httpsServer = createHttpsServer({ key: tls.key, cert: tls.cert }, handler)
+    httpsServer.on('upgrade', onUpgrade)
+    httpsServer.on('error', (e) => console.log(`  https: could not start on ${HTTPS_PORT} (${(e as Error).message})`))
+    httpsServer.listen(HTTPS_PORT, '0.0.0.0')
+  } catch (e) {
+    console.log(`  https: off (${(e as Error).message})`)
+  }
+}
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 24 << 20 }) // voice notes can be a few MB
 
-server.on('upgrade', (req, socket, head) => {
+const onUpgrade = (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => {
   if (!authorized(req)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
     socket.destroy()
     return
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
-})
+}
+server.on('upgrade', onUpgrade)
 
 const camClients = new Map<CamViewName, Set<WebSocket>>(CAM_VIEWS.map((v) => [v, new Set<WebSocket>()]))
 let camInfo = { width: 320, height: 180, fps: 5 }
@@ -756,6 +781,7 @@ function lanAddresses(): string[] {
 server.listen(PORT, '0.0.0.0', () => {
   const ips = lanAddresses()
   const ip = ips[0] ?? 'localhost'
+  startHttps(ips)
   const q = NO_AUTH ? '' : `?token=${TOKEN}`
   console.log('')
   console.log('  Tesla UI <-> BeamNG bridge')
@@ -766,6 +792,9 @@ server.listen(PORT, '0.0.0.0', () => {
   if (app) console.log(`  Tesla UI app:         http://${ip}:${PORT}/   (from ${app})`)
   else console.log('  Tesla UI app:         not found (build it: npm run build:beamng in tesla-ui-atv, or pass --app <dist-beamng>)')
   console.log(`  test page:            http://${ip}:${PORT}/test`)
+  if (tls) {
+    console.log(`  secure (camera/mic):  https://${ip}:${HTTPS_PORT}/   one-time iPad setup: http://${ip}:${PORT}/https-setup`)
+  }
   if (!NO_AUTH) console.log(`  pairing token:        ${TOKEN}`)
   console.log(`  waiting for BeamNG on ${GAME_HOST}:${GAME_PORT} ...`)
   console.log('')

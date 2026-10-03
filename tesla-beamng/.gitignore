@@ -4,3 +4,4 @@ bridge/.token
 bridge/feedback/
 bridge/buttons.json
 handoff/
+bridge/.tls/

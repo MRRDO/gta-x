@@ -9,6 +9,9 @@ check('navigate without a query is rejected', parseVoiceIntent('{"kind":"navigat
 check('chatter around the JSON', parseVoiceIntent('ok {"kind":"park"} done')?.kind === 'park')
 check('unknown intent name rejected', parseVoiceIntent('{"kind":"launchMissiles"}') === null)
 check('emergency parses (the app still asks first)', parseVoiceIntent('{"kind":"emergency"}')?.kind === 'emergency')
+check('say is kept and trimmed', parseVoiceIntent('{"kind":"unknown","say":"hey there"}')?.say === 'hey there')
+check('tired is an intent', parseVoiceIntent('{"kind":"tired","say":"i got you"}')?.kind === 'tired')
+check('prompt carries history + state', /Driver: hi/.test(buildCommandPrompt('x', [{ role: 'driver', text: 'hi' }], { driving: true })) && /moving/.test(buildCommandPrompt('x', [], { driving: true })))
 check('prompt carries the phrase', buildCommandPrompt('take me home').includes('take me home'))
 
 // speech: with fake ffmpeg + whisper scripts (unix only: skipped on Windows)
