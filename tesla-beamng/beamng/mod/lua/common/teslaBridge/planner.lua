@@ -552,6 +552,26 @@ function Planner:summon(dir, ego)
   return true
 end
 
+-- "I'm not feeling well": FSD takes over (engaging if it was off), hazards on, and it stops at the safer of
+-- a free parking spot that is quick to reach or the side of the road. Cancel with cancelEmergency().
+function Planner:emergencyStop(ego, cars)
+  if self.emergency then return true end
+  if self.mode == 'off' then
+    local ok, err = self:engage('fsd', 'sloth', ego, cars)
+    if not ok then return false, err end
+  end
+  self.emergency = { t = self.t }
+  self:emit('emergencyStop', {})
+  return true
+end
+
+function Planner:cancelEmergency()
+  if not self.emergency then return false end
+  self.emergency = nil -- the next tick restores the original trip (same path as an answered nag)
+  self:emit('emergencyStop', { cancelled = true })
+  return true
+end
+
 -- Stopped (parked / pulled over) for an unresponsive driver: P, hazards on, a strike, FSD off.
 function Planner:finishUnresponsive(out)
   if not self.unresponsive then return false end
@@ -559,9 +579,16 @@ function Planner:finishUnresponsive(out)
   self.unresponsive = nil
   self.chosenSpot = nil
   out.commands[#out.commands + 1] = { t = 'signal', dir = 'hazard' }
-  for _, ev in ipairs(self.nag:strike()) do self:emit(ev.kind, ev) end
-  self:emit('unresponsive', { action = kind == 'park' and 'parked' or 'pulledOver' })
-  self:disengage('attention', 'driver did not respond')
+  if self.emergency then
+    -- the driver asked for this (not feeling well): no strike, and the app can call someone now
+    self.emergency = nil
+    self:emit('emergencyStopped', { where = kind == 'park' and 'parkingSpot' or 'roadside' })
+    self:disengage('arrived', 'emergency stop')
+  else
+    for _, ev in ipairs(self.nag:strike()) do self:emit(ev.kind, ev) end
+    self:emit('unresponsive', { action = kind == 'park' and 'parked' or 'pulledOver' })
+    self:disengage('attention', 'driver did not respond')
+  end
   self.dest, self.path = nil, nil
   out.route = self:routeMessage()
   return true
@@ -1330,7 +1357,7 @@ function Planner:tick(snap)
 
   ---------------------------------------------------------------- forced stop (ignored nag)
   local hazard = false
-  if nagOut.forceStop then
+  if nagOut.forceStop or self.emergency then
     -- unresponsive driver: hazards and alarm (the app beeps on the alert), slow down, then
     --  setting unresponsive = 'park' and a free spot within 500 m: drive there, park, P
     --  otherwise (or 'pullOver'): pull over to the curb a little ahead, stop, P
@@ -1338,11 +1365,14 @@ function Planner:tick(snap)
     if not self.unresponsive then
       self.unresponsive = { t = t, saved = { dest = self.dest, stops = self.stops, arrival = self.arrival } }
       local kind = 'pullOver'
-      if self.settings.unresponsive == 'park' then
+      if self.emergency or self.settings.unresponsive == 'park' then
         local sp, bd
         for _, cand in ipairs(self.parking) do
-          local d = sqrt((cand.x - ego.x) ^ 2 + (cand.y - ego.y) ^ 2)
-          if d < 500 and not spotOccupied(cand, cars) and (not bd or d < bd) then sp, bd = cand, d end
+          local rx, ry = cand.x - ego.x, cand.y - ego.y
+          local d = sqrt(rx * rx + ry * ry)
+          -- an emergency takes a spot only if it is quick and ahead (about 8 s away); otherwise the roadside is safer
+          local reach = not self.emergency or (d < 130 and d / max(v, 5) < 8 and rx * ego.hx + ry * ego.hy > 0.2 * d)
+          if d < 500 and reach and not spotOccupied(cand, cars) and (not bd or d < bd) then sp, bd = cand, d end
         end
         if sp then
           kind = 'park'
@@ -1360,7 +1390,7 @@ function Planner:tick(snap)
       self.replanNow = true
       self:emit('unresponsive', { action = kind })
     end
-    cap(11) -- ~25 mph
+    cap(self.emergency and 9 or 11) -- ~20-25 mph
   elseif self.unresponsive then
     -- the driver answered: back to the original trip
     local sv = self.unresponsive.saved

@@ -71,3 +71,53 @@ export async function adviseStuck(scene: Record<string, unknown>): Promise<{ act
   }
 }
 
+
+
+// ---------------------------------------------------------------------------
+// Voice commands the plain rules did not understand ("find me gas near the school"): the small local model
+// turns them into one of a fixed set of intents. It only ever names an intent; the app shows a preview and the
+// driver confirms. A health emergency from the model is NEVER acted on by itself (the app asks first).
+export const INTENTS = ['navigate', 'addStop', 'park', 'parkingSpot', 'emergency', 'cancel', 'unknown'] as const
+export type VoiceIntent = { kind: (typeof INTENTS)[number]; query?: string }
+
+export function buildCommandPrompt(text: string): string {
+  return `You are the voice command parser of a car's touchscreen. The driver said: ${JSON.stringify(text)}
+Pick exactly one intent:
+- navigate: they want to go somewhere. query = the place or address only (e.g. "gas station", "downtown", "Walmart")
+- addStop: add a stop on the way. query = the place
+- park: park the car where it is / park for them
+- parkingSpot: take them to a nearby parking spot
+- emergency: they say they are sick, hurt or need help
+- cancel: they say they are fine or want to cancel
+- unknown: anything else
+Answer as JSON only: {"kind":"<intent>","query":"<place or empty>"}`
+}
+
+export function parseVoiceIntent(text: string): VoiceIntent | null {
+  try {
+    const j = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1))
+    if (!(INTENTS as readonly string[]).includes(j.kind)) return null
+    const q = typeof j.query === 'string' ? j.query.trim().slice(0, 80) : ''
+    if ((j.kind === 'navigate' || j.kind === 'addStop') && !q) return null
+    return { kind: j.kind, ...(q ? { query: q } : {}) }
+  } catch {
+    return null
+  }
+}
+
+/** The local model's reading of a voice command, or null (model off / not running / unusable answer). */
+export async function parseCommand(text: string): Promise<VoiceIntent | null> {
+  if (!enabled || !(await refresh())) return null
+  try {
+    const r = await fetch(`${URL_BASE}/api/generate`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(15000),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, prompt: buildCommandPrompt(text.slice(0, 300)), stream: false, format: 'json', options: { temperature: 0, num_predict: 60, num_thread: Number(process.env.TESLA_LLM_THREADS ?? 2) } }),
+    })
+    if (!r.ok) return null
+    return parseVoiceIntent(String(((await r.json()) as { response?: string }).response ?? ''))
+  } catch {
+    return null
+  }
+}

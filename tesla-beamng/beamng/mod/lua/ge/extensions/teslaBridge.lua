@@ -702,7 +702,7 @@ end
 ---------------------------------------------------------------------------
 
 local function relayEvent(ev)
-  local detail = ev.detail or ev.reason or ev.dir or ev.side or ev.what or ev.action or ev.state
+  local detail = ev.detail or ev.reason or ev.dir or ev.side or ev.what or ev.action or ev.state or ev.where
   if ev.kind == 'nag' then detail = tostring(ev.level) .. (ev.reason and (' ' .. ev.reason) or '') end
   if ev.kind == 'monitoring' then detail = ev.state end
   if ev.kind == 'strike' then detail = tostring(ev.strikes) .. '/' .. tostring(ev.max) end
@@ -1550,6 +1550,17 @@ handleCommand = function(msg)
       if not ok then event('error', 'autopark: ' .. tostring(err)) end
     end
     syncVehicleMode(veh)
+  elseif t == 'emergencyStop' then
+    if not planner or not veh then event('error', 'emergency: no car'); return end
+    if msg.cancel then
+      planner:cancelEmergency()
+    else
+      ensureVehicleExtension(veh)
+      local ok, err = planner:emergencyStop(egoSnapshot(veh), trafficList())
+      if not ok then event('error', 'emergency: ' .. tostring(err)); return end
+      syncVehicleMode(veh)
+      planTick()
+    end
   elseif t == 'requestParkingSpots' then
     if not planner then return end
     local ego = veh and egoSnapshot(veh)

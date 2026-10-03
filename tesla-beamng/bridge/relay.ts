@@ -19,7 +19,9 @@ import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, ty
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
 import { handleBrowse } from './browse.ts'
-import { adviseStuck, assistantStatus, setAssistantEnabled } from './assistant.ts'
+import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand } from './assistant.ts'
+import { audioStatus, chooseOutputs, testTone } from './audio.ts'
+import { transcribe, sttAvailable } from './stt.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -210,7 +212,7 @@ function dialAction(name: string): ActionName | null {
   broadcast({ t: 'dial', mode, dir })
   return DIAL_ACTIONS[mode][dir === 'up' ? 0 : 1]
 }
-const MEDIA_ACTIONS = new Set<string>(['volumeUp', 'volumeDown', 'mute', 'playPause', 'nextTrack', 'prevTrack'])
+const MEDIA_ACTIONS = new Set<string>(['volumeUp', 'volumeDown', 'mute', 'playPause', 'nextTrack', 'prevTrack', 'assistant'])
 
 function handleButtons(ws: WebSocket, msg: any): boolean {
   switch (msg.t) {
@@ -547,6 +549,46 @@ const server = createServer((req, res) => {
     const local = isLoopback(req)
     return res.end(JSON.stringify({ assistant: assistantStatus(), game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null,
       tunnel: local ? tunnelUrl : undefined, appLink: local && tunnelUrl ? appPairingLink(APP_URL, tunnelUrl, TOKEN) : undefined }))
+  }
+  if (path === '/stt' || path === '/assistant/parse' || path === '/assistant/status') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (path === '/assistant/status') return json(200, { llm: assistantStatus(), speech: sttAvailable() })
+    if (req.method !== 'POST') return json(405, { error: 'POST only' })
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (c: Buffer) => { size += c.length; if (size <= 7 * 1024 * 1024) chunks.push(c) })
+    req.on('end', async () => {
+      try {
+        if (size > 7 * 1024 * 1024) return json(413, { error: 'too large' })
+        const body = Buffer.concat(chunks)
+        if (path === '/stt') {
+          const ct = String(req.headers['content-type'] ?? '')
+          const ext = /webm/.test(ct) ? 'webm' : /ogg/.test(ct) ? 'ogg' : /wav/.test(ct) ? 'wav' : 'm4a'
+          return json(200, { text: await transcribe(body, ext) })
+        }
+        const text = String(JSON.parse(body.toString('utf8') || '{}').text ?? '')
+        return json(200, { intent: text ? await parseCommand(text) : null })
+      } catch (e: any) {
+        return json(e?.status ?? 500, { error: e?.message ?? 'failed' })
+      }
+    })
+    return
+  }
+  if (path === '/audio' || path === '/audio/test') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (req.method === 'GET') { void audioStatus().then((r) => json(200, r)); return }
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => { if (chunks.length < 50) chunks.push(c) })
+    req.on('end', async () => {
+      try {
+        const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        if (path === '/audio/test') { await testTone(String(b.id)); return json(200, { ok: true }) }
+        json(200, { ok: true, ...(await chooseOutputs({ game: b.game, music: b.music })) })
+      } catch (e) { json(400, { error: (e as Error).message }) }
+    })
+    return
   }
   if (path === '/browse') {
     if (!authorized(req)) { res.writeHead(401); return res.end('token required') }

@@ -689,6 +689,36 @@ scenario('straightBoost', function()
   check(math.abs(b.vcap[near] - a.vcap[near]) < 0.5, 'straight boost: no extra speed into the bend (' .. string.format('%.1f vs %.1f', b.vcap[near], a.vcap[near]) .. ')')
 end)
 
+scenario('emergencyStop', function()
+  -- driving at ~13 m/s, feeling unwell: FSD stops with hazards, no strike. A free spot close ahead is used,
+  -- otherwise the roadside; cancelling resumes the trip.
+  local function run(parking)
+    local w = W.new({ nodes = straight(0, 2000, 5, 13.4), parking = parking, ego = { x = 100, y = LANE1, psi = 0, v = 13 } })
+    w.planner:setRoute({ 1500, LANE1, 0 }, nil, 'Driveway')
+    w:engage('fsd', 'standard')
+    w:run(3)
+    local ok = w.planner:emergencyStop(w:snapshot().ego, w:snapshot().cars)
+    w:run(60, function(ww) return ww:saw('emergencyStopped') ~= nil end)
+    return w, ok
+  end
+  local w1, ok1 = run({})
+  check(ok1 and w1:saw('emergencyStopped', function(e) return e.where == 'roadside' end) ~= nil, 'emergency: no spot -> pulls over at the roadside')
+  check(math.abs(w1.ego.v) < 0.3 and w1.ego.gear == 'P' and w1.planner.mode == 'off', 'emergency: stopped, in Park, FSD off')
+  check(w1.planner.nag.strikes == 0, 'emergency: no strike for the driver')
+  check(not w1.collided, 'emergency: no collision')
+  local w2 = run({ { x = 190, y = 9, z = 0, dx = 0, dy = 1 } })
+  check(w2:saw('emergencyStopped', function(e) return e.where == 'parkingSpot' end) ~= nil, 'emergency: a free spot ~90 m ahead is used')
+  local w3 = run({ { x = 420, y = 9, z = 0, dx = 0, dy = 1 } })
+  check(w3:saw('emergencyStopped', function(e) return e.where == 'roadside' end) ~= nil, 'emergency: a spot 300 m away is NOT worth it: roadside')
+  -- "I'm fine": cancel and the trip carries on
+  local w4 = W.new({ nodes = straight(0, 2000, 5, 13.4), ego = { x = 100, y = LANE1, psi = 0, v = 13 } })
+  w4.planner:setRoute({ 1500, LANE1, 0 }, nil, 'Driveway')
+  w4:engage('fsd', 'standard'); w4:run(3)
+  w4.planner:emergencyStop(w4:snapshot().ego, w4:snapshot().cars); w4:run(2)
+  w4.planner:cancelEmergency(); w4:run(15)
+  check(w4.planner.mode == 'fsd' and w4.ego.v > 5 and w4:saw('emergencyStopped') == nil, 'emergency: cancelled, it keeps driving the trip')
+end)
+
 scenario('aebParked', function()
   local S = require('teslaBridge/safety')
   local function braked(latOffset)

@@ -200,6 +200,8 @@ export type EventKind =
   | 'swerveAssist'     // manual driving: stabilizing a swerve (detail: 'stabilizing' | 'done')
   | 'collision'        // the car was hit (see autopilot.alert)
   | 'signalStuck'      // a red that never changed for 90 s, treated as an all-way stop
+  | 'emergencyStop'    // "I'm not feeling well": FSD is stopping the car (detail from planner); with data.cancelled when called off
+  | 'emergencyStopped' // stopped safely: detail 'parkingSpot' | 'roadside'. The app can call someone now
   | 'brain'            // the driving brain noticed something: detail says what (erratic car, tailgater, pedestrian, staleGreen, laneHold)
   | 'advice'           // the FSD Assistant's advice after a stuck FSD: detail 'wait|replan|creep|askDriver: why'
   | 'stuck'            // FSD stopped for no reason it can name: level 1 re-plan, 2 reset, 3 asks the driver
@@ -237,7 +239,7 @@ export type ActionName =
   | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
   | 'followCloser' | 'followFarther' | 'confirm' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
   | 'dialUp' | 'dialDown' | 'dialClick' // the G29 red dial: turn = up/down, click cycles what it controls (DIAL_MODES)
-  | 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' // media keys: the relay tells the app ({t:'media'}), not the game
+  | 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' | 'assistant' // media keys: the relay tells the app ({t:'media'}), not the game
 
 export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'toggleFSD', label: 'Start / stop FSD' },
@@ -265,6 +267,7 @@ export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'mute', label: 'Mute / unmute (media)' },
   { name: 'playPause', label: 'Play / pause (media)' },
   { name: 'nextTrack', label: 'Next track (media)' },
+  { name: 'assistant', label: 'Talk to the voice assistant (push to talk)' },
   { name: 'prevTrack', label: 'Previous track (media)' },
   { name: 'summonForward', label: 'Summon forward' },
   { name: 'summonReverse', label: 'Summon reverse' },
@@ -306,7 +309,7 @@ export type CameraFrame = {
 export type Cameras = { t: 'cameras'; cams: { id: CamView; width: number; height: number; fps: number }[] }
 
 /** Relay -> app when a wheel button mapped to a media action is pressed (the G29's dial = volume). */
-export type Media = { t: 'media'; action: 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' }
+export type Media = { t: 'media'; action: 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' | 'assistant' }
 
 /** What the red dial controls; its button cycles through them. */
 export const DIAL_MODES = ['volume', 'distance', 'speed', 'profile'] as const
@@ -403,6 +406,8 @@ export type Command =
   | { t: 'arrivalChoice'; choice: 'park' | 'street' | 'pullOver' | 'driveway' | 'takeOver' } // answer to the 'arriving' event
   | { t: 'autopark'; spot?: number } // spot: an id from parkingSpots (tapped on the map); none = the nearest free spot beside the car
   | { t: 'requestParkingSpots'; near?: [number, number]; radius?: number }
+  /** "I'm not feeling well": FSD takes over (engaging if off), hazards on, and stops at the safer of a quick-to-reach free parking spot or the roadside. cancel:true calls it off ("I'm fine"). Events: emergencyStop, emergencyStopped. */
+  | { t: 'emergencyStop'; cancel?: boolean }
   | { t: 'resetStrikes' }
   | { t: 'voiceNote'; audio: string; mime: string; durationSec?: number; text?: string } // base64 audio; saved by the relay
   | { t: 'action'; name: ActionName } // do what a wheel button would
@@ -427,7 +432,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop',
 ])
 
 export const MPH = 0.44704
