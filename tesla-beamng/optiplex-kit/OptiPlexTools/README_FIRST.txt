@@ -8,8 +8,10 @@ Open START-HERE.cmd. It is a menu; everything asks before it changes anything.
  4  Install Car Mode            the Tesla bridge + app (needs the car-mode folder or your GitHub login)
  5  BeamNG settings             copy the laptop's settings (fps capped at 60), with a backup
  6  Training on / off           learns from your driving ONLY when the PC is idle and you switched it on
+ 8  Benchmark plan              what is done / left in the test ladder (also read BENCHMARK-PLAN.txt)
 
-Order for the first evening: 1 -> 3 -> 4 -> 2 -> 5, then run 1 again with the game open to measure FPS.
+Order for the first evening: 1 -> 3 -> 4 -> 2 -> 5, then follow BENCHMARK-PLAN.txt with the game open
+(menu 8 shows what is done and what is left).
 
 What 2 does and does not do (your choices from the email)
   does:      High performance power plan, sleep/hibernate stay AVAILABLE but never trigger by themselves,

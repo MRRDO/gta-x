@@ -4,14 +4,18 @@
    Benchmark.ps1 -SetGpu Discrete         BeamNG renders on the strong card (R5 340X); restart the game after
    Benchmark.ps1 -SetGpu Integrated       BeamNG renders on the processor's graphics
    Benchmark.ps1 -SampleFps 600 -Label "dGPU 900p"   sample the game's FPS for 10 min (game + Car Mode running)
-   Benchmark.ps1 -Compare                 table of every FPS run so far and which GPU setup won
+   Benchmark.ps1 -Compare                 table of every FPS run so far, which GPU setup won, and a verdict
+   Benchmark.ps1 -Matrix                  the full test plan (BENCHMARK-PLAN.txt) with what is done and what is left
+   Benchmark.ps1 -Soak 5                  CPU stress for N minutes while watching clocks/temperature (heat throttling check)
  Only the GPU choice is ever changed (and the old value is saved in reports\tune-undo.json).
 #>
 param(
   [ValidateSet('', 'Discrete', 'Integrated')][string]$SetGpu = '',
   [int]$SampleFps = 0,
   [string]$Label = '',
-  [switch]$Compare
+  [switch]$Compare,
+  [switch]$Matrix,
+  [int]$Soak = 0
 )
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -36,6 +40,40 @@ function Save-Undo($key, $old) {
   $d | ConvertTo-Json | Set-Content -Encoding UTF8 $f
 }
 
+
+# Watches the PC while a test runs: CPU use, "processor performance" (drops when it throttles from heat), temperature
+# if Windows exposes it, and 3D engine use per graphics chip (which tells you WHICH GPU the game really used).
+function Start-Watch($seconds) {
+  Start-Job -ArgumentList $seconds -ScriptBlock {
+    param($sec)
+    $end = (Get-Date).AddSeconds($sec)
+    $cpu = @(); $perf = @(); $temp = @(); $gpu = @{}; $ramFree = @()
+    while ((Get-Date) -lt $end) {
+      try { $c = (Get-Counter '\Processor Information(_Total)\% Processor Utility' -ErrorAction Stop).CounterSamples[0].CookedValue; $cpu += $c } catch {}
+      try { $p = (Get-Counter '\Processor Information(_Total)\% Processor Performance' -ErrorAction Stop).CounterSamples[0].CookedValue; $perf += $p } catch {}
+      try { $t = (Get-Counter '\Thermal Zone Information(*)\Temperature' -ErrorAction Stop).CounterSamples | ForEach-Object { $_.CookedValue - 273.15 } | Measure-Object -Maximum; if ($t.Maximum -gt 0 -and $t.Maximum -lt 130) { $temp += $t.Maximum } } catch {}
+      try { $ramFree += (Get-Counter '\Memory\Available MBytes' -ErrorAction Stop).CounterSamples[0].CookedValue } catch {}
+      try {
+        $g = (Get-Counter '\GPU Engine(*engtype_3D)\Utilization Percentage' -ErrorAction Stop).CounterSamples
+        $by = $g | Group-Object { if ($_.InstanceName -match 'luid_(0x[0-9a-fA-F]+_0x[0-9a-fA-F]+)') { $Matches[1] } else { 'unknown' } }
+        foreach ($grp in $by) { $sum = ($grp.Group | Measure-Object CookedValue -Sum).Sum; if (-not $gpu.ContainsKey($grp.Name)) { $gpu[$grp.Name] = @() }; $gpu[$grp.Name] += $sum }
+      } catch {}
+      Start-Sleep -Seconds 2
+    }
+    $avg = { param($a) if ($a.Count) { [math]::Round(($a | Measure-Object -Average).Average, 1) } else { $null } }
+    $max = { param($a) if ($a.Count) { [math]::Round(($a | Measure-Object -Maximum).Maximum, 1) } else { $null } }
+    $min = { param($a) if ($a.Count) { [math]::Round(($a | Measure-Object -Minimum).Minimum, 1) } else { $null } }
+    $gsum = @{}; foreach ($k in $gpu.Keys) { $gsum[$k] = [pscustomobject]@{ avg = (& $avg $gpu[$k]); max = (& $max $gpu[$k]) } }
+    [pscustomobject]@{ cpuAvg = (& $avg $cpu); cpuMax = (& $max $cpu); perfMin = (& $min $perf); perfAvg = (& $avg $perf); tempMax = (& $max $temp); ramFreeMinMB = (& $min $ramFree); gpu3d = $gsum }
+  }
+}
+function Get-Verdict($r) {
+  if (-not $r.avg) { return '?' }
+  if ($r.avg -ge 45 -and $r.low1 -ge 30) { return 'GOOD (45+ avg, 1% low 30+)' }
+  if ($r.avg -ge 30 -and $r.low1 -ge 20) { return 'OK (30+ avg): playable, lower a setting or two' }
+  return 'TOO SLOW (under 30): lower settings, or the card is the problem'
+}
+
 if ($SetGpu) {
   $exe = Find-BeamExe
   if (-not $exe) { Write-Host 'Could not find BeamNG.drive.x64.exe. Start the game once, then run this again.' -ForegroundColor Yellow; exit 1 }
@@ -50,10 +88,56 @@ if ($SetGpu) {
   exit 0
 }
 
+
+if ($Soak -gt 0) {
+  Write-Host "CPU stress for $Soak minute(s) on every thread. Watch for the clock dropping (throttling) and the temperature." -ForegroundColor Cyan
+  $n = [Environment]::ProcessorCount
+  $w = Start-Watch ($Soak * 60)
+  $jobs = 1..$n | ForEach-Object { Start-Job -ArgumentList $Soak -ScriptBlock { param($m) $e = (Get-Date).AddMinutes($m); $x = 0.0; while ((Get-Date) -lt $e) { for ($i = 1; $i -le 200000; $i++) { $x += [math]::Sqrt($i) } } } }
+  Wait-Job $w | Out-Null
+  $r = Receive-Job $w; Remove-Job $w -Force
+  $jobs | Stop-Job -ErrorAction SilentlyContinue; $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+  $r | Format-List
+  $verdict = @()
+  if ($r.perfMin -ne $null -and $r.perfAvg -ne $null -and $r.perfMin -lt 0.7 * $r.perfAvg) { $verdict += "Clock fell to $($r.perfMin)% of its average: the CPU is THROTTLING. Clean the dust / re-paste / check the fan (small cases get hot)." }
+  if ($r.tempMax -ne $null -and $r.tempMax -gt 90) { $verdict += "Hot: $($r.tempMax) C. Fix cooling before tuning anything else." }
+  if (-not $verdict) { $verdict += 'No sign of heat throttling in this test.' }
+  $verdict | ForEach-Object { Write-Host " - $_" -ForegroundColor Yellow }
+  [pscustomobject]@{ soakMinutes = $Soak; watch = $r; verdict = $verdict } | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $reports ("soak-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss')))
+  exit 0
+}
+
+if ($Matrix) {
+  $plan = @(
+    @('A1', 'Idle baseline', 'Benchmark.ps1   (facts + quick tests; PC idle, nothing else open)'),
+    @('A2', 'Heat check (CPU stress)', 'Benchmark.ps1 -Soak 5'),
+    @('B1', 'Low 1280x720, integrated GPU, no traffic', 'Benchmark.ps1 -SetGpu Integrated, restart game, then -SampleFps 300 -Label "iGPU low 720p"'),
+    @('B2', 'Low 1280x720, Radeon card, no traffic', 'Benchmark.ps1 -SetGpu Discrete, restart game, then -SampleFps 300 -Label "dGPU low 720p"'),
+    @('B3', 'Medium 1600x900, best GPU from B1/B2', '-SampleFps 300 -Label "best med 900p"'),
+    @('B4', 'Laptop-copy settings (menu 5), best GPU', '-SampleFps 300 -Label "laptop settings"'),
+    @('C1', 'Traffic: 10 cars', '-SampleFps 300 -Label "traffic 10"'),
+    @('C2', 'Traffic: 20 cars', '-SampleFps 300 -Label "traffic 20"'),
+    @('D1', 'FSD ON along the same route', 'engage FSD, -SampleFps 300 -Label "FSD on"'),
+    @('D2', 'FSD OFF, same route, same traffic', '-SampleFps 300 -Label "FSD off"'),
+    @('E1', 'Rear + front camera on (iPad)', '-SampleFps 300 -Label "cameras on"'),
+    @('F1', '30-minute soak drive (heat + memory)', '-SampleFps 1800 -Label "soak 30"')
+  )
+  $done = (Get-ChildItem $reports -Filter 'fps-*.json' -ErrorAction SilentlyContinue | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).label }) -join '|'
+  $hasSoak = [bool](Get-ChildItem $reports -Filter 'soak-*.json' -ErrorAction SilentlyContinue)
+  foreach ($row in $plan) {
+    $label = [regex]::Match($row[2], '-Label "([^"]+)"').Groups[1].Value
+    $ok = if ($row[0] -eq 'A2') { $hasSoak } elseif ($label) { $done -match [regex]::Escape($label) } else { [bool](Get-ChildItem $reports -Filter 'benchmark-*.json' -ErrorAction SilentlyContinue) }
+    Write-Host ("[{0}] {1}  {2}" -f $(if ($ok) { 'x' } else { ' ' }), $row[0], $row[1]) -ForegroundColor $(if ($ok) { 'Green' } else { 'White' })
+    if (-not $ok) { Write-Host "       $($row[2])" -ForegroundColor DarkGray }
+  }
+  Write-Host "`nSame map, same car, same route, same time of day for every run. Details: BENCHMARK-PLAN.txt"
+  exit 0
+}
+
 if ($Compare) {
   $runs = Get-ChildItem $reports -Filter 'fps-*.json' | ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json } | Sort-Object avg -Descending
   if (-not $runs) { Write-Host 'No FPS runs yet. Use -SampleFps.'; exit 0 }
-  $runs | Format-Table label, avg, low1, min, max, samples, seconds -AutoSize
+  $runs | ForEach-Object { $_ | Add-Member -NotePropertyName verdict -NotePropertyValue (Get-Verdict $_) -Force; $_ } | Format-Table label, avg, low1, min, max, cpuAvg, perfMin, tempMax, verdict -AutoSize
   $best = $runs | Select-Object -First 1
   Write-Host "Best average: $($best.label) ($($best.avg) fps, 1% low $($best.low1)). Prefer the run with the best 1% low if it is close." -ForegroundColor Cyan
   exit 0
@@ -64,9 +148,18 @@ if ($SampleFps -gt 0) {
   if (-not $node) { Write-Host 'Node is not installed (menu 3 installs it).' -ForegroundColor Yellow; exit 1 }
   $lbl = if ($Label) { $Label } else { 'run ' + (Get-Date -Format 'HH:mm') }
   Write-Host "Sampling the game's FPS for $SampleFps s ($lbl). Drive around normally ..."
+  $watch = Start-Watch $SampleFps
   $out = & $node (Join-Path $here 'fps-sample.mjs') --seconds $SampleFps --label $lbl
-  Write-Host $out
-  if ($out) { $out | Set-Content -Encoding UTF8 (Join-Path $reports ("fps-{0}-{1}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), ($lbl -replace '[^A-Za-z0-9]+', '_'))) }
+  Wait-Job $watch -Timeout 30 | Out-Null
+  $w = Receive-Job $watch -ErrorAction SilentlyContinue; Remove-Job $watch -Force -ErrorAction SilentlyContinue
+  $res = $null; try { $res = $out | ConvertFrom-Json } catch {}
+  if ($res -and $res.avg) {
+    if ($w) { foreach ($k in 'cpuAvg', 'cpuMax', 'perfMin', 'tempMax', 'ramFreeMinMB', 'gpu3d') { $res | Add-Member -NotePropertyName $k -NotePropertyValue $w.$k -Force } }
+    $res | Add-Member -NotePropertyName verdict -NotePropertyValue (Get-Verdict $res) -Force
+    $res | Format-List
+    if ($w -and $w.gpu3d) { Write-Host 'GPU 3D use per adapter (the busy one is the one BeamNG really used):'; $w.gpu3d.GetEnumerator() | ForEach-Object { Write-Host "   $($_.Key): avg $($_.Value.avg)%  max $($_.Value.max)%" } }
+    $res | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 (Join-Path $reports ("fps-{0}-{1}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), ($lbl -replace '[^A-Za-z0-9]+', '_')))
+  } else { Write-Host $out }
   exit 0
 }
 

@@ -20,6 +20,7 @@ echo  4  Install Car Mode            (Tesla bridge + app)
 echo  5  BeamNG settings from laptop (backs up first)
 echo  6  Training on / off           (learns only when idle)
 echo  7  Open this folder
+echo  8  Benchmark plan: what is done / left
 echo  Q  Quit
 echo.
 set /p c=Choose: 
@@ -30,6 +31,7 @@ if /i "%c%"=="4" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scrip
 if /i "%c%"=="5" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Apply-BeamNG-Settings.ps1" & pause & goto menu
 if /i "%c%"=="6" goto training
 if /i "%c%"=="7" start "" "%~dp0" & goto menu
+if /i "%c%"=="8" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Benchmark.ps1" -Matrix & notepad "%~dp0BENCHMARK-PLAN.txt" & pause & goto menu
 if /i "%c%"=="Q" exit /b
 goto menu
 :training
