@@ -37,7 +37,7 @@ no audio while testing, no emojis in the UI). Pull `MRRDO/gta-x` branch `claude/
    - `OptiPlexTools\installers\` = offline installers for Chrome, AnyDesk, Git, Node LTS, Python 3.12, cloudflared, 7-Zip, HWiNFO, Tailscale (official download pages only; verify the publisher signature with `Get-AuthenticodeSignature`; record version + SHA256 in `installers\MANIFEST.txt`). Winget is the fallback if something is missing.
    - `OptiPlexTools\beamng-settings\` = a **copy** of the laptop's BeamNG `settings` folder (find it under `%LOCALAPPDATA%\BeamNG\...`), with the **frame rate cap set to 60** in the COPY only (find the right key by reading the file; **do not change the laptop's own settings**). Remove anything that is machine specific or personal (account tokens, cloud IDs, saved paths). Write `beamng-settings\README.txt` saying what you changed.
 5. **Verify**: list the final USB tree, check hashes of the copied scripts against the repo, confirm `START-HERE.cmd` and `sources\$OEM$\...` exist, and eject-safe (flush) the drive.
-6. **Report**: a hub issue comment (labelled `session:bridge-dev`) with: drive letter used, what was added, what did not fit, script bugs found/fixed, anything unverified. Then **email Quentin** (quentincpullum@gmail.com and 013244@cm201u.org) the same summary, as he asked.
+6. **Report**: a hub issue comment (labelled `session:bridge-dev`) with: drive letter used, what was added, what did not fit, script bugs found/fixed, anything unverified. Tell Quentin the same summary **in the chat**. Do not send emails (he turned them off).
 
 ## What Quentin will see (so the result matches)
 Boot USB -> normal Windows 10 Setup (he picks the disk) -> first sign-in -> File Explorer opens on `C:\OptiPlexTools` ->
