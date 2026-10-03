@@ -24,8 +24,8 @@ no audio while testing, no emojis in the UI). Pull `MRRDO/gta-x` branch `claude/
 
 ## Steps
 1. **Get the kit**: `tesla-beamng/optiplex-kit/` in the gta-x branch has `OptiPlexTools/` (the folder) and `usb/` (boot helpers).
-2. **Test the scripts here** (nobody has run them on Windows yet): parse every `.ps1` with
-   `powershell -NoProfile -Command "[void][scriptblock]::Create((Get-Content -Raw '<file>'))"`, run `Benchmark.ps1` (no switches) and `Collect-Facts.ps1`, run `node scripts\fps-sample.mjs --seconds 5` against the bridge if it is up. Fix real bugs in the scripts (commit to the gta-x branch, small commits, add a CHANGELOG line in the hub).
+2. **Read `OptiPlexTools\BENCHMARK-PLAN.txt`** (the test ladder, thresholds and decision table; it must end up on the USB as is). **Test the scripts here** (nobody has run them on Windows yet): parse every `.ps1` with
+   `powershell -NoProfile -Command "[void][scriptblock]::Create((Get-Content -Raw '<file>'))"`, run `Benchmark.ps1` (no switches), `Benchmark.ps1 -Matrix` and `Collect-Facts.ps1` (also try `-Soak 1` once: it only stresses the CPU for a minute; check that the counters `\GPU Engine(*engtype_3D)\Utilization Percentage` and `\Thermal Zone Information(*)\Temperature` exist on this laptop and tell me which do not), run `node scripts\fps-sample.mjs --seconds 5` against the bridge if it is up. Fix real bugs in the scripts (commit to the gta-x branch, small commits, add a CHANGELOG line in the hub).
 3. **Lay out the USB** (additions only):
    - `<USB>\OptiPlexTools\` = the kit's `OptiPlexTools\`
    - `<USB>\sources\$OEM$\$1\OptiPlexTools\` = the same folder (Windows Setup copies it to `C:\OptiPlexTools`)
