@@ -1016,7 +1016,7 @@ local function setSignal(dir)
     if l then tog('left', false) end
     if r then tog('right', false) end
   end
-  ap.sigCheck = (dir == 'left' or dir == 'right') and { dir = dir, t = now, retried = false } or nil
+  ap.sigCheck = (dir == 'left' or dir == 'right') and { dir = dir, t = now } or nil
 end
 
 -- A signal we asked for must show up; if not, toggle once more, then say what the car reports (so it can be fixed).
@@ -1024,11 +1024,27 @@ local function sigVerify()
   local c = ap.sigCheck
   if not c or now - c.t < 0.8 then return end
   local side = c.dir == 'left' and 'l' or 'r'
-  if sigOn(side) then ap.sigCheck = nil; return end
-  if not c.retried then
-    c.retried, c.t = true, now
-    local fn = c.dir == 'left' and electrics.toggle_left_signal or electrics.toggle_right_signal
+  if sigOn(side) then
+    if c.undo and sigOn(side == 'l' and 'r' or 'l') then pcall(c.undo) end -- the trick left the other lamp on: off again
+    ap.sigCheck = nil
+    return
+  end
+  -- Quentin's car: LEFT only came on when the right one had been switched on right before. The toggle's own
+  -- state had probably got out of step with the lamp (auto-cancel after a turn clears the lamp, not the toggle), so the
+  -- first toggle just "switched it off". Try 1: toggle again. Try 2: the trick that worked by hand (right on, left, right off).
+  local other = c.dir == 'left' and electrics.toggle_right_signal or electrics.toggle_left_signal
+  local fn = c.dir == 'left' and electrics.toggle_left_signal or electrics.toggle_right_signal
+  c.tries = (c.tries or 0) + 1
+  if c.tries == 1 then
+    c.t = now
     if fn then pcall(fn) end
+    return
+  elseif c.tries == 2 then
+    c.t = now
+    if other and fn then
+      pcall(other); pcall(fn)
+      c.undo = other -- switch the other one off again on the next check
+    end
     return
   end
   ap.sigCheck = nil
@@ -1586,6 +1602,11 @@ local function updateGFX(dt)
   end
   if input and input.event ~= wrappedEvent then installInputHook() end
   installFFBHook()
+  -- always the realistic gearbox (never arcade), with or without FSD engaged
+  if electrics.values.gearboxMode == 'arcade' then
+    local mc0 = controller and controller.mainController
+    if mc0 and mc0.setGearboxMode then pcall(mc0.setGearboxMode, 'realistic') end
+  end
   if not ap.paddleHooked and controller and controller.mainController then ap.paddleHooked = true; pcall(installPaddleSignals) end
   if ffb.restoreUntil then pcall(ffbRestoreTick) end
   if next(closing) then pcall(watchClosing) end

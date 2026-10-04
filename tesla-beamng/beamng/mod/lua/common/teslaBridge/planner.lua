@@ -308,6 +308,15 @@ function Planner:planPath(ego, cars)
     -- a pin near a business with parking just parks there (the driver picked Street / Driveway / Curbside otherwise): look wider for a free spot
     local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars, kind == 'auto' and 120 or 160) or nil
     path.arrivalKind = 'point'
+    -- tell the app what the car is doing about parking (a banner: "Looking for parking" / "Parking spot found"), once per
+    -- destination and state
+    if kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto' then
+      local st = spot and 'found' or 'looking'
+      if self.parkNoted ~= key .. st then
+        self.parkNoted = key .. st
+        self:emit('parkingSearch', { state = st })
+      end
+    end
     if spot then
       local pr = P.project(path, spot.x, spot.y)
       local tan = path.pts[min(#path.pts, pr.i + 1)]

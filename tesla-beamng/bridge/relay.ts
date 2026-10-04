@@ -22,7 +22,7 @@ import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand } from './assistant.ts'
-import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq } from './audio.ts'
+import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
 import { pcPlayerAvailable, play as pcPlay, control as pcControl, status as pcStatus } from './pcplayer.ts'
 import { transcribe, sttAvailable } from './stt.ts'
 
@@ -586,6 +586,7 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
     const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
     if (req.method === 'GET') {
       if (path === '/audio') { void audioStatus().then((r) => json(200, { ...r, player: pcPlayerAvailable() })); return }
+      if (path === '/audio/eq') return json(200, readEq())
       if (path === '/pc/status') { void pcStatus(here).then((r) => json(200, r), (e) => json(502, { error: (e as Error).message })); return }
       return json(404, { error: 'no such page' })
     }

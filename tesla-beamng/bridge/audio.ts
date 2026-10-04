@@ -59,7 +59,12 @@ export async function setGameOutput(id: string, run: Run = psRun) {
 export async function audioStatus(run: Run = psRun, path = file) {
   const cfg = loadConfig(path)
   try {
-    return { ok: true as const, devices: await listDevices(run), ...cfg }
+    const devices = await listDevices(run)
+    const volumes: Record<string, number> = {}
+    for (const id of [...new Set([cfg.game, cfg.music].filter((x): x is string => !!x))]) {
+      try { const v = await getVolume(id, run); if (Number.isFinite(v)) volumes[id] = v } catch { /* a device that went away */ }
+    }
+    return { ok: true as const, devices, volumes, ...cfg }
   } catch (e) {
     return { ok: false as const, devices: [] as Device[], error: (e as Error).message, ...cfg }
   }
@@ -92,19 +97,95 @@ const APO_TYPE = { lowshelf: 'LSC', peaking: 'PK', highshelf: 'HSC' } as const
  * separate install that filters everything a device plays (so it also works on Apple Music in Chrome);
  * it reads this file via an `Include: tesla-eq.txt` line in its config.txt (the OptiPlex kit adds it).
  */
-export function apoConfig(deviceName: string, bands: Band[]) {
-  const lines = bands
+// Estimated peak of the summed filters (RBJ biquads at 48 kHz, 20 Hz to 20 kHz). Boosts add up where bands overlap, so without
+// a matching preamp loud bass passes 0 dBFS, clips, and the sound card's limiter ducks the whole signal ("gets quieter when the bass hits").
+function biquadDb(b: Band, f: number): number {
+  const fs = 48000, A = Math.pow(10, b.gain / 40), w0 = (2 * Math.PI * b.freq) / fs, cs = Math.cos(w0), sn = Math.sin(w0)
+  let b0: number, b1: number, b2: number, a0: number, a1: number, a2: number
+  if (b.type === 'peaking') {
+    const al = sn / 2 // Q 1.0, as written to the file
+    b0 = 1 + al * A; b1 = -2 * cs; b2 = 1 - al * A; a0 = 1 + al / A; a1 = -2 * cs; a2 = 1 - al / A
+  } else {
+    const al = (sn / 2) * Math.sqrt(2), s2 = 2 * Math.sqrt(A) * al
+    if (b.type === 'lowshelf') {
+      b0 = A * (A + 1 - (A - 1) * cs + s2); b1 = 2 * A * (A - 1 - (A + 1) * cs); b2 = A * (A + 1 - (A - 1) * cs - s2)
+      a0 = A + 1 + (A - 1) * cs + s2; a1 = -2 * (A - 1 + (A + 1) * cs); a2 = A + 1 + (A - 1) * cs - s2
+    } else {
+      b0 = A * (A + 1 + (A - 1) * cs + s2); b1 = -2 * A * (A - 1 + (A + 1) * cs); b2 = A * (A + 1 + (A - 1) * cs - s2)
+      a0 = A + 1 - (A - 1) * cs + s2; a1 = 2 * (A - 1 - (A + 1) * cs); a2 = A + 1 - (A - 1) * cs - s2
+    }
+  }
+  const w = (2 * Math.PI * f) / fs, c1 = Math.cos(w), c2 = Math.cos(2 * w)
+  const num = b0 * b0 + b1 * b1 + b2 * b2 + 2 * (b0 * b1 + b1 * b2) * c1 + 2 * b0 * b2 * c2
+  const den = a0 * a0 + a1 * a1 + a2 * a2 + 2 * (a0 * a1 + a1 * a2) * c1 + 2 * a0 * a2 * c2
+  return 10 * Math.log10(num / den)
+}
+export function peakGainDb(bands: Band[]): number {
+  let peak = 0
+  for (let i = 0; i <= 240; i++) {
+    const f = 20 * Math.pow(1000, i / 240)
+    peak = Math.max(peak, bands.reduce((sum, b) => sum + biquadDb(b, f), 0))
+  }
+  return peak
+}
+
+const usableBands = (bands: Band[]) =>
+  bands
     .filter((b) => Number.isFinite(b.gain) && Number.isFinite(b.freq) && Math.abs(b.gain) > 0.05 && b.type in APO_TYPE)
-    .map((b) => `Filter: ON ${APO_TYPE[b.type]} Fc ${Math.round(b.freq)} Hz Gain ${Math.max(-12, Math.min(12, b.gain)).toFixed(1)} dB${b.type === 'peaking' ? ' Q 1.0' : ''}`)
-  return `Device: ${deviceName.replace(/[\r\n]/g, ' ')}\n${lines.join('\n') || 'Preamp: 0 dB'}\n`
+    .map((b) => ({ ...b, gain: Math.max(-12, Math.min(12, b.gain)) }))
+
+/** The preamp (a cut, in dB, as a positive number) that keeps the whole chain's peak at about -0.5 dB. */
+export function headroomDb(bands: Band[], existingPreampDb = 0) {
+  const used = usableBands(bands)
+  if (!used.length) return 0
+  return Math.min(20, Math.ceil(Math.max(0, peakGainDb(used) + 0.5 - Math.max(0, existingPreampDb)) * 10) / 10)
+}
+
+/**
+ * No "Device:" line on purpose: Equalizer APO only processes the devices ticked in its installer (the music output), and
+ * the Windows-style name with brackets ("Speakers / Headphones (Realtek Audio)") never matches APO's own device naming,
+ * so the curve was silently not applied.
+ */
+export function apoConfig(_deviceName: string, bands: Band[], existingPreampDb = 0) {
+  const used = usableBands(bands)
+  const lines = used.map((b) => `Filter: ON ${APO_TYPE[b.type]} Fc ${Math.round(b.freq)} Hz Gain ${b.gain.toFixed(1)} dB${b.type === 'peaking' ? ' Q 1.0' : ''}`)
+  const h = headroomDb(bands, existingPreampDb)
+  return `Preamp: ${h > 0 ? '-' : ''}${h.toFixed(1)} dB\n${lines.join('\n')}\n`
 }
 
 export const apoDir = () => process.env.APO_CONFIG_DIR || 'C:\\Program Files\\EqualizerAPO\\config'
 
+// a cut Equalizer APO's own config.txt already applies (Preamp: -x dB), which counts towards our headroom
+function existingPreamp(dir: string) {
+  try {
+    const m = /^\s*Preamp:\s*(-?[0-9.]+)\s*dB/im.exec(readFileSync(join(dir, 'config.txt'), 'utf8'))
+    if (m && Number(m[1]) < 0) return -Number(m[1])
+  } catch { /* no config.txt yet */ }
+  return 0
+}
+
 /** Write the music output's EQ where Equalizer APO reads it. */
 export function writeEq(bands: Band[], musicName: string, dir = apoDir()) {
   if (!existsSync(dir)) throw new Error('Equalizer APO is not installed (no config folder)')
-  writeFileSync(join(dir, 'tesla-eq.txt'), apoConfig(musicName, bands))
+  writeFileSync(join(dir, 'tesla-eq.txt'), apoConfig(musicName, bands, existingPreamp(dir)))
+}
+
+/** What the app shows: the bands in tesla-eq.txt, the preamp written with them and the estimated peak of the chain. */
+export function readEq(dir = apoDir()) {
+  if (!existsSync(dir)) return { ok: true as const, apoInstalled: false, bands: [] as Band[], preampDb: 0, peakDb: 0 }
+  let txt = ''
+  try { txt = readFileSync(join(dir, 'tesla-eq.txt'), 'utf8') } catch { /* nothing written yet */ }
+  const back: Record<string, Band['type']> = { LSC: 'lowshelf', PK: 'peaking', HSC: 'highshelf' }
+  const bands: Band[] = []
+  for (const m of txt.matchAll(/^Filter:\s*ON\s+(LSC|PK|HSC)\s+Fc\s+([0-9.]+)\s*Hz\s+Gain\s+(-?[0-9.]+)\s*dB/gim)) {
+    bands.push({ freq: Number(m[2]), type: back[m[1].toUpperCase()], gain: Number(m[3]) })
+  }
+  const pm = /^\s*Preamp:\s*(-?[0-9.]+)\s*dB/im.exec(txt)
+  const preampDb = pm ? Number(pm[1]) : 0
+  const extra = existingPreamp(dir)
+  // peak after our boosts, preamp and any cut already in config.txt: close to or under -0.5 dB means no clipping
+  const peakDb = Math.round((peakGainDb(bands) + preampDb - extra) * 10) / 10
+  return { ok: true as const, apoInstalled: true, bands, preampDb, peakDb }
 }
 
 // ---- volume per output, ducking ----

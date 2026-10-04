@@ -33,7 +33,7 @@ async function ensureWindow(profileDir: string) {
   } catch {
     const bin = chromePath()
     if (!bin) throw new Error('Chrome not found (set CHROME_BIN)')
-    spawn(bin, [`--remote-debugging-port=${PORT}`, `--user-data-dir=${join(profileDir, 'chrome-player')}`, '--autoplay-policy=no-user-gesture-required', '--use-fake-ui-for-media-stream', '--new-window', 'https://music.apple.com/'], {
+    spawn(bin, [`--remote-debugging-port=${PORT}`, `--user-data-dir=${join(profileDir, 'chrome-player')}`, '--autoplay-policy=no-user-gesture-required', '--use-fake-ui-for-media-stream', '--start-minimized', '--no-first-run', '--no-default-browser-check', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--new-window', 'https://music.apple.com/'], {
       detached: true,
       stdio: 'ignore',
     }).unref()
@@ -110,7 +110,8 @@ export async function control(action: 'play' | 'pause' | 'next' | 'prev' | 'seek
 
 export async function status(profileDir: string) {
   return withPage(profileDir, async (send) => {
-    const v = (await send(`(()=>{const m=${MK};return {playing:m.isPlaying,position:m.currentPlaybackTime,duration:m.currentPlaybackDuration,ended:m.playbackState===10||m.playbackState===5}})()`)) as {
+    const v = (await send(`(()=>{const m=${MK};return {title:(m.nowPlayingItem&&m.nowPlayingItem.title)||'',playing:m.isPlaying,position:m.currentPlaybackTime,duration:m.currentPlaybackDuration,ended:m.playbackState===10||m.playbackState===5}})()`)) as {
+      title?: string
       playing: boolean
       position: number
       duration: number
