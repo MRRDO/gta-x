@@ -369,7 +369,7 @@ function M.routeToEdge(g, start, ge, gt)
       cost = abs(gt - st) * se.len / edgeSpeed(g, se) }
   end
 
-  local UTURN = 300 -- seconds of penalty: only if nothing else works
+  local UTURN = (start and start.uturnCost) or 300 -- seconds of penalty: only if nothing else works (the planner lowers it when it may turn around)
   local gScore, came, closed, open = {}, {}, {}, {}
   local maxV = 40
   local function h(id)

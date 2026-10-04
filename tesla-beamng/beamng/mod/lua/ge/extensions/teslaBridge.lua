@@ -669,6 +669,25 @@ local function sampleRays(ego)
     left = castRay(ego.x, ego.y, z, -ego.hy, ego.hx, 0, 8),
     right = castRay(ego.x, ego.y, z, ego.hy, -ego.hx, 0, 8),
   }
+  -- A fan of rays either side of straight ahead: a wall at an angle (a corner, a building across a bend) is missed by the
+  -- single centre ray until it is too late. A hit counts when it lies inside the car's own width (plus a margin) at that
+  -- distance; low and high rays have to agree (same phantom-wall rule as above).
+  local wid = (ego.wid or 1.9) * 0.5 + 0.35
+  for _, deg in ipairs({ -30, -18, -9, 9, 18, 30 }) do
+    local a = math.rad(deg)
+    local c, sn = math.cos(a), math.sin(a)
+    local dx, dy = ego.hx * c - ego.hy * sn, ego.hy * c + ego.hx * sn
+    local ox, oy = ego.x + ego.hx * half, ego.y + ego.hy * half
+    local lo = castRay(ox, oy, z, dx, dy, 0, 25)
+    if lo and math.abs(lo * sn) < wid + lo * 0.03 then
+      local hi = castRay(ox, oy, z + 0.9, dx, dy, 0, 25)
+      if hi and math.abs(hi - lo) < 1.5 then
+        local fwd, fwdHi = lo * c, hi * c
+        if not rays.front or fwd < rays.front then rays.front = fwd end
+        if not rays.frontHi or fwdHi < rays.frontHi then rays.frontHi = fwdHi end
+      end
+    end
+  end
   overhead = castRay(ego.x, ego.y, (ego.z or 0) + 2.5, 0, 0, 1, 12) ~= nil
   return rays
 end
@@ -1609,8 +1628,15 @@ handleCommand = function(msg)
       local ok, err, how = planner:parkAtSpot(tonumber(msg.spot), ego, cars)
       if not ok then event('error', 'autopark: ' .. tostring(err)); return end
       if how == 'route' and planner.mode == 'off' then
-        local okP = planner:planPath(ego, cars)
-        if okP then send(planner:routeMessage()); planner.routeDirty = false end
+        -- a spot that is not right here: FSD drives to it (before, the route was drawn and the car just sat there)
+        ensureVehicleExtension(veh)
+        local okE, errE = planner:engage('fsd', 'chill', ego, cars)
+        if not okE then
+          planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil
+          event('error', 'autopark: ' .. tostring(errE))
+          return
+        end
+        send(planner:routeMessage()); planner.routeDirty = false
       end
       relayEvent({ kind = 'autopark', detail = how == 'now' and 'parking now' or 'parking at destination' })
     else

@@ -215,6 +215,49 @@ function Planner:destOffRoad(path)
   return d > 10 and d < 150
 end
 
+-- May the car turn around (stop, three-point turn) when the destination is behind it? Not right after one, and
+-- the driver can switch it off (settings.uturn = false).
+function Planner:mayUTurn(ego)
+  if self.settings and self.settings.uturn == false then return false end
+  if self.noUturnUntil and self.t < self.noUturnUntil then return false end
+  return true
+end
+
+-- While turnAround.phase == 'stop' the car slows to a stop in its lane (stopS), then turns around if the road has room.
+-- Returns the stop position (arc length) to use, or nil.
+function Planner:turnAroundTick(ego, cars, sCar, v, stopS)
+  local ta = self.turnAround
+  if not ta or ta.phase ~= 'stop' then return stopS end
+  if self.t - ta.t > 40 then
+    self.turnAround, self.noUturnUntil = nil, self.t + 90
+    self.replanNow = true
+    return stopS
+  end
+  local pr = self.path and P.project(self.path, ta.px, ta.py)
+  if pr and pr.s and (not stopS or pr.s < stopS) then stopS = pr.s end
+  local near = (ego.x - ta.px) ^ 2 + (ego.y - ta.py) ^ 2 < 2.5 * 2.5
+  if v < 0.4 or (near and v < 1.0) then
+    local loc = self.graph and P.locate(self.graph, ego.x, ego.y, ego.hx, ego.hy, 40)
+    if loc and not loc.ow and loc.r < 9 then
+      local latRight = P.laneCenter(loc.r, false, loc.lane) - loc.lat
+      local road = { cx = ego.x - loc.dy * latRight, cy = ego.y + loc.dx * latRight, dx = loc.dx, dy = loc.dy, r = loc.r }
+      local seg = Mv.kTurnNext(ego, road, 6, nil)
+      if seg and self:segsClear({ seg }, ego, cars) then
+        self.kturn = { road = road, lastDir = seg.dir }
+        self.turnAround, self.noUturnUntil = nil, self.t + 90 -- one turn, then on to the destination (no second one right away)
+        self:emit('uturn', { state = 'turning' })
+        self:startManeuver({ seg }, 'drive', 'kTurn')
+        return stopS
+      end
+    end
+    -- no room here (one-way, wide road, walls): drive on and take the long way round
+    self.turnAround, self.noUturnUntil = nil, self.t + 90
+    self:emit('uturn', { state = 'noRoom' })
+    self.replanNow = true
+  end
+  return stopS
+end
+
 -- Build self.path from the ego pose (route to dest via stops, or follow the road).
 function Planner:planPath(ego, cars)
   local g = self.graph
@@ -230,7 +273,7 @@ function Planner:planPath(ego, cars)
     local sx, sy = ego.x, ego.y
     local all
     for li, goal in ipairs(legs) do
-      local rt, err = P.route(g, { x = sx, y = sy, hx = hx, hy = hy }, { x = goal[1], y = goal[2] })
+      local rt, err = P.route(g, { x = sx, y = sy, hx = hx, hy = hy, uturnCost = (li == 1 and self:mayUTurn(ego)) and 40 or nil }, { x = goal[1], y = goal[2] })
       if not rt then return false, err end
       if li == 1 and rt.uturn then self.uturnNeeded = true end
       local leg = P.buildPath(g, rt)
@@ -310,6 +353,20 @@ function Planner:planPath(ego, cars)
     local rt, err = P.followRoad(g, ego.x, ego.y, hx, hy, 1500, self.turnVia)
     if not rt then return false, err end
     path = P.buildPath(g, rt)
+  end
+  if self.dest and self.uturnNeeded and self:mayUTurn(ego) and (ego.v or 0) > 1.0 and self.mode ~= 'off' and self.activity == 'drive' then
+    -- the best way is back the way we came: keep going straight, slow to a stop, and turn around (see turnAroundTick)
+    local rt2 = P.followRoad(g, ego.x, ego.y, ego.hx, ego.hy, 1500, nil)
+    if rt2 then
+      path = P.buildPath(g, rt2)
+      if not self.turnAround then
+        local d = max(8, (ego.v or 0) * (ego.v or 0) / 4 + 4) -- a fixed place to stop, a comfortable braking distance ahead
+        self.turnAround = { phase = 'stop', t = self.t, px = ego.x + ego.hx * d, py = ego.y + ego.hy * d }
+        self:emit('uturn', { state = 'stopping' })
+      end
+    end
+  elseif not self.uturnNeeded then
+    self.turnAround = nil
   end
   if self.dest then
     -- tell the report when a trip comes out far longer than the straight line (why: U-turns
@@ -1522,6 +1579,7 @@ function Planner:tick(snap)
     stopS, control, waitingFor = self:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   end
   st.control = control
+  if fsd and self.turnAround then stopS = self:turnAroundTick(ego, cars, sCar, v, stopS) end
   -- the go-stop-go hesitation after a stop sign
   if self.hesitateUntil and t < self.hesitateUntil and t > self.hesitateUntil - 0.7 then cap(0.5) end
 

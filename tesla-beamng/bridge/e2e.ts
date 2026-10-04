@@ -495,7 +495,10 @@ try {
     send({ t: 'autopark', spot: spot?.id })
     check('tapping a far spot makes it the destination (route to it)', await until('route to spot', () => events.some((e) => e.kind === 'autopark') && !!route && route.points.length > 1, 4000),
       events.map((e) => e.kind + ':' + (e.detail ?? '')).join(', '))
+    check('...and FSD drives there by itself (it used to only draw the route)', await until('engaged for the spot', () => st().autopilot.engaged, 4000), `engaged ${st().autopilot.engaged}`)
     send({ t: 'cancelRoute' })
+    send({ t: 'autopilot', mode: 'off' })
+    await until('off after spot', () => !st().autopilot.engaged, 3000)
   }
 
   // --- Auto Shift out of Park: press the brake in P, the car picks D (nothing in front)
