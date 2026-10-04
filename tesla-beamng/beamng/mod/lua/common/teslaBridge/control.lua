@@ -144,6 +144,7 @@ function Driver:update(dt, sense, opts)
   -- speed target
   local preview = s + v * 0.3
   local vt = plan.vcap and P.valueAt(path, plan.vcap, preview, pr.i) or 10
+  if opts.speedBoost and opts.speedBoost > 0 then vt = vt + opts.speedBoost end -- the driver's light accelerator touch (stops and cars ahead still cap it below)
   if plan.stopS then
     local dstop = plan.stopS - s
     -- Tesla-style: start easing off early and brake at a steady, gentle rate (per profile)

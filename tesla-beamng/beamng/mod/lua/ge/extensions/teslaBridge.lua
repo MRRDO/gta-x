@@ -1641,7 +1641,23 @@ handleCommand = function(msg)
       relayEvent({ kind = 'autopark', detail = how == 'now' and 'parking now' or 'parking at destination' })
     else
       local ok, err = planner:autopark(ego, cars)
-      if not ok then event('error', 'autopark: ' .. tostring(err)) end
+      if not ok then
+        -- none right beside the car: choose the nearest free spot nearby and drive there (FSD engages if it was off)
+        local id = planner:nearestFreeSpot(ego, cars, 220)
+        local okS, errS, how = false, err, nil
+        if id then okS, errS, how = planner:parkAtSpot(id, ego, cars) end
+        if okS and how == 'route' then
+          ensureVehicleExtension(veh)
+          if planner.mode == 'off' then
+            local okE, errE = planner:engage('fsd', 'chill', ego, cars)
+            if not okE then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil; okS, errS = false, errE end
+          end
+          if okS then send(planner:routeMessage()); planner.routeDirty = false; relayEvent({ kind = 'autopark', detail = 'parking at the nearest spot' }) end
+        elseif okS then
+          relayEvent({ kind = 'autopark', detail = 'parking now' })
+        end
+        if not okS then event('error', 'autopark: ' .. tostring(errS)) end
+      end
     end
     syncVehicleMode(veh)
   elseif t == 'emergencyStop' then

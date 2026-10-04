@@ -192,6 +192,7 @@ end
 ---------------------------------------------------------------------------
 
 local Wh = require('teslaBridge/wheel')
+local ACCEL_FORCE = 0.55 -- pedal travel (0..1) from which the accelerator overrides FSD's speed (below: a nudge)
 local Sfl = require('teslaBridge/steerfeel')
 local steeringWeight = 'standard' -- Tesla's Steering Weight: light | standard | heavy
 
@@ -1590,7 +1591,12 @@ local function updateGFX(dt)
   if ap.engaged then
     local aeb = applyAssist(true, s)
     if not checkTakeover(dt) then
-      local out = driver:update(dt, s, { noLearn = ap.mode == 'tacc' })
+      -- the accelerator: a light touch NUDGES the speed up (the target rises with the pedal, stop points and cars ahead
+      -- still count, and it eases back on release); a firm press (past ACCEL_FORCE) forces it: throttle straight through
+      local pedalNow = max(rawSinceEngage('throttle') or 0, (override.active and override.value > 0) and override.value or 0)
+      local boost = 0
+      if pedalNow > 0.05 and pedalNow < ACCEL_FORCE then boost = (pedalNow / ACCEL_FORCE) * 8 end -- up to ~18 mph more
+      local out = driver:update(dt, s, { noLearn = ap.mode == 'tacc', speedBoost = boost })
       lastOut = out
       if ap.mode ~= 'tacc' then
         inject('steering', math.max(-1, math.min(1, out.steer + steerBias)))
@@ -1621,7 +1627,7 @@ local function updateGFX(dt)
         disengage('throttle', plan.maneuver .. ' cancelled')
         return
       end
-      ap.accelOverride = accel > 0.05 and plan.dir ~= -1 and not plan.maneuver
+      ap.accelOverride = accel >= ACCEL_FORCE and plan.dir ~= -1 and not plan.maneuver -- a light touch is only a speed nudge (above)
       if ap.accelOverride then
         th, br, pb = max(th, accel), 0, 0
         driver.speedI = 0 -- no wind-up: settle back to the set speed smoothly on release

@@ -142,7 +142,8 @@ function W:step(dt)
   if self.lda and not engaged then steer = steer + self.lda.steer end
   if self.cap then throttle = min(throttle, self.cap) end
   if (self.aeb or 0) > 0 then throttle, brake = 0, max(brake, self.aeb) end
-  -- actuators + bicycle
+  -- actuators + bicycle (test knobs: steerBias = the car pulls to one side, steerGain = the steering is weaker/stronger than learned)
+  steer = steer * (self.steerGain or 1) + (self.steerBias or 0)
   local want = -steer * math.rad(34)
   local rate = math.rad(90) * dt
   e.delta = e.delta + max(-rate, min(rate, want - e.delta))
@@ -177,7 +178,7 @@ function W:step(dt)
 end
 
 function W:run(seconds, untilFn)
-  local dt = 1 / 60
+  local dt = self.dt or 1 / 60 -- (w.dt = 1/20 simulates a slow PC: the driver and the car's steering run once per frame)
   local t1 = self.t + seconds
   while self.t < t1 do
     self:step(dt)

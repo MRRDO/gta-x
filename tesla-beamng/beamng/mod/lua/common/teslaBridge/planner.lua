@@ -168,17 +168,27 @@ local function snapToSpotAxis(spot, ox, oy)
   return ox, oy
 end
 
-function Planner:pickSpot(dest, cars)
+function Planner:pickSpot(dest, cars, radius)
   if self.chosenSpot and not spotOccupied(self.chosenSpot, cars) then return self.chosenSpot end
   local best, bestScore
   for _, sp in ipairs(self.parking) do
     local d = sqrt((sp.x - dest[1]) ^ 2 + (sp.y - dest[2]) ^ 2)
-    if d < 80 and not spotOccupied(sp, cars) then
+    if d < (radius or 80) and not spotOccupied(sp, cars) then
       local score = d
       if not bestScore or score < bestScore then best, bestScore = sp, score end
     end
   end
   return best
+end
+
+-- The nearest free parking spot to the car (index into self.parking and the spot), within `radius` m; nil if none.
+function Planner:nearestFreeSpot(ego, cars, radius)
+  local best, bi, bd
+  for i, sp in ipairs(self.parking or {}) do
+    local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
+    if d < (radius or 200) and not spotOccupied(sp, cars) and (not bd or d < bd) then best, bi, bd = sp, i, d end
+  end
+  return bi, best, bd
 end
 
 -- Extend the path straight back behind its start, so traffic behind us (lane-change
@@ -295,7 +305,8 @@ function Planner:planPath(ego, cars)
     local key = floor(self.dest[1] / 25) .. ',' .. floor(self.dest[2] / 25)
     if self.arrival then self.arrivalMemory[key] = self.arrival else self.arrival = self.arrivalMemory[key] end
     local kind = self.arrival or 'auto'
-    local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars) or nil
+    -- a pin near a business with parking just parks there (the driver picked Street / Driveway / Curbside otherwise): look wider for a free spot
+    local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars, kind == 'auto' and 120 or 160) or nil
     path.arrivalKind = 'point'
     if spot then
       local pr = P.project(path, spot.x, spot.y)

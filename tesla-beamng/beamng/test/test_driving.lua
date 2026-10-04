@@ -273,5 +273,23 @@ do
   check(#side == 1 and side[1].dir == 'right', 'taking the side road is a right turn')
 end
 
+-- the accelerator while FSD drives: a light touch nudges the target speed, a stop point still caps it
+do
+  local d = C.new({})
+  local pts, vcap = {}, {}
+  for i = 0, 100 do pts[#pts + 1] = i * 3; pts[#pts + 1] = 0; pts[#pts + 1] = 0; vcap[#vcap + 1] = 10 end
+  d:setPlan({ seq = 1, pts = pts, vcap = vcap, gapTime = 2, throttleMax = 0.6 })
+  local sense = { x = 5, y = 0, hx = 1, hy = 0, v = 10, yawRate = 0 }
+  local base
+  for _ = 1, 120 do base = d:update(1 / 60, sense).targetSpeed end
+  local boosted
+  for _ = 1, 600 do boosted = d:update(1 / 60, sense, { speedBoost = 4 }).targetSpeed end
+  check(base < 10.5 and boosted > base + 3, string.format('a light accelerator touch raises the target speed (%.1f -> %.1f)', base, boosted))
+  d:setPlan({ seq = 2, pts = pts, vcap = vcap, gapTime = 2, throttleMax = 0.6, stopS = 20 })
+  local capped
+  for _ = 1, 300 do capped = d:update(1 / 60, { x = 5, y = 0, hx = 1, hy = 0, v = 4, yawRate = 0 }, { speedBoost = 8 }).targetSpeed end
+  check(capped < 8, string.format('a stop point 15 m ahead still caps the speed with the nudge (%.1f)', capped))
+end
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)
