@@ -23,7 +23,7 @@ import { record as recordDrive } from './recorder.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand } from './assistant.ts'
 import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
-import { pcPlayerAvailable, play as pcPlay, control as pcControl, status as pcStatus } from './pcplayer.ts'
+import { pcPlayerAvailable, play as pcPlay, control as pcControl, status as pcStatus, showWindow as pcWindow } from './pcplayer.ts'
 import { transcribe, sttAvailable } from './stt.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -610,6 +610,7 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
           writeEq(Array.isArray(b.bands) ? b.bands.slice(0, 10) : [], name); return json(200, { ok: true })
         }
         if (path === '/pc/play') { await pcPlay(String(b.id), here, await devName(cfg.music)); return json(200, { ok: true }) }
+        if (path === '/pc/window') { await pcWindow(!!b.show, here); return json(200, { ok: true }) }
         if (path === '/pc/control') { await pcControl(b.action, b.value, here); return json(200, { ok: true }) }
         if (path !== '/audio') return json(404, { error: 'no such page' })
         json(200, { ok: true, ...(await chooseOutputs({ game: b.game, music: b.music })) })

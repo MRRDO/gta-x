@@ -18,6 +18,8 @@ const CANDIDATES = [
 
 type Send = (expr: string) => Promise<unknown>
 
+const HIDDEN = { left: -32000, top: -32000 }
+
 export const chromePath = () => CANDIDATES.find((p): p is string => !!p && existsSync(p))
 export const pcPlayerAvailable = () => !!chromePath()
 
@@ -33,7 +35,24 @@ async function ensureWindow(profileDir: string) {
   } catch {
     const bin = chromePath()
     if (!bin) throw new Error('Chrome not found (set CHROME_BIN)')
-    spawn(bin, [`--remote-debugging-port=${PORT}`, `--user-data-dir=${join(profileDir, 'chrome-player')}`, '--autoplay-policy=no-user-gesture-required', '--use-fake-ui-for-media-stream', '--start-minimized', '--no-first-run', '--no-default-browser-check', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--new-window', 'https://music.apple.com/'], {
+    // An app window (no tab strip, no address bar) parked off screen: it plays in the background and is never a window you
+    // alt-tab into. Sign in once with showWindow(true) (the app's "Open the player to sign in" button), then hide it again.
+    // The flags keep Chrome from slowing a window nobody can see.
+    spawn(bin, [
+      `--remote-debugging-port=${PORT}`,
+      `--user-data-dir=${join(profileDir, 'chrome-player')}`,
+      '--autoplay-policy=no-user-gesture-required',
+      '--use-fake-ui-for-media-stream',
+      '--app=https://music.apple.com/',
+      `--window-position=${HIDDEN.left},${HIDDEN.top}`,
+      '--window-size=520,380',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-features=CalculateNativeWinOcclusion',
+    ], {
       detached: true,
       stdio: 'ignore',
     }).unref()
@@ -119,4 +138,36 @@ export async function status(profileDir: string) {
     }
     return v
   })
+}
+
+/** Bring the player window on screen (to sign in) or put it away off screen again. Browser-level DevTools calls, no tab switching. */
+export async function showWindow(show: boolean, profileDir: string) {
+  await ensureWindow(profileDir)
+  const info = (await (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(2000) })).json()) as { webSocketDebuggerUrl: string }
+  const page = (await targets()).find((t) => t.type === 'page' && t.url.includes('music.apple.com')) as { id?: string } | undefined
+  if (!page?.id) throw new Error('no Apple Music page')
+  const ws = new WebSocket(info.webSocketDebuggerUrl)
+  await new Promise<void>((res, rej) => { ws.once('open', () => res()); ws.once('error', rej) })
+  let id = 0
+  const call = (method: string, params: unknown) =>
+    new Promise<Record<string, unknown>>((res, rej) => {
+      const n = ++id
+      const t = setTimeout(() => rej(new Error('Chrome did not answer')), 5000)
+      const on = (d: unknown) => {
+        const m = JSON.parse(String(d)) as { id?: number; result?: Record<string, unknown>; error?: { message?: string } }
+        if (m.id !== n) return
+        clearTimeout(t)
+        ws.off('message', on)
+        m.error ? rej(new Error(m.error.message ?? 'Chrome error')) : res(m.result ?? {})
+      }
+      ws.on('message', on)
+      ws.send(JSON.stringify({ id: n, method, params }))
+    })
+  try {
+    const w = (await call('Browser.getWindowForTarget', { targetId: page.id })) as { windowId: number }
+    await call('Browser.setWindowBounds', { windowId: w.windowId, bounds: show ? { left: 80, top: 60, width: 1100, height: 760, windowState: 'normal' } : { left: HIDDEN.left, top: HIDDEN.top, width: 520, height: 380, windowState: 'normal' } })
+    return true
+  } finally {
+    ws.close()
+  }
 }

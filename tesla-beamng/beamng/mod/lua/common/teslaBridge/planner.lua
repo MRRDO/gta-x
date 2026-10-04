@@ -268,6 +268,36 @@ function Planner:turnAroundTick(ego, cars, sCar, v, stopS)
   return stopS
 end
 
+
+-- Leaving a drive-thru / lot window that is off the road: a smooth curve from where the car stands (pointing the way it
+-- points) onto the road route, joining it ~15 m along. Only for the trip's way out (self.leaveLot).
+function Planner:joinFromLot(path, ego)
+  local pts = path.pts
+  local p1 = pts[1]
+  if not p1 then return end
+  local d0 = sqrt((p1.x - ego.x) ^ 2 + (p1.y - ego.y) ^ 2)
+  if d0 < 6 or d0 > 150 then return end
+  local S = P.cumulative(pts)
+  local jn = #pts
+  for i = 1, #pts do if S[i] >= 15 then jn = i; break end end
+  local pj, pj0 = pts[jn], pts[max(1, jn - 1)]
+  local tx, ty = pj.x - pj0.x, pj.y - pj0.y
+  local tl = sqrt(tx * tx + ty * ty)
+  if tl < 1e-6 then return end
+  tx, ty = tx / tl, ty / tl
+  local conn = Mv.feasibleBezier({ x = ego.x, y = ego.y, z = ego.z or 0 }, ego.hx, ego.hy, pj, tx, ty, 6)
+  local all = {}
+  for _, q in ipairs(conn) do q.lim = 4; all[#all + 1] = q end
+  for i = jn + 1, #pts do all[#all + 1] = pts[i] end
+  local old = S[jn]
+  local newS = P.cumulative(all)
+  local joinS = newS[#conn] or 0
+  path.pts = all
+  path.s = newS
+  for _, tn in ipairs(path.turns or {}) do tn.s = tn.s - old + joinS end
+  self.joinedLot = true
+end
+
 -- Build self.path from the ego pose (route to dest via stops, or follow the road).
 function Planner:planPath(ego, cars)
   local g = self.graph
@@ -359,6 +389,22 @@ function Planner:planPath(ego, cars)
       end
     elseif kind == 'Street' and self:parallelPark(path, cars) then
       path.arrivalKind = 'parking'
+    elseif kind == 'Drive Thru' then
+      -- the pin is the order window: drive up to it (turning in off the road when it is a business set back from it), stop, wait, go on
+      do -- where to rejoin the road afterwards: 200 m on from where the route meets it
+        local n = #path.pts
+        local e, e0 = path.pts[n], path.pts[max(1, n - 1)]
+        local tx, ty = e.x - e0.x, e.y - e0.y
+        local tl = sqrt(tx * tx + ty * ty)
+        if tl > 1e-6 then self.exitPt = { e.x + tx / tl * 200, e.y + ty / tl * 200, e.z or 0 } end
+      end
+      if self:destOffRoad(path) then
+        local e = path.pts[#path.pts]
+        P.appendParking(path, self.dest[1], self.dest[2], e.z, self.dest[1] - e.x, self.dest[2] - e.y)
+      end
+      path.arrivalKind = 'driveThru'
+    elseif kind == 'Drive On' then
+      path.arrivalKind = 'point'
     elseif (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto' or kind == 'Driveway') and self:destOffRoad(path) then
       -- the destination isn't on a road (a business, a lot with no mapped aisles): turn in and drive up to it
       local e = path.pts[#path.pts]
@@ -397,6 +443,7 @@ function Planner:planPath(ego, cars)
       self:emit('longRoute', { length = floor(len), straight = floor(straight), uturnAvoided = self.uturnNeeded or nil })
     end
   end
+  if self.leaveLot then self:joinFromLot(path, ego) end
   prependBack(path, 150)
   local prof = self:prof()
   P.speedProfile(path, { offset = prof.offset, aLat = prof.aLat, straight = prof.straight, decel = prof.decel, endSpeed = (not path.openEnded) and 0 or nil })
@@ -515,10 +562,11 @@ function Planner:setRoute(dest, stops, arrival)
   self.arrivingFor = nil
   self.path = nil
   self.spot = nil
+  self.exitDrive, self.exitPt, self.dtStart, self.leaveLot = nil, nil, nil, nil
 end
 
 -- The driver's answer to the 'arriving' prompt: park / street (parallel) / pullOver / driveway / takeOver
-local ARRIVAL_KINDS = { park = 'Parking Lot', street = 'Street', pullOver = 'Pull Over', driveway = 'Driveway', takeOver = 'Take Over' }
+local ARRIVAL_KINDS = { park = 'Parking Lot', street = 'Street', pullOver = 'Pull Over', driveway = 'Driveway', takeOver = 'Take Over', driveThru = 'Drive Thru' }
 function Planner:setArrival(choice)
   local kind = ARRIVAL_KINDS[choice]
   if not kind or not self.dest then return false, 'no such arrival choice' end
@@ -1351,7 +1399,7 @@ function Planner:tick(snap)
   st.speedLimit = path.limit[pr.i]
   -- point-to-point: as the destination comes up, offer the arrival choices (the app shows a
   -- sheet; if nobody answers FSD does what was picked earlier / its default)
-  if self.dest and not path.openEnded and remaining > 25 and remaining < max(120, v * 10) then
+  if self.dest and not self.exitDrive and not path.openEnded and remaining > 25 and remaining < max(120, v * 10) then
     local key = floor(self.dest[1] / 25) .. ',' .. floor(self.dest[2] / 25)
     if self.arrivingFor ~= key then
       self.arrivingFor = key
@@ -1360,7 +1408,7 @@ function Planner:tick(snap)
         if (sp.x - self.dest[1]) ^ 2 + (sp.y - self.dest[2]) ^ 2 < 100 * 100 and not spotOccupied(sp, cars) then free = free + 1 end
       end
       self:emit('arriving', { dist = floor(remaining), current = self.arrival or 'auto', freeSpots = free,
-        options = { 'park', 'street', 'pullOver', 'driveway', 'takeOver' } })
+        options = { 'park', 'street', 'pullOver', 'driveway', 'takeOver', 'driveThru' } })
     end
   end
   self.onHighway = ((path.pts[pr.i].r or 0) >= 9) or nil -- wide multi-lane road
@@ -1810,8 +1858,34 @@ function Planner:tick(snap)
 
   ---------------------------------------------------------------- arrival
   local hold = false
+  if self.exitDrive and not path.openEnded and remaining < 30 then
+    -- rejoined the road after the drive-thru: no destination any more, just drive on
+    self.exitDrive, self.leaveLot = nil, nil
+    self.dest, self.arrival, self.path = nil, nil, nil
+    self:planPath(ego, cars)
+    out.route = self:routeMessage()
+    return self:finish(out)
+  end
   if not path.openEnded and remaining < 2.5 and v < 0.3 then
     hold = true
+    if path.arrivalKind == 'driveThru' then
+      -- the window: wait for the order (settings.driveThruWait seconds), then carry on along the road
+      if not self.dtStart then
+        self.dtStart = self.t
+        self:emit('driveThru', { state = 'window' })
+      end
+      if self.t - self.dtStart < (self.settings.driveThruWait or 25) then return self:finish(out) end
+      self.dtStart = nil
+      self:emit('driveThru', { state = 'done' })
+      -- back out onto the road (a route to a point further along it), then carry on with no destination
+      local ex = self.exitPt
+      self.dest, self.stops, self.arrival, self.spot, self.turnVia, self.chosenSpot, self.exitPt = ex, nil, ex and 'Drive On' or nil, nil, nil, nil, nil
+      self.exitDrive = ex and true or nil
+      self.leaveLot = true
+      self:planPath(ego, cars)
+      out.route = self:routeMessage()
+      return self:finish(out)
+    end
     if path.afterManeuver then
       local segs = path.afterManeuver
       path.afterManeuver = nil
@@ -1823,7 +1897,7 @@ function Planner:tick(snap)
       local handOver = self.arrival == 'Take Over'
       if not handOver then out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' } end
       if self:finishUnresponsive(out) then return self:finish(out) end
-      self:emit('arrived', { detail = handOver and 'takeOver' or path.arrivalKind })
+      self:emit('arrived', { detail = handOver and 'takeOver' or path.arrivalKind, destDist = self.dest and floor(sqrt((self.dest[1] - ego.x) ^ 2 + (self.dest[2] - ego.y) ^ 2)) or nil })
       self:disengage('arrived')
       self.dest, self.path = nil, nil
       out.route = self:routeMessage()
@@ -2474,7 +2548,7 @@ function Planner:tickManeuver(ego, cars, out)
             end
           end
           local sp = self.spot
-          self:emit('arrived', { detail = 'parking', err = err,
+          self:emit('arrived', { detail = 'parking', err = err, destDist = self.dest and floor(sqrt((self.dest[1] - ego.x) ^ 2 + (self.dest[2] - ego.y) ^ 2)) or nil,
             spot = sp and { x = sp.x, y = sp.y, dx = sp.dx, dy = sp.dy, known = sp.known } or nil,
             car = { x = ego.x, y = ego.y, hx = ego.hx, hy = ego.hy } })
           self:disengage('arrived')

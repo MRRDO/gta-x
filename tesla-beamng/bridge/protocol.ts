@@ -12,7 +12,7 @@ export type Profile = 'sloth' | 'chill' | 'standard' | 'hurry' | 'madmax' | 'fur
 /** fsd: drives everything · autosteer: steers + cruise (Tesla Autosteer) · tacc: cruise only, you steer */
 export type AutopilotMode = 'off' | 'autosteer' | 'fsd' | 'tacc'
 export type SignalDir = 'left' | 'right' | 'hazard' | null
-export type Arrival = 'Parking Lot' | 'Street' | 'Driveway' | 'Parking Garage' | 'Curbside'
+export type Arrival = 'Parking Lot' | 'Street' | 'Driveway' | 'Parking Garage' | 'Curbside' | 'Drive Thru'
 export type DisengageReason = 'steer' | 'brake' | 'throttle' | 'arrived' | 'error' | 'app' | 'attention' | 'summon' | 'switch'
 
 // ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ export type EventKind =
   | 'advice'           // the FSD Assistant's advice after a stuck FSD: detail 'wait|replan|creep|askDriver: why'
   | 'stuck'            // FSD stopped for no reason it can name: level 1 re-plan, 2 reset, 3 asks the driver
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
-  | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver}; answer with {t:'arrivalChoice'}
+  | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver|driveThru}; answer with {t:'arrivalChoice'}
   | 'arrivalChoice'    // the choice was applied
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
   | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
@@ -408,7 +408,7 @@ export type Command =
   | { t: 'confirm' } // "go": answers a confirmGo event (also a wheel button / a tap on the accelerator)
   | { t: 'pinLock'; on: boolean } // PIN to Drive: on = the car stays in Park (and FSD refuses) until the app sends on:false after the PIN is entered
   | { t: 'lightShow'; name: 'welcome' | 'goodbye' | 'holiday' | 'strobe' | null } // choreographed headlights/fog/blinkers while parked (null stops it)
-  | { t: 'arrivalChoice'; choice: 'park' | 'street' | 'pullOver' | 'driveway' | 'takeOver' } // answer to the 'arriving' event
+  | { t: 'arrivalChoice'; choice: 'park' | 'street' | 'pullOver' | 'driveway' | 'takeOver' | 'driveThru' } // answer to the 'arriving' event
   | { t: 'autopark'; spot?: number } // spot: an id from parkingSpots (tapped on the map); none = the nearest free spot beside the car
   | { t: 'requestParkingSpots'; near?: [number, number]; radius?: number }
   /** "I'm not feeling well": FSD takes over (engaging if off), hazards on, and stops at the safer of a quick-to-reach free parking spot or the roadside. cancel:true calls it off ("I'm fine"). Events: emergencyStop, emergencyStopped. */
