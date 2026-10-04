@@ -1768,7 +1768,12 @@ local function updateGFX(dt)
     swerveAssist(dt, s)
     driveFeel(dt, s)
     local bp = math.max(rawValue('brake') or 0, tonumber(electrics.values.brake_input) or 0, tonumber(electrics.values.brake) or 0) > 0.3
-    if bp and not ap.brakeWasDown and gearLetter() == 'P' and abs(s.v) < 0.3 then geEvent('brakeInPark', {}) end
+    -- fires on the press, and again once a second while the brake stays down in P (holding it before the car had
+    -- settled, or a first event that got lost, used to mean no shift at all)
+    if bp and gearLetter() == 'P' and abs(s.v) < 0.3 and (not ap.brakeWasDown or now - (ap.bipT or -1e9) > 1.0) then
+      ap.bipT = now
+      geEvent('brakeInPark', {})
+    end
     ap.brakeWasDown = bp
     -- accelerator strip in the app, autopilot off
     if override.active then

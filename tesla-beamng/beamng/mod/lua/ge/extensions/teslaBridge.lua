@@ -1247,7 +1247,7 @@ end
 -- Auto Shift out of Park (setting autoShift): the driver presses the brake in P and the car
 -- picks D or R itself: a wall, curb or car right in front (and room behind) -> R, else D.
 autoShift = function(veh)
-  if not plannerSettings.autoShift or not planner or planner.mode ~= 'off' or pinLocked then return end
+  if plannerSettings.autoShift == false or not planner or planner.mode ~= 'off' or pinLocked then return end
   local ego = egoSnapshot(veh)
   local rays = sampleRays(ego)
   local front, rear = rays.front, rays.rear -- metres to a wall/curb, or nil
