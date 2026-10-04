@@ -1409,5 +1409,21 @@ scenario('turnIntoBusiness', function()
   end
 end)
 
+scenario('turnIntoLot', function()
+  -- the destination is a business 55 m off the road with mapped spots around it (auto + lot choices): park in a spot there
+  for _, arrival in ipairs({ 'auto', 'Parking Lot' }) do
+    local spots = {}
+    for i = 0, 5 do spots[#spots + 1] = { x = 395 + i * 3, y = 52, z = 0, dx = 0, dy = -1, known = true } end
+    local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 }, parking = spots })
+    w.planner:setRoute({ 400, 55, 0 }, nil, arrival)
+    w:engage('fsd', 'standard')
+    w:run(170, function(ww) return ww:saw('arrived') ~= nil end)
+    local x, y = w:refPos()
+    check(w:saw('arrived') ~= nil, arrival .. ' (lot): arrives')
+    check(math.sqrt((x - 400) ^ 2 + (y - 55) ^ 2) < 12, string.format('%s (lot): ends at the lot, not on the road (%.0f, %.0f)', arrival, x, y))
+    check(not w.collided, arrival .. ' (lot): no collision')
+  end
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

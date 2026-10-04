@@ -213,8 +213,14 @@ function M.parallel(spot, road, rmin)
     if not bestK or k < bestK then best, bestK, bestQ = pts, k, q end
     if k <= 1 / rmin then break end
   end
+  -- a straight tail: the S-curve ends with the car still a few degrees off the kerb (it lags the path), so keep
+  -- reversing straight for a bit to let it square up, then pull forward to centre it
+  local tail = 1.6
+  local last = best[#best]
+  for d = 1, math.ceil(tail / 0.4) do best[#best + 1] = { x = last.x - dx * d * 0.4, y = last.y - dy * d * 0.4, z = spot.z } end
+  local e = best[#best]
   local fwd = {}
-  for d = 0, 4 do fwd[#fwd + 1] = { x = deep.x + dx * d * 0.25, y = deep.y + dy * d * 0.25, z = spot.z } end
+  for d = 0, 8 do fwd[#fwd + 1] = { x = e.x + dx * d * 0.25, y = e.y + dy * d * 0.25, z = spot.z } end
   return bestQ, {
     { dir = -1, pts = best, maxSpeed = 1.2, kind = 'parallel', curvature = bestK },
     { dir = 1, pts = fwd, maxSpeed = 0.6, kind = 'parallel' },
