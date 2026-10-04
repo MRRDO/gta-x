@@ -164,6 +164,16 @@ function Driver:update(dt, sense, opts)
   if plan.maxSpeed then vt = min(vt, plan.maxSpeed) end
   if plan.hold or out.remaining < (reverse and 0.3 or 0.5) and not plan.openEnded then vt = 0 end
   vt = max(0, vt)
+  -- accelerate like a person driving, not like a launch: the speed we ask for rises at the profile's accel
+  -- (m/s^2) instead of jumping to the new target; slowing down is never delayed
+  if plan.accel and not plan.urgent then
+    local ramp = self.vtRamp or v
+    if vt <= ramp then ramp = vt else ramp = min(vt, max(ramp, v) + plan.accel * dt) end
+    self.vtRamp = ramp
+    vt = ramp
+  else
+    self.vtRamp = nil
+  end
   out.targetSpeed = vt
 
   -- speed control: PI on speed error, never throttle and brake together
@@ -172,7 +182,8 @@ function Driver:update(dt, sense, opts)
   if vt < 0.3 and v < 0.6 then
     self.speedI = 0
     -- soft stop: ease the brake off as the car comes to rest (no lurch), then hold it
-    out.throttle, out.brake = 0, (v > 0.12) and (0.12 + 0.6 * v) or 0.5
+    -- (an EV in D creeps at ~0.15 m/s: the old 0.12 + 0.6 v brake could not stop that, and maneuvers never went on to their next leg)
+    out.throttle, out.brake = 0, (v > 0.08) and (0.25 + 0.8 * v) or 0.6
     if plan.hold then out.parkingbrake = 1 end
   else
     self.speedI = clamp(self.speedI + e * dt * 0.08, -0.3, 0.4)
@@ -220,7 +231,7 @@ function Driver:update(dt, sense, opts)
       if si >= 12 then kAhead = math.max(kAhead, abs(P.curvatureAt(path.pts, i, 3))) end
     end
     self.drift = self.drift or Dr.new()
-    local r = self.drift:update(dt, { allowed = true, v = v, kAhead = kAhead, yawRate = sense.yawRate or 0, t = self.t })
+    local r = self.drift:update(dt, { allowed = true, v = v, kAhead = kAhead, yawRate = sense.yawRate or 0, t = self.t, tune = plan.driftTune })
     if r.pb > 0 then out.parkingbrake = 1 end
     if r.throttleMin > 0 then out.throttle, out.brake = math.max(out.throttle, r.throttleMin), 0 end
     out.driftPhase = r.phase

@@ -1312,7 +1312,7 @@ scenario('furiousDrive', function()
   end
   local wF, driftF = trip('furious')
   check(wF:saw('arrived') ~= nil and not wF.collided, 'furious gets there without a collision')
-  check(driftF, 'furious allows drifts on a clear road')
+  check(not driftF, 'furious does not drift unless the driver opted in (drift is opt-in since laptop/tuning-2)')
   local wS, driftS = trip('standard')
   check(not driftS, 'other profiles never drift')
   local tF, tS = wF:saw('arrived'), wS:saw('arrived')

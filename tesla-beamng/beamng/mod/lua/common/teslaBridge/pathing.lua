@@ -53,13 +53,13 @@ end
 
 M.PROFILES = {
   -- decel = the comfortable braking FSD plans stops with (m/s^2); jerk = how fast pedal effort may change
-  sloth    = { offset = -2 * MPH, straight = 0,    aLat = 2.2, gap = 3.0, throttle = 0.6, decel = 1.0, rise = 0.8 },
-  chill    = { offset =  0,       straight = 0.02, aLat = 2.5, gap = 2.5, throttle = 0.6, decel = 1.2, rise = 0.9 },
-  standard = { offset =  2 * MPH, straight = 0.04, aLat = 2.8, gap = 2.0, throttle = 0.6, decel = 1.4, rise = 1.1 },
-  hurry    = { offset =  5 * MPH, straight = 0.06, aLat = 2.7, gap = 1.6, throttle = 0.7, decel = 1.9, rise = 1.5 },
-  madmax   = { offset =  8 * MPH, straight = 0.09, aLat = 3.0, gap = 1.2, throttle = 0.9, decel = 2.5, rise = 2.2 },
+  sloth    = { offset = -2 * MPH, straight = 0,    aLat = 2.2, gap = 3.0, throttle = 0.6, decel = 1.0, accel = 1.0, rise = 0.8 },
+  chill    = { offset =  0,       straight = 0.02, aLat = 2.5, gap = 2.5, throttle = 0.6, decel = 1.2, accel = 1.4, rise = 0.9 },
+  standard = { offset =  2 * MPH, straight = 0.04, aLat = 2.8, gap = 2.0, throttle = 0.6, decel = 1.4, accel = 1.9, rise = 1.1 },
+  hurry    = { offset =  5 * MPH, straight = 0.06, aLat = 2.7, gap = 1.6, throttle = 0.7, decel = 1.9, accel = 2.6, rise = 1.5 },
+  madmax   = { offset =  8 * MPH, straight = 0.09, aLat = 3.0, gap = 1.2, throttle = 0.9, decel = 2.5, accel = 3.6, rise = 2.2 },
   -- Furious: hold Max / Service mode. Cuts in, tails, well over the limit; the safety layer still brakes.
-  furious  = { offset = 15 * MPH, straight = 0.12, aLat = 4.0, gap = 0.8, throttle = 1.0, decel = 3.5, rise = 3.5 },
+  furious  = { offset = 12 * MPH, straight = 0.05, aLat = 2.9, gap = 0.9, throttle = 0.9, decel = 3.0, accel = 3.6, rise = 2.2 },
 }
 
 ---------------------------------------------------------------------------

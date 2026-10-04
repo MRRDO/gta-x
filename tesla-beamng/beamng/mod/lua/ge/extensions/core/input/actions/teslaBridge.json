@@ -34,5 +34,50 @@
         "isBasic": true,
         "title": "Hands-on nudge",
         "desc": "Counts as a steering-wheel nudge for the FSD attention monitor."
+    },
+    "teslaPaddleLeft": {
+        "cat": "tesla",
+        "order": 4,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.paddle('left') end",
+        "isBasic": true,
+        "title": "Paddle left (turn signal)",
+        "desc": "Left turn signal; with FSD it asks for a left turn / lane change."
+    },
+    "teslaPaddleRight": {
+        "cat": "tesla",
+        "order": 5,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.paddle('right') end",
+        "isBasic": true,
+        "title": "Paddle right (turn signal)",
+        "desc": "Right turn signal; with FSD it asks for a right turn / lane change."
+    },
+    "teslaDialUp": {
+        "cat": "tesla",
+        "order": 6,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.dial('up') end",
+        "isBasic": true,
+        "title": "Dial turn up",
+        "desc": "The G29 red dial: volume / follow distance / speed / profile up."
+    },
+    "teslaDialDown": {
+        "cat": "tesla",
+        "order": 7,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.dial('down') end",
+        "isBasic": true,
+        "title": "Dial turn down",
+        "desc": "The G29 red dial turned the other way."
+    },
+    "teslaDialClick": {
+        "cat": "tesla",
+        "order": 8,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.dial('click') end",
+        "isBasic": true,
+        "title": "Dial press",
+        "desc": "Cycles what the dial controls."
     }
 }

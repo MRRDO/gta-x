@@ -26,6 +26,10 @@ function D:reset() self.phase, self.coolUntil = 'idle', -1e9 end
 
 function D:update(dt, s)
   local t = s.t or 0
+  -- (practice runner) tuned values replace the constants
+  local tn = s.tune or {}
+  local KICK_T, SLIDE_MAX = tonumber(tn.kick) or KICK_T, tonumber(tn.slideMax) or SLIDE_MAX
+  local V_MIN, K_MIN, YAW_BAIL = tonumber(tn.vMin) or V_MIN, tonumber(tn.kMin) or K_MIN, tonumber(tn.yawBail) or YAW_BAIL
   local out = { pb = 0, throttleMin = 0, phase = self.phase }
   local v, yaw = s.v or 0, abs(s.yawRate or 0)
   if not s.allowed or v < V_MIN * 0.7 or v > V_MAX * 1.15 then

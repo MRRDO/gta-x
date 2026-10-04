@@ -27,6 +27,7 @@ Ctrl+C stops it and hands the wheel back to the mod.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import signal
 import sys
@@ -97,7 +98,7 @@ class SDLWheel:
         import sdl2
         self.sdl2, self.ctypes = sdl2, ctypes
         sdl2.SDL_SetHint(b'SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS', b'1')  # BeamNG has the focus
-        if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK | sdl2.SDL_INIT_HAPTIC) != 0:
+        if sdl2.SDL_Init(sdl2.SDL_INIT_JOYSTICK | (sdl2.SDL_INIT_HAPTIC if haptics else 0)) != 0:
             raise RuntimeError('SDL init failed: ' + sdl2.SDL_GetError().decode())
         self.joy = self.haptic = None
         self.spring_id = self.damper_id = -1
@@ -181,7 +182,12 @@ class SDLWheel:
         if self.spring_id < 0:
             self.spring_id = sdl2.SDL_HapticNewEffect(self.haptic, ctypes.byref(eff))
             if self.spring_id < 0:
-                raise RuntimeError('spring effect: ' + sdl2.SDL_GetError().decode())
+                # the game may be holding the device for a moment: say so once in a while and try again next tick
+                if time.monotonic() - getattr(self, '_warned', 0) > 5:
+                    self._warned = time.monotonic()
+                    print('wheel helper: spring effect not created yet:', sdl2.SDL_GetError().decode(), flush=True)
+                self.sent = None
+                return
             sdl2.SDL_HapticRunEffect(self.haptic, self.spring_id, 1)
         else:
             sdl2.SDL_HapticUpdateEffect(self.haptic, self.spring_id, ctypes.byref(eff))
@@ -206,6 +212,9 @@ class SDLWheel:
 
     def pump(self) -> None:
         self.sdl2.SDL_JoystickUpdate()
+
+    def axis(self) -> float:
+        return self.sdl2.SDL_JoystickGetAxis(self.joy, 0) / 32768.0
 
     def close(self) -> None:
         self.stop()
@@ -245,6 +254,7 @@ class FakeWheel:
         self.sent = sp
 
     def pump(self) -> None: ...
+    def axis(self) -> float: return 0.0
     def stop(self) -> None: self.sent = None
     def close(self) -> None: ...
 
@@ -365,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     link.thread.start()
     t0 = time.monotonic()
     last_print = 0.0
+    last_pos = 0.0
     prev_buttons: list[bool] = []
     try:
         while not a.seconds or time.monotonic() - t0 < a.seconds:
@@ -375,9 +386,18 @@ def main(argv: list[str] | None = None) -> int:
                     link.send({'t': 'wheelButton', 'button': i, 'down': down})
                     if not a.quiet and down:
                         print(f'  button {i}', flush=True)
+                    if down:
+                        try:
+                            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wheel_helper.log'), 'a') as lf:
+                                lf.write(f'{time.strftime("%H:%M:%S")} button {i}\n')
+                        except Exception:
+                            pass
             prev_buttons = now_buttons
             sp = ctl.spring(time.monotonic()) if not a.buttons else Spring()
             wheel.apply(sp)
+            if not a.buttons and sp.on and sp.coeff > 0 and time.monotonic() - last_pos > 0.03:
+                last_pos = time.monotonic()
+                link.send({'t': 'wheel', 'pos': round(wheel.axis(), 4)})
             if a.fake and not a.quiet and time.monotonic() - last_print > 1:
                 last_print = time.monotonic()
                 print(f'  spring on={sp.on} center={sp.center:+.3f} k={sp.coeff:.2f}', flush=True)

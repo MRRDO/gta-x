@@ -47,7 +47,9 @@ end
 function Nag:nudge(t)
   self.lastNudge = t
   self.jitter = 0.8 + 0.4 * self.rng() -- "every once in a while", not a metronome
-  if self.level < 3 then self.level, self.reason, self.badSince = 0, nil, nil end
+  -- with the camera watching, a wheel movement doesn't answer it (the wheel also moves by itself under FSD's
+  -- force feedback): only a good camera report does
+  if self.level < 3 and self.active ~= 'camera' then self.level, self.reason, self.badSince = 0, nil, nil end
 end
 
 -- Called when the driver takes over (any disengage). Level 3 answered in time: no strike.

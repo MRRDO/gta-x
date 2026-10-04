@@ -63,6 +63,9 @@ local CAM_DIR = 'temp/teslaBridge'
 
 -- FSD brain, safety, and what we last told the car
 local planner = nil
+local reloadRequested = nil -- (update while playing) set by the reloadMod command, handled in onUpdate
+local setTraffic -- (practice runner) AI traffic, defined further down
+local castRay -- static ray cast, defined further down (the planner's closure needs it declared up here)
 local plannerSettings = {}   -- kept across level loads
 local safetySettings = {}
 local safety = Sf.new()
@@ -467,6 +470,7 @@ local function buildMap()
   local polSpec = jsonReadFile and try(jsonReadFile, '/settings/teslaBridgePolicy.json') or nil -- trained by rl/train_bc.py
   planner = Pl.new({ graph = graph, signals = signals, parking = parking, learn = learn, policy = type(polSpec) == 'table' and Po.new(polSpec) or nil })
   safety.brain = planner.brain -- one brain reads the traffic for both driving and safety
+  planner.castRay = function(x, y, z, dx, dy, dz, dist) return castRay(x, y, z, dx, dy, dz, dist) end -- Autopark looks for walls with it
   planner:configure(plannerSettings)
   sentMode = 'off'
   local sig = {}
@@ -636,7 +640,7 @@ end
 
 local rayFn = nil
 local rayProbed = false
-local function castRay(px, py, pz, dx, dy, dz, dist)
+castRay = function(px, py, pz, dx, dy, dz, dist)
   if not rayProbed then
     rayProbed = true
     if rawget(_G, 'castRayStatic') then
@@ -657,6 +661,9 @@ local function sampleRays(ego)
   local half = (ego.len or 4.6) * 0.5
   local rays = {
     front = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z, ego.hx, ego.hy, 0, 30),
+    -- a second ray 0.9 m higher: a real wall/pole/car is hit by both at about the same distance; a rising road or
+    -- crest is hit by the low ray much sooner (that read as a wall dead ahead: phantom braking at 30 mph)
+    frontHi = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z + 0.9, ego.hx, ego.hy, 0, 30),
     rear = castRay(ego.x - ego.hx * half, ego.y - ego.hy * half, z, -ego.hx, -ego.hy, 0, 15),
     left = castRay(ego.x, ego.y, z, -ego.hy, ego.hx, 0, 8),
     right = castRay(ego.x, ego.y, z, ego.hy, -ego.hx, 0, 8),
@@ -755,6 +762,7 @@ local function planTick()
   local veh = playerVehicle()
   if not veh then return end
   local ego = egoSnapshot(veh)
+  do local mo = map and map.objects and map.objects[veh:getID()]; ego.damage = mo and tonumber(mo.damage) or nil end
   local out = planner:tick({ t = gameTime, dt = 0.1, ego = ego, cars = trafficList(), weather = weather, overhead = overhead })
   applyPlannerOut(veh, out)
 end
@@ -1023,6 +1031,10 @@ local function computeAlert(vid, st, ps, nag)
   if engaged and planner and planner.mode == 'fsd' and (st.speed or 0) > 35.8 and lim and lim < 24.6 then
     return { kind = 'takeover', message = 'Take over immediately', level = 3 }
   end
+  if engaged and (nag.level or 0) >= 1 and nag.reason == 'hands' then
+    -- wheel monitoring: ask for a little force on the wheel, like a Tesla
+    return { kind = 'attention', message = (nag.level or 0) >= 3 and 'Take over immediately' or 'Apply slight force to the steering wheel', level = nag.level }
+  end
   if engaged and (nag.level or 0) >= 2 then
     return { kind = 'attention', message = (nag.level or 0) >= 3 and 'Take over immediately' or 'Pay attention to the road', level = nag.level }
   end
@@ -1058,7 +1070,8 @@ function M.onVehicleState(vid, json)
       tripScore:update(dtS, { v = st.speed or 0, yawRate = yawState.rate, gap = drive and drive.gapT,
         fsd = st.autopilot and st.autopilot.engaged and st.autopilot.mode == 'fsd' })
     end
-    if tripScore.hazard ~= tripHazardSent and veh then
+    -- hazards come on only in a crash (see the collision check above), not for hard braking
+    if false and tripScore.hazard ~= tripHazardSent and veh then
       tripHazardSent = tripScore.hazard
       toVehicle(veh, 'command', tripScore.hazard and { t = 'signal', dir = 'hazard' } or { t = 'signal' })
       if tripScore.hazard then relayEvent({ kind = 'notice', detail = 'hazards on: emergency braking' }) end
@@ -1135,6 +1148,7 @@ function M.onVehicleState(vid, json)
   st.trip = { score = tripScore:score(), km = num(tripScore.dist / 1000, 2), fsdPercent = num(tripScore.dist > 0 and tripScore.fsdDist / tripScore.dist * 100 or 0, 0), hardBrakes = tripScore.hardBrakes }
   local okA, alert = pcall(computeAlert, vid, st, ps, nag)
   st.autopilot.alert = okA and alert or nil
+  st.damage = damageOf(vid) -- (practice runner: curb and wall hits)
   -- while FSD is asking for a takeover, tapping the accelerator hands the car over
   local wantHandover = st.autopilot.alert and (st.autopilot.alert.kind == 'takeover' or st.autopilot.alert.kind == 'lowConfidence'
     or (st.autopilot.alert.kind == 'attention' and (st.autopilot.alert.level or 0) >= 3)) or false
@@ -1533,6 +1547,59 @@ handleCommand = function(msg)
       local okP = planner:planPath(egoSnapshot(veh), trafficList())
       if okP then send(planner:routeMessage()); planner.routeDirty = false end
     end
+  elseif t == 'reloadMod' then
+    -- (update while playing) reload this extension and its modules from disk (needs the mod installed as an unpacked folder);
+    -- the car's own extension too when asked. Done on the next frame: this extension is replaced while it is running.
+    reloadRequested = { vehicle = msg.vehicle ~= false }
+    relayEvent({ kind = 'notice', detail = 'reloading the Tesla bridge' })
+  elseif t == 'traffic' and (tonumber(msg.count) or 0) < -1 then
+    -- (debug) fan of static rays around a point (x, y from hx/hy fields): shortest hit per height; also which other ray APIs exist
+    local fx, fy = tonumber(msg.x) or 0, tonumber(msg.y) or 0
+    local pv = be:getPlayerVehicle(0)
+    local z0 = (pv and pv:getPosition().z or 0)
+    local out = { 'apis: be.castRay=' .. type(be.castRay) .. ' castRay=' .. type(rawget(_G, 'castRay')) .. ' castRayDown=' .. type(rawget(_G, 'castRayDown')) .. ' be.castRayStatic=' .. type(be.castRayStatic) }
+    for _, h in ipairs({ 0.1, 0.4, 0.8, 1.4 }) do
+      local best, bestA = 99, nil
+      for k = 0, 15 do
+        local a2 = k * math.pi / 8
+        local okr, r = pcall(function() return rayFn(vec3(fx, fy, z0 + h), vec3(math.cos(a2), math.sin(a2), 0), 4) end)
+        if okr and type(r) == 'number' and r < best then best, bestA = r, k end
+      end
+      out[#out + 1] = string.format('h%.1f: %.2f@%s', h, best, tostring(bestA))
+    end
+    relayEvent({ kind = 'notice', detail = 'fan ' .. table.concat(out, ' | ') })
+  elseif t == 'traffic' and (tonumber(msg.count) or 0) < 0 then
+    -- (debug) raw results of the ray function from the player's car in 8 directions at 3 heights
+    local pv = be:getPlayerVehicle(0)
+    if pv then
+      local pp = pv:getPosition()
+      local out = { 'rayFn=' .. tostring(rayFn ~= nil) .. ' G=' .. tostring(rawget(_G, 'castRayStatic') ~= nil) .. ' be=' .. tostring(be and be.castRayStatic ~= nil) }
+      for k = 0, 7 do
+        local a = k * math.pi / 4
+        local row = {}
+        for _, h in ipairs({ 0.2, 0.6, 1.2 }) do
+          local okr, r = pcall(function() return (rayFn or function() end)(vec3(pp.x, pp.y, pp.z + h), vec3(math.cos(a), math.sin(a), 0), 20) end)
+          row[#row + 1] = okr and tostring(type(r) == 'number' and string.format('%.1f', r) or r) or ('ERR ' .. tostring(r))
+        end
+        out[#out + 1] = k .. ':' .. table.concat(row, '/')
+      end
+      relayEvent({ kind = 'notice', detail = 'rayTest ' .. table.concat(out, ' ') })
+    end
+  elseif t == 'traffic' then
+    -- (practice runner) AI cars around the player: count 0 removes them
+    local okT, res = pcall(setTraffic, math.max(0, math.min(14, tonumber(msg.count) or 0)))
+    relayEvent({ kind = 'notice', detail = 'traffic ' .. tostring(msg.count) .. ': ' .. tostring(okT and res or ('failed: ' .. tostring(res))) })
+  elseif t == 'teleport' then
+    -- (testing) put the player's car somewhere: x, y, z, heading (hx, hy)
+    if not veh or not msg.x then return end
+    if msg.repair then pcall(function() veh:resetBrokenFlexMesh() end) end -- (practice runner) fixes the damage first
+    local ok, err = pcall(function()
+      local dir = vec3(tonumber(msg.hx) or 1, tonumber(msg.hy) or 0, 0)
+      if msg.flip then dir = -dir end
+      local q = quatFromDir(dir, vec3(0, 0, 1))
+      veh:setPositionRotation(msg.x, msg.y, msg.z or 0, q.x, q.y, q.z, q.w)
+    end)
+    relayEvent({ kind = 'notice', detail = 'teleport ' .. tostring(ok) .. ' ' .. tostring(err or '') })
   elseif t == 'autopark' then
     if not planner or not veh then return end
     local ego, cars = egoSnapshot(veh), trafficList()
@@ -1626,7 +1693,11 @@ runAction = function(name)
   elseif name == 'voiceNote' then M.voiceNote()
   elseif name == 'nudge' then M.nudge()
   elseif name == 'laneLeft' or name == 'laneRight' then
-    handleCommand({ t = 'signal', dir = name == 'laneLeft' and 'left' or 'right' })
+    local dir = name == 'laneLeft' and 'left' or 'right'
+    -- the paddles: with FSD / Autosteer it asks for that turn / lane change; otherwise it is a normal stalk (press again = off)
+    local fsdOn = planner and (planner.mode == 'fsd' or planner.mode == 'autosteer')
+    if not fsdOn and lastVehSt and lastVehSt.signal == dir then dir = nil end
+    handleCommand({ t = 'signal', dir = dir })
   elseif name == 'profileNext' then stepProfile(1)
   elseif name == 'profilePrev' then stepProfile(-1)
   elseif name == 'speedUp' or name == 'speedDown' then
@@ -1656,6 +1727,71 @@ end
 -- Bound to "Tesla: voice note": the app starts/stops recording a note for later.
 function M.voiceNote()
   send({ t = 'event', kind = 'voiceNote', detail = 'toggle', data = { lastDisengage = planner and planner.lastDisengage or nil } })
+end
+
+-- (practice runner) AI traffic around the player's car: `count` cars spawned on the road graph 70-250 m away that drive on their own.
+local trafficIds = {}
+local TRAFFIC_MODELS = { 'vivace', 'sunburst2', 'etk800', 'pickup', 'roamer', 'miramar', 'legran', 'bx', 'covet' }
+local function clearTraffic()
+  for _, id in ipairs(trafficIds) do
+    local o = be and be.getObjectByID and be:getObjectByID(id)
+    if o then pcall(function() o:delete() end) end
+  end
+  trafficIds = {}
+end
+setTraffic = function(count)
+  clearTraffic()
+  if count <= 0 then return 'cleared' end
+  local pv = be:getPlayerVehicle(0)
+  if not pv or not graph or not graph.nodes then return 'no car or no road graph' end
+  local pp = pv:getPosition()
+  local cands = {}
+  for id, n in pairs(graph.nodes) do
+    local d = math.sqrt((n.x - pp.x) ^ 2 + (n.y - pp.y) ^ 2)
+    if d > 70 and d < 250 then cands[#cands + 1] = n end
+  end
+  if #cands == 0 then return 'no road nodes nearby' end
+  local made = 0
+  for _ = 1, count do
+    local n = cands[math.random(#cands)]
+    local model = TRAFFIC_MODELS[math.random(#TRAFFIC_MODELS)]
+    local ang = math.random() * 6.283
+    local q = quatFromDir(vec3(math.cos(ang), math.sin(ang), 0), vec3(0, 0, 1))
+    local ok, v = pcall(function()
+      return core_vehicles.spawnNewVehicle(model, { pos = vec3(n.x, n.y, n.z + 0.5), rot = q, autoEnterVeh = false, cling = true })
+    end)
+    if ok and v then
+      trafficIds[#trafficIds + 1] = v:getID()
+      v:queueLuaCommand("if ai then ai.setMode('traffic') end")
+      made = made + 1
+    end
+  end
+  -- make sure the player stays in their own car
+  pcall(function() be:enterVehicle(0, pv) end)
+  return 'spawned ' .. made
+end
+
+-- The G29 paddles (bound to "Tesla: paddle left / right"): the turn signal; with FSD it asks for that turn / lane change.
+function M.paddle(dir)
+  if dir == 'left' then runAction('laneLeft') else runAction('laneRight') end
+end
+
+-- The G29 red dial (bound to "Tesla: dial up / down / click"): volume by default, its button cycles what it controls.
+-- Volume goes to the app as a wheelMedia event (the iPad's music), the rest to the planner like the wheel-button actions.
+local DIAL_MODES = { 'volume', 'distance', 'speed', 'profile' }
+local dialIdx = 1
+local DIAL_ACTIONS = { volume = { 'volumeUp', 'volumeDown' }, distance = { 'followFarther', 'followCloser' }, speed = { 'speedUp', 'speedDown' }, profile = { 'profileNext', 'profilePrev' } }
+function M.dial(kind)
+  if kind == 'click' then
+    dialIdx = dialIdx % #DIAL_MODES + 1
+    send({ t = 'event', kind = 'wheelDial', detail = DIAL_MODES[dialIdx], data = { mode = DIAL_MODES[dialIdx] } })
+    return
+  end
+  local mode = DIAL_MODES[dialIdx]
+  local act = DIAL_ACTIONS[mode][kind == 'up' and 1 or 2]
+  send({ t = 'event', kind = 'wheelDial', detail = mode, data = { mode = mode, dir = kind } })
+  if mode == 'volume' then send({ t = 'event', kind = 'wheelMedia', detail = act, data = { action = act } })
+  else runAction(act) end
 end
 
 -- Bound to "Tesla: I'm paying attention" (a wheel button for keyboard/gamepad players).
@@ -1746,9 +1882,42 @@ end
 -- hooks
 ---------------------------------------------------------------------------
 
+local bindingsRefreshAt -- seconds left until the second bindings refresh (set when the extension loads)
+local refreshBindings
+local function doReload()
+  local req = reloadRequested
+  reloadRequested = nil
+  -- forget the modules so they are read from disk again
+  for k in pairs(package.loaded) do
+    if type(k) == 'string' and k:find('^teslaBridge/') then package.loaded[k] = nil end
+  end
+  if req and req.vehicle then
+    local veh = be and be.getPlayerVehicle and be:getPlayerVehicle(0)
+    if veh then veh:queueLuaCommand("package.loaded['teslaBridge/control'] = nil; package.loaded['teslaBridge/wheel'] = nil; package.loaded['teslaBridge/nag'] = nil; package.loaded['teslaBridge/pathing'] = nil; package.loaded['teslaBridge/safety'] = nil; extensions.reload('teslaAutopilot')") end
+  end
+  local ok, err = pcall(function()
+    if core_jobsystem and core_jobsystem.create then
+      -- from a job: this extension is replaced while its own code is on the stack otherwise
+      core_jobsystem.create(function(job)
+        job.sleep(0.15)
+        extensions.unload('teslaBridge')
+        job.sleep(0.15)
+        extensions.load('teslaBridge')
+      end, 1)
+    elseif extensions and extensions.reload then
+      extensions.reload('teslaBridge')
+    end
+  end)
+  logI('reload requested: ' .. tostring(ok) .. ' ' .. tostring(err))
+end
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   realTime = realTime + dtReal
+  if reloadRequested then pcall(doReload); return end
+  if bindingsRefreshAt then
+    bindingsRefreshAt = bindingsRefreshAt - dtReal
+    if bindingsRefreshAt <= 0 then bindingsRefreshAt = nil; if refreshBindings then refreshBindings() end end
+  end
   gameTime = gameTime + (dtSim or dtReal)
   if dtReal > 0 then fpsAvg = fpsAvg + (1 / dtReal - fpsAvg) * 0.05 end
   local okNet, netErr = pcall(netUpdate)
@@ -1888,10 +2057,20 @@ saveLearn = function()
   end
 end
 
+-- BeamNG reads the wheel's bindings (settings/inputmaps) at start, before this mod is mounted, so our actions (the FSD button,
+-- the paddles, the red dial) did not exist yet and their bindings were dropped. Ask it to read them again now that they do.
+refreshBindings = function()
+  pcall(function()
+    if core_input_bindings and core_input_bindings.onFileChanged then core_input_bindings.onFileChanged('/settings/inputmaps/c24f046d.diff', 0) end
+  end)
+end
+
 local function onExtensionLoaded()
-  logI('loaded')
+  logI('loaded (v2) ' .. tostring(os.time()))
   loadLearn()
   if levelName() then mapPending = true end
+  refreshBindings()
+  bindingsRefreshAt = 4 -- and once more a few seconds later (seconds of game time from the first update)
 end
 
 local function onExtensionUnloaded()

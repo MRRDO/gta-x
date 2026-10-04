@@ -32,7 +32,8 @@ function M.roadTexture(hp, v, t, gain)
   return clamp(tex * gain, -0.35 * gain, 0.35 * gain) * ((hp or 0) < 0 and -1 or 1)
 end
 
-M.TAKEOVER = { light = 0.09, normal = 0.14, firm = 0.25 }
+-- raw axis error (of a 900 deg wheel) that takes over from FSD: 0.07 is about 30 degrees. Sensitive on purpose.
+M.TAKEOVER = { light = 0.05, normal = 0.07, firm = 0.14 }
 function M.takeoverLimit(level) return M.TAKEOVER[level] or M.TAKEOVER.normal end
 
 -- Steering the driver adds on top of FSD's while they lean on the wheel lightly.
@@ -61,7 +62,8 @@ function M.new(opts)
 end
 
 function Spring:reset()
-  self.ramp, self.vel, self.lastPos = 0, 0, nil
+  self.ramp, self.vel, self.lastPos, self.eLP = 0, 0, nil, nil
+  self.age = 0
   self.tf, self.fPrev, self.integ = nil, 0, 0
   self.wrongT, self.gripT, self.goodT = 0, 0, 0
 end
@@ -73,11 +75,12 @@ function Spring:update(dt, target, pos, fcap, strength)
   local prevSpeed = abs(self.vel)
   if self.lastPos then
     local v = (pos - self.lastPos) / dt
-    local a = clamp(dt / 0.03, 0, 1)
+    local a = clamp(dt / (self.velTau or 0.03), 0, 1)
     self.vel = self.vel + (v - self.vel) * a
   end
   self.lastPos = pos
   self.ramp = min(1, self.ramp + dt / 0.8)
+  self.age = (self.age or 0) + dt
   local cap = fcap * clamp(strength or 1, 0, 2)
   -- smooth the target (FSD's steering comes in steps): no jerks for the motor to chase
   -- start from where the wheel IS (no snap to FSD's angle when it takes over) and move the target at a sane speed
@@ -85,15 +88,17 @@ function Spring:update(dt, target, pos, fcap, strength)
   local want = self.tf + (target - self.tf) * clamp(dt / 0.06, 0, 1)
   self.tf = self.tf + clamp(want - self.tf, -6 * dt, 6 * dt)
   local e = self.tf - pos
+  -- a slow copy of the error: the grab check and the driver-bias use it, so wheel jitter is never mistaken for a hand
+  self.eLP = (self.eLP or e) + (e - (self.eLP or e)) * clamp(dt / 0.15, 0, 1)
   local kp = cap / self.stiffness
   -- a hair of deadband so the motor doesn't buzz around the target
   local eUse = e
-  local DB = 0.004
+  local DB = self.deadband or 0.004
   if abs(eUse) < DB then eUse = 0 else eUse = eUse - (eUse > 0 and DB or -DB) end
   -- friction: a small steady error with the wheel not moving builds extra push (wheels
   -- with a stiff rim otherwise stop a few degrees short)
   if abs(e) > 0.01 and abs(self.vel) < 0.05 then
-    self.integ = clamp(self.integ + e * dt * 4, -0.3, 0.3)
+    self.integ = clamp(self.integ + e * dt * 4, -(self.integMax or 0.3), self.integMax or 0.3)
   else
     self.integ = self.integ * max(0, 1 - dt * 4)
   end
@@ -116,7 +121,7 @@ function Spring:update(dt, target, pos, fcap, strength)
     if self.softUntil <= 0 then self.soft, self.softUntil = 1, nil end
   end
   -- slew limit: full swing in ~0.15 s, not in one frame (that's the shake)
-  local maxStep = cap * dt / 0.03
+  local maxStep = cap * dt / (self.slew or 0.03)
   f = clamp(f, self.fPrev - maxStep, self.fPrev + maxStep)
   self.fPrev = f
   local converging = e * self.vel > 0 -- |target - pos| shrinking
@@ -126,7 +131,9 @@ function Spring:update(dt, target, pos, fcap, strength)
   self.flipHold = max(0, (self.flipHold or 0) - dt)
   if not self.confirmed then
     local speedingAway = not converging and abs(self.vel) > 0.4 and abs(self.vel) >= prevSpeed - 1e-3
-    if self.flipHold <= 0 and self.ramp >= 1 and abs(e) > 0.15 and abs(f) > 0.4 * cap and speedingAway then
+    -- the direction is tried at most in the first 1.5 s after the wheel is taken (it is known on the cars tried); later a fast
+    -- reversal of FSD's target looks like the wheel running away and flipped it for no reason (Autopark)
+    if self.flipHold <= 0 and self.age < 1.5 and self.ramp >= 0.4 and abs(e) > 0.12 and abs(f) > 0.3 * cap and speedingAway then
       self.wrongT = self.wrongT + dt
       if self.wrongT > 0.25 then
         self.sign = -self.sign
@@ -149,12 +156,18 @@ function Spring:update(dt, target, pos, fcap, strength)
   local gs = self.gripScale or 1
   local held = abs(e) > 0.1 * gs and abs(f) > 0.6 * capUse and not (converging and abs(self.vel) > 0.1)
   local resisting = abs(e) > 0.06 * gs and abs(f) > 0.5 * capUse and abs(self.vel) < 0.05
+  if self.gripErr then
+    -- soft spring (the hydros path): its force stays small for small errors, so judge the driver's hand by how far the
+    -- wheel is pulled from where FSD holds it, unless it is just lagging behind a quick turn
+    held = abs(self.eLP or e) > self.gripErr and not (converging and abs(self.vel) > 0.1)
+    resisting = false
+  end
   if self.ramp >= 1 and (held or resisting) then
     self.gripT = self.gripT + dt
   else
     self.gripT = max(0, self.gripT - dt * 2)
   end
-  return self.sign * f, self.gripT > (resisting and not held and 0.45 or 0.35), e
+  return self.sign * f, self.gripT > (resisting and not held and 0.25 or 0.15), e
 end
 
 M.Spring = Spring

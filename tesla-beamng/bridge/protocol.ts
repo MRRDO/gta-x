@@ -126,6 +126,8 @@ export type AutopilotState = {
   weather?: { rain: number; fog: number } | null
   maneuver?: { kind: string; step: number; total: number; dir: 1 | -1 } | null
   nag?: NagState
+  /** Total damage of the car (BeamNG's own number); the practice runner scores hits with its growth. */
+  damage?: number
   /**
    * Alert card: 'crash' (damage jump, FSD let go, hazards on: "Pull over immediately"),
    * 'takeover' (FSD > 80 mph where the limit is < 55), 'attention' (nag level 2+).
@@ -181,9 +183,9 @@ export type ParkingSpots = {
 export type Minimap = { t: 'minimap'; url: string; offset?: number[]; size?: number[] }
 
 export type EventKind =
-  | 'disengage' | 'engaged' | 'reengaged' | 'arrived' | 'vehicleChanged' | 'levelLoaded' | 'levelUnloaded' | 'error' | 'settings'
+  | 'disengage' | 'engaged' | 'reengaged' | 'arrived' | 'vehicleChanged' | 'levelLoaded' | 'levelUnloaded' | 'error' | 'settings' | 'wheelMedia' | 'wheelDial'
   // FSD behavior
-  | 'laneChange' | 'creeping' | 'nudge' | 'goAround' | 'emergencyVehicle' | 'schoolBus' | 'maneuver' | 'summon'
+  | 'stunt' | 'laneChange' | 'creeping' | 'nudge' | 'goAround' | 'emergencyVehicle' | 'schoolBus' | 'maneuver' | 'summon'
   | 'phantomBrake' | 'yellowHesitation' | 'collisionEvasion'
   // supervision
   | 'nag' | 'strike' | 'lockout'
@@ -332,6 +334,9 @@ export type Command =
   | { t: 'autopilot'; mode: AutopilotMode; profile?: Profile; fromPark?: boolean } // fromPark: Start Self-Driving from P (the car picks D/R and backs out itself)
   | { t: 'navigate'; to: Vec3 | { node: string }; stops?: Vec3[]; arrival?: Arrival }
   | { t: 'cancelRoute' }
+  | { t: 'traffic'; count: number } // (practice runner) AI cars around the player, 0 removes them
+  | { t: 'reloadMod'; vehicle?: boolean } // (update while playing) reload the bridge from disk (unpacked mod folder)
+  | { t: 'teleport'; x: number; y: number; z?: number; hx: number; hy: number; flip?: boolean; repair?: boolean } // (testing) put the car somewhere
   | { t: 'throttleOverride'; value: number } // -1..1, resend at >= 5 Hz while held; lapses after 0.5 s
   | { t: 'wheel'; spring?: boolean; strength?: number; helper?: boolean; ownFfb?: boolean; rangeDeg?: number } // FFB wheel spring on/off, strength 0..1 (default on, 1.0); helper: the SDL wheel helper drives the wheel; rangeDeg: the wheel's rotation (default 900)
   | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean; camera?: CameraSettings
@@ -432,7 +437,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop',
 ])
 
 export const MPH = 0.44704
