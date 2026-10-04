@@ -204,6 +204,7 @@ local pinLocked = false -- PIN to Drive: the car stays in Park until the app say
 local pinNoticeT = -1e9
 local wiperLevel = 0 -- 0 at start: we never switch off wipers the driver turned on
 local Ls = require('teslaBridge/lightshow')
+local Lq = require('teslaBridge/launchreq')
 local show = nil -- running light show { name, t0, last = key, prev = restore state }
 local tShow = 0
 local handoverSent = false -- the car was told a takeover is being requested (gas = take over)
@@ -1910,6 +1911,103 @@ local function doReload()
   end)
   logI('reload requested: ' .. tostring(ok) .. ' ' .. tostring(err))
 end
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Remote start (see launchreq.lua): the PC's launcher service writes settings/teslaBridgeLaunch.json before it starts the
+-- game. We read it while the game starts up, load the level and swap in the car it asks for, then delete it. We also keep
+-- teslaBridgeLast.json (what you were playing: "resume") and teslaBridgeCatalog.json (the levels and cars the game has: the
+-- choices for "new world and car"). All best effort and logged; none of it can stop the bridge.
+local LAUNCH_FILE, LAST_FILE, CATALOG_FILE = '/settings/teslaBridgeLaunch.json', '/settings/teslaBridgeLast.json', '/settings/teslaBridgeCatalog.json'
+local launchPlan, launchPoll, launchLevelStarted, launchCarDone, launchWaitT = nil, 0, false, false, nil
+local launchGiveUp = 300 -- stop looking for a request this long after the game started (s)
+local catalogDone, lastSavedKey = false, nil
+
+local function removeFile(path)
+  if FS and FS.removeFile then try(function() FS:removeFile(path) end) end
+  if jsonWriteFile then try(jsonWriteFile, path, { consumed = true }, true) end -- if the file could not be deleted, blank it
+end
+
+local function launchTick(dtReal)
+  if launchPlan == nil and realTime < launchGiveUp then
+    launchPoll = launchPoll - dtReal
+    if launchPoll <= 0 then
+      launchPoll = 2
+      local req = jsonReadFile and try(jsonReadFile, LAUNCH_FILE) or nil
+      if type(req) == 'table' and req.ts then
+        local plan, why = Lq.parse(req, os.time())
+        removeFile(LAUNCH_FILE)
+        if plan then
+          launchPlan = plan
+          if plan.mode == 'resume' and not plan.level then
+            local last = jsonReadFile and try(jsonReadFile, LAST_FILE) or nil
+            if type(last) == 'table' then plan.level, plan.vehicle, plan.config = last.level, last.vehicle, last.config end
+          end
+          logI('remote start: ' .. plan.mode .. ' level=' .. tostring(plan.level) .. ' car=' .. tostring(plan.vehicle))
+        else
+          launchPlan = false
+          logI('remote start request ignored: ' .. tostring(why))
+        end
+      end
+    end
+  end
+  if not launchPlan then return end
+  -- 1. load the level (only from the menu: if the game already loaded one, leave it)
+  if launchPlan.level and not launchLevelStarted and not levelName() and realTime > 6 then
+    launchLevelStarted = true
+    local file = Lq.levelFile(launchPlan.level)
+    local okStart = false
+    if file and freeroam_freeroam and freeroam_freeroam.startFreeroam then okStart = pcall(freeroam_freeroam.startFreeroam, file) end
+    if not okStart and file and core_levels and core_levels.startLevel then okStart = pcall(core_levels.startLevel, file) end
+    logI('remote start: loading ' .. tostring(file) .. (okStart and '' or ' (FAILED: no level loader found)'))
+  end
+  -- 2. swap in the car, a few seconds after the level is up
+  if launchPlan.vehicle and not launchCarDone and levelName() then
+    launchWaitT = (launchWaitT or 0) + dtReal
+    if launchWaitT > 6 and playerVehicle() then
+      launchCarDone = true
+      local opts = {}
+      if launchPlan.config and core_vehicles and core_vehicles.getModel then
+        opts.config = '/vehicles/' .. launchPlan.vehicle .. '/' .. launchPlan.config .. '.pc'
+      end
+      local ok = false
+      if core_vehicles and core_vehicles.replaceVehicle then ok = pcall(core_vehicles.replaceVehicle, launchPlan.vehicle, opts) end
+      if not ok and core_vehicles and core_vehicles.spawnNewVehicle then ok = pcall(core_vehicles.spawnNewVehicle, launchPlan.vehicle, opts) end
+      logI('remote start: car ' .. launchPlan.vehicle .. (ok and ' placed' or ' (FAILED)'))
+    end
+  end
+end
+
+-- remember what is being played (called when a level finishes loading and when the player's car changes)
+local function saveLastSession()
+  if not jsonWriteFile then return end
+  local pv = playerVehicle()
+  local model = pv and try(function() return pv:getJBeamFilename() end) or nil
+  local name = model and core_vehicles and core_vehicles.getModel and try(function()
+    local md = core_vehicles.getModel(model)
+    return md and md.model and md.model.Name
+  end) or nil
+  local last = Lq.last(levelName(), model, nil, name)
+  if not last then return end
+  local key = tostring(last.level) .. '|' .. tostring(last.vehicle)
+  if key == lastSavedKey then return end
+  lastSavedKey = key
+  try(jsonWriteFile, LAST_FILE, last, true)
+end
+
+-- the levels and cars the game knows (mods included), for the "new world and car" pickers
+local function saveCatalog()
+  if catalogDone or not jsonWriteFile or not core_levels or not core_vehicles then return end
+  catalogDone = true
+  local levels = Lq.levels(try(core_levels.getList))
+  local cars = Lq.vehicles(try(core_vehicles.getModelList))
+  if #levels > 0 or #cars > 0 then
+    try(jsonWriteFile, CATALOG_FILE, { v = 1, levels = levels, vehicles = cars, ts = os.time() }, true)
+    logI('catalog: ' .. #levels .. ' levels, ' .. #cars .. ' cars')
+  else
+    catalogDone = false -- not ready yet, try again later
+  end
+end
+
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   realTime = realTime + dtReal
@@ -1919,6 +2017,8 @@ local function onUpdate(dtReal, dtSim)
     if bindingsRefreshAt <= 0 then bindingsRefreshAt = nil; if refreshBindings then refreshBindings() end end
   end
   gameTime = gameTime + (dtSim or dtReal)
+  pcall(launchTick, dtReal)
+  if not catalogDone and realTime > 8 and realTime % 5 < dtReal then pcall(saveCatalog) end
   if dtReal > 0 then fpsAvg = fpsAvg + (1 / dtReal - fpsAvg) * 0.05 end
   local okNet, netErr = pcall(netUpdate)
   if not okNet and realTime >= netErrLogAt then
@@ -1957,6 +2057,7 @@ local function onUpdate(dtReal, dtSim)
       mapPending = false
       send(mapMsg)
       event('levelLoaded', level)
+      pcall(saveLastSession)
     end
   end
 
@@ -2023,7 +2124,7 @@ end
 local function onVehicleSpawned(vid)
   local veh = vehicleById(vid)
   local pv = playerVehicle()
-  if veh and pv and pv:getID() == vid then ensureVehicleExtension(veh, true) end
+  if veh and pv and pv:getID() == vid then ensureVehicleExtension(veh, true); pcall(saveLastSession) end
   vehSize[vid] = nil
   vehNames[vid] = nil
   beaconLoaded[vid] = nil
