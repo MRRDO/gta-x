@@ -3,6 +3,16 @@ rem Tesla UI <-> BeamNG bridge: starts the relay and the wheel-buttons companion
 rem Start BeamNG first (or after, the relay waits for it). Close the windows to stop.
 cd /d "%~dp0"
 
+rem The launcher service (tesla-beamng-auto) starts and manages the bridge by itself. A second bridge would fight it for the ports,
+rem so if one is already listening just open the page and stop.
+netstat -ano | findstr ":8765" | findstr "LISTENING" >nul 2>nul
+if not errorlevel 1 (
+  echo The Tesla bridge is already running ^(the launcher service manages it^). Opening the page; nothing else started.
+  start "" http://localhost:8770/
+  timeout /t 4 /nobreak >nul
+  exit /b 0
+)
+
 rem --tunnel: an https address through Cloudflare (for the live app + iPad mic/camera); falls back to Wi-Fi if cloudflared is missing
 start "Tesla relay" cmd /k npm run bridge -- --tunnel
 
