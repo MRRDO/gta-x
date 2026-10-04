@@ -33,6 +33,7 @@ function M.roadTexture(hp, v, t, gain)
 end
 
 -- raw axis error (of a 900 deg wheel) that takes over from FSD: 0.07 is about 30 degrees. Sensitive on purpose.
+M.FPS_REF_DT = 1 / 45 -- frames this short or shorter need no compensation
 M.TAKEOVER = { light = 0.05, normal = 0.07, firm = 0.14 }
 function M.takeoverLimit(level) return M.TAKEOVER[level] or M.TAKEOVER.normal end
 
@@ -90,7 +91,12 @@ function Spring:update(dt, target, pos, fcap, strength)
   local e = self.tf - pos
   -- a slow copy of the error: the grab check and the driver-bias use it, so wheel jitter is never mistaken for a hand
   self.eLP = (self.eLP or e) + (e - (self.eLP or e)) * clamp(dt / 0.15, 0, 1)
-  local kp = cap / self.stiffness
+  -- Frame-rate compensation: the loop runs once per game frame and sees the wheel a few frames late, so at 30 fps
+  -- or less (a weak PC) the same gain rings and the wheel shakes. Scale the gains down as frames get long.
+  self.dtS = (self.dtS or dt) + (dt - (self.dtS or dt)) * 0.1
+  local fs = clamp((M.FPS_REF_DT / self.dtS) ^ (M.FPS_POW or 1), M.FPS_MIN or 0.15, 1)
+  self.fpsScale = fs
+  local kp = cap / self.stiffness * fs
   -- a hair of deadband so the motor doesn't buzz around the target
   local eUse = e
   local DB = self.deadband or 0.004

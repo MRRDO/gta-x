@@ -18,7 +18,8 @@ local function run(opts)
   local fric = opts.fric or 0.12
   local devSign = opts.devSign or 1
   local s = W.new({ gripScale = opts.gripScale })
-  local dt = 1 / 60
+  local dt0 = opts.dt or 1 / 60
+  local dt = dt0
   local sub = 20
   local p, w = opts.p0 or 0, 0 -- raw pos, raw/s
   local seen = {}               -- position the game sees (delayed)
@@ -28,6 +29,7 @@ local function run(opts)
   local t = 0
   while t < (opts.T or 4) do
     local target = opts.target(t)
+    if opts.jitter then dt = dt0 * (1 + opts.jitter * (math.random() * 2 - 1)) end
     seen[#seen + 1] = p
     local pos = seen[math.max(1, #seen - delay)]
     local f, grip = s:update(dt, target, pos, 1, 1)
@@ -173,6 +175,23 @@ do
   local bigNoGuard = 0
   for i = 1, 20 do local f = s3:update(1 / 60, 0, (i % 2 == 0) and 0.08 or -0.08, 1, 1); bigNoGuard = math.max(bigNoGuard, math.abs(f)) end
   check(big < bigNoGuard, string.format('a chattering force is softened (%.2f vs %.2f)', big, bigNoGuard))
+end
+
+-- 7. a weak PC: at 30 fps or less (with uneven frames) the same gains used to ring and shake the wheel
+do
+  math.randomseed(11)
+  for _, fps in ipairs({ 30, 20, 15 }) do
+    local log = run({ dt = 1 / fps, jitter = 0.5, T = 6, chatterFrom = 2, target = function(t)
+      return 0.25 + 0.01 * math.sin(math.floor(t * 10) / 10 * 7.3)
+    end })
+    check((log.chatter or 0) < 3, string.format('%d fps: motor force barely chatters (%.2f)', fps, log.chatter or 0))
+    check(errAfter(log, 2) < 0.04, string.format('%d fps: holds the angle (err %.3f)', fps, errAfter(log, 2)))
+    local step = run({ dt = 1 / fps, jitter = 0.3, T = 5, target = function(t) return t > 0.5 and 0.2 or 0 end })
+    if fps >= 20 then -- (15 fps is not playable; it only has to stop shaking)
+    check(errAfter(step, 3) < 0.04, string.format('%d fps: follows a step to 0.2 within 2.5 s (err %.3f)', fps, errAfter(step, 3)))
+    check(overshoot(step, 0.2) < 0.08, string.format('%d fps: no big overshoot (%.3f)', fps, overshoot(step, 0.2)))
+    end
+  end
 end
 
 print(string.format('%d passed, %d failed', passes, failures))
