@@ -144,3 +144,23 @@ export async function parseCommand(text: string, history: Turn[] = [], ctx: Voic
     return null
   }
 }
+
+/** General chat: answer anything in a sentence or two, and make a best guess when unsure (the driver asked, so never "I don't know"). */
+export async function chat(text: string, history: Turn[] = []): Promise<string | null> {
+  if (!enabled || !(await refresh())) return null
+  const convo = history.slice(-6).map((t) => `${t.role === 'driver' ? 'Driver' : 'Car'}: ${t.text}`).join('\n')
+  const prompt = `You are the voice of a friendly car assistant, talking out loud to the driver. Answer in one to three short, natural sentences, no lists, no markdown, no emoji. You know a lot about the world. If you are not sure, give your best guess and say it is a guess, never refuse and never say you cannot know. If the driver asks for something only the car can do (navigate, park, call), tell them to ask for it plainly, like "take me to the nearest gas station".\n${convo ? convo + '\n' : ''}Driver: ${text.slice(0, 300)}\nCar:`
+  try {
+    const r = await fetch(`${URL_BASE}/api/generate`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(25000),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, prompt, stream: false, options: { temperature: 0.6, num_predict: 120, num_thread: Number(process.env.TESLA_LLM_THREADS ?? 2) } }),
+    })
+    if (!r.ok) return null
+    const out = String(((await r.json()) as { response?: string }).response ?? '').trim().replace(/^Car:\s*/i, '').replace(/[*_#`]/g, '')
+    return out ? out.slice(0, 400) : null
+  } catch {
+    return null
+  }
+}

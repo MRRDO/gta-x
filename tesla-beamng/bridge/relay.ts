@@ -21,7 +21,7 @@ import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, ty
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
 import { handleBrowse } from './browse.ts'
-import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand } from './assistant.ts'
+import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand, chat as assistantChat } from './assistant.ts'
 import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
 import { pcPlayerAvailable, play as pcPlay, control as pcControl, status as pcStatus, showWindow as pcWindow } from './pcplayer.ts'
 import { transcribe, sttAvailable } from './stt.ts'
@@ -554,7 +554,7 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
     return res.end(JSON.stringify({ assistant: assistantStatus(), game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null,
       tunnel: local ? tunnelUrl : undefined, appLink: local && tunnelUrl ? appPairingLink(APP_URL, tunnelUrl, TOKEN) : undefined }))
   }
-  if (path === '/stt' || path === '/assistant/parse' || path === '/assistant/status') {
+  if (path === '/stt' || path === '/assistant/parse' || path === '/assistant/chat' || path === '/assistant/status') {
     if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
     const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
     if (path === '/assistant/status') return json(200, { llm: assistantStatus(), speech: sttAvailable() })
@@ -573,6 +573,7 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
         }
         const b = JSON.parse(body.toString('utf8') || '{}')
         const text = String(b.text ?? '')
+        if (path === '/assistant/chat') return json(200, { text: text ? await assistantChat(text, Array.isArray(b.history) ? b.history.slice(-6).filter((t: any) => t && typeof t.text === 'string' && (t.role === 'driver' || t.role === 'car')) : []) : null })
         const history = Array.isArray(b.history) ? b.history.slice(-6).filter((t: any) => t && typeof t.text === 'string' && (t.role === 'driver' || t.role === 'car')) : []
         return json(200, { intent: text ? await parseCommand(text, history, b.context && typeof b.context === 'object' ? b.context : {}) : null })
       } catch (e: any) {
