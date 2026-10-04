@@ -478,14 +478,37 @@ local function buildMap()
   for _, s in ipairs(signals) do sig[#sig + 1] = { id = s.id, pos = { num(s.x), num(s.y), num(s.z) }, kind = s.kind } end
   local park = {}
   for _, p in ipairs(parking) do park[#park + 1] = { pos = { num(p.x), num(p.y), num(p.z) }, dir = { num(p.dx, 3), num(p.dy, 3), 0 } } end
+  -- named places for the app's map (gas stations, garages, shops...): the level's "facilities", best effort (the shape varies by
+  -- game version), each with a position when it has one
+  local pois = {}
+  try(function()
+    local fac = freeroam_facilities and freeroam_facilities.getFacilities and freeroam_facilities.getFacilities(lvl)
+    if type(fac) ~= 'table' then return end
+    local function posOf(f)
+      local p = f.pos or f.position or f.center or f.doorPos or (f.doors and f.doors[1] and f.doors[1].pos)
+      if p and p.x then return p.x, p.y, p.z end
+      if type(p) == 'table' and p[1] then return p[1], p[2], p[3] end
+    end
+    for kind, list in pairs(fac) do
+      if type(list) == 'table' then
+        for _, f in pairs(list) do
+          if type(f) == 'table' and #pois < 400 then
+            local x, y, z = posOf(f)
+            local nm = f.name or f.label or f.id
+            if x and nm then pois[#pois + 1] = { name = tostring(nm):gsub('^"?(.-)"?$', '%1'), pos = { num(x), num(y), num(z or 0) }, kind = tostring(kind) } end
+          end
+        end
+      end
+    end
+  end)
   level = lvl
   mapMsg = {
-    t = 'map', level = lvl,
+    t = 'map', level = lvl, pois = pois,
     bounds = { min = { num(minx), num(miny) }, max = { num(maxx), num(maxy) } },
     minimapInfo = minimapInfo(lvl),
     nodes = nodes, links = links, signals = sig, parking = park,
   }
-  logI(string.format('map %s: %d nodes, %d links', lvl, #nodes, #links))
+  logI(string.format('map %s: %d nodes, %d links, %d places', lvl, #nodes, #links, #pois))
   return true
 end
 

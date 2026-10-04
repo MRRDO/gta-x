@@ -1444,5 +1444,18 @@ scenario('driveThru', function()
   check(not w.collided, 'no collision')
 end)
 
+scenario('missedDest', function()
+  -- the planner has a destination but the path never ends there (a route that failed to apply): after driving past it, stop near
+  local w = W.new({ nodes = straight(0, 1500, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 10 } })
+  w:engage('fsd', 'standard')
+  w:run(20)
+  w.planner.dest, w.planner.arrival = { w:refPos() + 120, 6, 0 }, 'auto'
+  w:run(120, function(ww) return ww:saw('arrived') ~= nil end)
+  check(w:saw('missedDest') ~= nil, 'notices it drove past')
+  check(w:saw('arrived') ~= nil, 'and finishes the trip near there')
+  check(math.abs(w.ego.v or 0) < 0.5, 'stopped')
+  check(not w.collided, 'no collision')
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

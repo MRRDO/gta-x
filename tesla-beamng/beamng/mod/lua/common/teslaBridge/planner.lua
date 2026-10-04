@@ -562,7 +562,7 @@ function Planner:setRoute(dest, stops, arrival)
   self.arrivingFor = nil
   self.path = nil
   self.spot = nil
-  self.exitDrive, self.exitPt, self.dtStart, self.leaveLot = nil, nil, nil, nil
+  self.exitDrive, self.exitPt, self.dtStart, self.leaveLot, self.destMin = nil, nil, nil, nil, nil
 end
 
 -- The driver's answer to the 'arriving' prompt: park / street (parallel) / pullOver / driveway / takeOver
@@ -1857,6 +1857,19 @@ function Planner:tick(snap)
   end
 
   ---------------------------------------------------------------- arrival
+  -- Drove past the destination: it got close (< 30 m), is now moving away (25 m further than the closest) and nothing stopped us.
+  -- Whatever went wrong with the route, don't drive on forever: pull over a little further along and finish the trip there.
+  if self.dest and not self.exitDrive and not self.pullingOver and self.arrival ~= 'Take Over' and path.arrivalKind ~= 'driveThru' and v > 2 then
+    local dd = sqrt((self.dest[1] - ego.x) ^ 2 + (self.dest[2] - ego.y) ^ 2)
+    if not self.destMin or dd < self.destMin then self.destMin = dd end
+    if self.destMin < 30 and dd > self.destMin + 25 then
+      local sAt = min(S[#S] - 1, sCar + max(30, v * 4))
+      local qx, qy, qz = P.pointAt(path, sAt, pr.i)
+      self:emit('missedDest', { closest = floor(self.destMin), now = floor(dd) })
+      self.dest, self.stops, self.arrival, self.turnVia, self.chosenSpot, self.destMin = { qx, qy, qz or 0 }, nil, 'Pull Over', nil, nil, nil
+      self.replanNow = true
+    end
+  end
   local hold = false
   if self.exitDrive and not path.openEnded and remaining < 30 then
     -- rejoined the road after the drive-thru: no destination any more, just drive on
