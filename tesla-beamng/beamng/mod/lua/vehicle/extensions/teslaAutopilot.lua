@@ -982,6 +982,13 @@ end
 
 -- Set the blinkers to a state (not toggle them): if the driver's blinker is already on the
 -- side we want, leave it on instead of switching it off.
+-- Is a turn signal on? Some cars (the Tesla Model 3 mod) blink the *_input value with the flasher, so one reading
+-- in the off phase looked like "off", and we toggled a signal that was already on (switching it off again). A signal counts as
+-- on when it was seen on within the last 0.75 s (a flasher blinks faster than that). Updated every frame in updateGFX.
+local function sigOn(side)
+  return now - (ap[side .. 'Seen'] or -1e9) < 0.75
+end
+
 local function setSignal(dir)
   if not electrics.set_warn_signal then errorEvent('this car has no turn signals'); return end
   local e = electrics.values
@@ -991,17 +998,43 @@ local function setSignal(dir)
     return
   end
   if on('hazard_enabled') then pcall(electrics.set_warn_signal, 0) end
-  local l, r = on('signal_left_input'), on('signal_right_input')
-  if dir == 'left' then
-    if r then pcall(electrics.toggle_right_signal) end
-    if not l then pcall(electrics.toggle_left_signal) end
-  elseif dir == 'right' then
-    if l then pcall(electrics.toggle_left_signal) end
-    if not r then pcall(electrics.toggle_right_signal) end
-  else
-    if l then pcall(electrics.toggle_left_signal) end
-    if r then pcall(electrics.toggle_right_signal) end
+  local l, r = sigOn('l'), sigOn('r')
+  local function tog(side, turnOn)
+    local fn = side == 'left' and electrics.toggle_left_signal or electrics.toggle_right_signal
+    if not fn then errorEvent('this car has no ' .. side .. ' signal toggle'); return end
+    pcall(fn)
+    -- what we expect to see next (so a quick switch left -> right is not confused by the 0.75 s memory)
+    ap[side == 'left' and 'lSeen' or 'rSeen'] = turnOn and now or nil
   end
+  if dir == 'left' then
+    if r then tog('right', false) end
+    if not l then tog('left', true) end
+  elseif dir == 'right' then
+    if l then tog('left', false) end
+    if not r then tog('right', true) end
+  else
+    if l then tog('left', false) end
+    if r then tog('right', false) end
+  end
+  ap.sigCheck = (dir == 'left' or dir == 'right') and { dir = dir, t = now, retried = false } or nil
+end
+
+-- A signal we asked for must show up; if not, toggle once more, then say what the car reports (so it can be fixed).
+local function sigVerify()
+  local c = ap.sigCheck
+  if not c or now - c.t < 0.8 then return end
+  local side = c.dir == 'left' and 'l' or 'r'
+  if sigOn(side) then ap.sigCheck = nil; return end
+  if not c.retried then
+    c.retried, c.t = true, now
+    local fn = c.dir == 'left' and electrics.toggle_left_signal or electrics.toggle_right_signal
+    if fn then pcall(fn) end
+    return
+  end
+  ap.sigCheck = nil
+  local e = electrics.values
+  geEvent('notice', { detail = string.format('%s signal did not turn on: toggle fn %s, L=%s R=%s hazard=%s', c.dir,
+    tostring((c.dir == 'left' and electrics.toggle_left_signal or electrics.toggle_right_signal) ~= nil), tostring(e.signal_left_input), tostring(e.signal_right_input), tostring(e.hazard_enabled)) })
 end
 
 local handlers = {}
@@ -1545,6 +1578,12 @@ end
 
 local function updateGFX(dt)
   now = now + dt
+  do -- remember when each turn signal was last seen on (see sigOn)
+    local ev = electrics.values
+    if (ev.signal_left_input or 0) > 0.5 then ap.lSeen = now end
+    if (ev.signal_right_input or 0) > 0.5 then ap.rSeen = now end
+    if ap.sigCheck then pcall(sigVerify) end
+  end
   if input and input.event ~= wrappedEvent then installInputHook() end
   installFFBHook()
   if not ap.paddleHooked and controller and controller.mainController then ap.paddleHooked = true; pcall(installPaddleSignals) end
