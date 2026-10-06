@@ -589,6 +589,7 @@ local function ffbUpdate(dt, targetInput)
     local v = tonumber(electrics.values.wheelspeed) or 0
     f = math.max(-ffb.fcap, math.min(ffb.fcap, f + Wh.roadTexture(gz - ffb.gzLP, v, now, ffb.roadFeel or 0) * ffb.fcap))
   end
+  if (ffb.jHz or 0) > 3 and math.sqrt(ffb.jRms or 0) > 0.008 then f = f * 0.5 end -- the wheel is ringing: back the force off until it settles
   if dt <= 1e-4 then f = 0 end -- paused: never leave a force on the motor
   local due = now - ffb.lastSendT >= ffb.minInterval
   if (due and (ffb.lastForce == nil or abs(f - ffb.lastForce) > ffb.fcap / 400)) or (f == 0 and ffb.lastForce ~= 0) then ffbSend(f) end
@@ -1319,6 +1320,14 @@ local function checkTakeover(dt)
     ap.prevCmd = cs
     ap.rateLP = (ap.rateLP or 0) + (rate - (ap.rateLP or 0)) * math.min(1, dt / 0.25)
     devLimit = devLimit + math.min(0.1, ap.rateLP * 0.12)
+    -- Turn start: FSD begins a real steering move (a junction, a lane change). The wheel kicks and rings for a moment, which
+    -- used to read as a hand and switch FSD off right as it started to turn. Give it a grace period with a higher bar.
+    ap.csRefT = ap.csRefT or now
+    ap.csRef = ap.csRef or cs
+    if now - ap.csRefT >= 0.4 then
+      if abs(cs - ap.csRef) > 0.1 then ap.turnGraceUntil = now + 1.6 end
+      ap.csRef, ap.csRefT = cs, now
+    end
   end
   steerBias = 0
   do
@@ -1366,6 +1375,10 @@ local function checkTakeover(dt)
   -- The wheel is being restarted by the PC: it vanishes and comes back at some angle, which is not a hand. The planner gave the
   -- car to FSD for a few seconds ('wheelHold'); steering from the wheel is ignored until then.
   if ap.wheelHoldUntil and now < ap.wheelHoldUntil then steerDev, steerBias = 0, 0 end
+  -- a wheel that is shaking (ringing at several Hz) is not a hand: ask for a bigger, longer deviation before it counts
+  local shaking = ffb.held and (ffb.jHz or 0) > 2.5 and math.sqrt(ffb.jRms or 0) > 0.008
+  if shaking then devLimit, holdT = devLimit * 2.2, math.max(holdT, 0.35) end
+  if ap.turnGraceUntil and now < ap.turnGraceUntil then devLimit, holdT = devLimit * 1.8, math.max(holdT, 0.25) end
   -- slight hand movement above steers a little; a strong one is a takeover
   takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
   takeover.brake = (br > 0.04) and takeover.brake + dt or 0
