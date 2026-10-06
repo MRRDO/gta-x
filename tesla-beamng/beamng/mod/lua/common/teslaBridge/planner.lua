@@ -298,6 +298,62 @@ function Planner:joinFromLot(path, ego)
   self.joinedLot = true
 end
 
+
+-- Does a reverse path keep the car's body clear of the parked cars around a stall? Both bodies are three circles (nose, middle, tail);
+-- the neighbours are taken to stand along the stall's axis (ox, oy). 0.2 m of room is the least accepted.
+local function sweepClear(pts, ego, cars, spot, ox, oy)
+  local er = (ego.wid or 1.9) * 0.5 + 0.3 -- the car lags its path a little, so this much room is wanted
+  local others = {}
+  for _, c in ipairs(cars or {}) do
+    if abs(c.v or 0) < 0.3 and (c.x - spot.x) ^ 2 + (c.y - spot.y) ^ 2 < 9 * 9 and (c.x - spot.x) ^ 2 + (c.y - spot.y) ^ 2 > 0.8 * 0.8 then
+      local cr, half = (c.w or 1.9) * 0.5, ((c.l or 4.6) * 0.5 - (c.w or 1.9) * 0.5)
+      for _, off in ipairs({ -half, 0, half }) do others[#others + 1] = { x = c.x + ox * off, y = c.y + oy * off, r = cr } end
+    end
+  end
+  local half = (ego.len or 4.6) * 0.5 - (ego.wid or 1.9) * 0.5
+  for i = 1, #pts - 1 do
+    local tx, ty = pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y
+    local tl = sqrt(tx * tx + ty * ty)
+    if tl > 1e-9 then tx, ty = tx / tl, ty / tl end
+    local nx, ny = -tx, -ty -- reversing: the nose points back along the way we came
+    for _, off in ipairs({ -half, 0, half }) do
+      local ex, ey = pts[i].x + nx * off, pts[i].y + ny * off
+      for _, o in ipairs(others) do
+        if (o.x - ex) ^ 2 + (o.y - ey) ^ 2 < (o.r + er) ^ 2 then return false end
+      end
+    end
+  end
+  return true
+end
+
+-- Back into a stall: the smoothest approach that keeps clear of parked neighbours. The simple curve first; when it would clip a
+-- neighbour (a stall between two cars needs the car square to it before its corners reach them), fixed-radius arcs with longer
+-- and longer straight tails, nearest first. Returns Q (end of the forward approach) and the reverse segment (validated = true when
+-- checked against the neighbours).
+function Planner:planBackIn(ego, cars, spot, road, ox, oy)
+  local q, rev = Mv.backIn(spot, road, 6)
+  local flanked = false
+  for _, c in ipairs(cars or {}) do
+    if abs(c.v or 0) < 0.3 and (c.x - spot.x) ^ 2 + (c.y - spot.y) ^ 2 < 6 * 6 and (c.x - spot.x) ^ 2 + (c.y - spot.y) ^ 2 > 0.8 * 0.8 then flanked = true end
+  end
+  -- alone in a row the smooth curve is fine; between parked cars the car is brought in square, with the longest straight run
+  -- that fits (it has the most room to settle onto the stall's line before the corners reach the neighbours)
+  if not flanked and sweepClear(rev.pts, ego, cars, spot, ox, oy) then rev.validated = true; return q, rev end
+  local best
+  for _, tail in ipairs({ 1.5, 2.5, 3.5, 4.5 }) do
+    for _, R in ipairs({ 5.4, 6.5 }) do
+      for _, extra in ipairs({ 1.0, 2.5 }) do
+        local Q, pts = Mv.backInArc({ x = spot.x, y = spot.y, z = spot.z }, { x = ox, y = oy }, { x = road.dx, y = road.dy }, R, extra, tail)
+        if sweepClear(pts, ego, cars, spot, ox, oy) and (not best or tail + R > best.lat) then
+          best = { lat = tail + R, Q = Q, seg = { dir = -1, pts = pts, maxSpeed = 1.2, kind = 'backIn', curvature = 1 / R, validated = true } }
+        end
+      end
+    end
+  end
+  if best then return best.Q, best.seg end
+  return q, rev
+end
+
 -- Build self.path from the ego pose (route to dest via stops, or follow the road).
 function Planner:planPath(ego, cars)
   local g = self.graph
@@ -363,8 +419,8 @@ function Planner:planPath(ego, cars)
       self.spot = spot
       if perpendicular then
         -- FSD backs into perpendicular spots: stop past it, then reverse in
-        local q, rev = Mv.backIn({ x = spot.x, y = spot.y, z = spot.z, outx = ox, outy = oy },
-          { x = pr.x, y = pr.y, z = spot.z, dx = rdx, dy = rdy }, 6)
+        local q, rev = self:planBackIn(ego, cars, { x = spot.x, y = spot.y, z = spot.z, outx = ox, outy = oy },
+          { x = pr.x, y = pr.y, z = spot.z, dx = rdx, dy = rdy }, ox, oy)
         -- cut the route at the spot and run on to q
         local cut = {}
         for i = 1, pr.i do cut[i] = path.pts[i] end
@@ -2501,7 +2557,10 @@ function Planner:tickManeuver(ego, cars, out)
     local hx, hy = seg.dir < 0 and -ego.hx or ego.hx, seg.dir < 0 and -ego.hy or ego.hy
     local lon = rx * hx + ry * hy
     local lat = abs(-rx * hy + ry * hx)
-    if lon > 0 and lon - ((ego.len or 4.6) + (c.l or 4.6)) * 0.5 < 1.5 and lat < ((ego.wid or 1.9) + (c.w or 1.9)) * 0.5 + 0.2 then blocked = true end
+    -- a back-in already checked against the parked cars (planBackIn) is not stopped by this straight-box test, which ignores the
+    -- swing of the arc; only moving cars hold it
+    local checked = seg.validated and abs(c.v or 0) < 0.3
+    if not checked and lon > 0 and lon - ((ego.len or 4.6) + (c.l or 4.6)) * 0.5 < 1.5 and lat < ((ego.wid or 1.9) + (c.w or 1.9)) * 0.5 + 0.2 then blocked = true end
   end
   -- anything solid close ahead in the direction of travel (walls, poles, curbs) also holds the car; not at the very end of a leg
   -- (the spot's back wall is meant to be that close)

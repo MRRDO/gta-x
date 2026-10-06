@@ -1667,7 +1667,7 @@ handleCommand = function(msg)
       local ok, err = planner:autopark(ego, cars)
       if not ok then
         -- none right beside the car: choose the nearest free spot nearby and drive there (FSD engages if it was off)
-        local id = planner:nearestFreeSpot(ego, cars, 220)
+        local id = planner:nearestFreeSpot(ego, cars, 400)
         local okS, errS, how = false, err, nil
         if id then okS, errS, how = planner:parkAtSpot(id, ego, cars) end
         if okS and how == 'route' then
