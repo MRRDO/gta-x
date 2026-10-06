@@ -2755,6 +2755,13 @@ function Planner:tickManeuver(ego, cars, out)
               if abs(lon2) > abs(err.lon) then err.lon = lon2 end
             end
           end
+          if err and sp0 and not sp0.known then
+            -- no axis for this stall: the car's own heading stands in for it. The stall's middle should be on the car's centreline, so the
+            -- sideways distance of the spot's position from that line is how far off the lines the car sits.
+            local rx, ry = ego.x - sp0.x, ego.y - sp0.y
+            local latC = -rx * ego.hy + ry * ego.hx
+            if abs(latC) > abs(err.lat) then err.lat = latC end
+          end
           -- Crooked or off the stall's middle (a car is about 1.9 m in a 2.5 m stall: 0.3 m each side): pull forward and back in again
           -- (up to 4 times, each only when it made things clearly better) instead of leaving it over the lines
           local badness = err and (err.headingDeg / 4 + abs(err.lat) / 0.3 + abs(err.lon) / 0.9) or 0

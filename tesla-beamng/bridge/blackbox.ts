@@ -10,7 +10,7 @@ const MIN_GAP_MS = 100
 const r = (v: unknown, d = 2) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d : null)
 
 type Sample = { at: number; t: number | null; fsd: boolean; mode: string; v: number | null; thr: number | null; brk: number | null; str: number | null; wheelDeg: number | null; gear: string | null; sig: string | null; lead: number | null; ctl: string | null; lane: number | null; fps: number | null; pos: number[] | null; target: number | null; ai: string | null }
-type Ev = { at: number; kind: string; detail: string | null }
+type Ev = { at: number; kind: string; detail: string | null; data?: unknown }
 
 // What the planner is doing, as one short string: activity/phase, lane change, waiting, go-around, turn ahead, confidence, alert.
 function aiNote(a: any): string | null {
@@ -53,7 +53,7 @@ export class BlackBox {
       })
       while (this.samples.length && now - this.samples[0].at > WINDOW_MS) this.samples.shift()
     } else if (msg?.t === 'event' && typeof msg.kind === 'string') {
-      this.events.push({ at: now, kind: msg.kind, detail: msg.detail ?? null })
+      this.events.push({ at: now, kind: msg.kind, detail: msg.detail ?? null, ...(msg.data !== undefined && JSON.stringify(msg.data).length < 600 ? { data: msg.data } : {}) }) // (data: parking error, spot, plan numbers...)
       while (this.events.length && now - this.events[0].at > WINDOW_MS) this.events.shift()
     }
   }
