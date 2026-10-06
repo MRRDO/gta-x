@@ -79,5 +79,14 @@
         "isBasic": true,
         "title": "Dial press",
         "desc": "Cycles what the dial controls."
+    },
+    "teslaToggleLKA": {
+        "cat": "tesla",
+        "order": 9,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleLaneKeep() end",
+        "isBasic": true,
+        "title": "Toggle Lane Keep Assist",
+        "desc": "A tiny nudge back toward the middle of your lane while you drive yourself. Bind it to a wheel button."
     }
 }

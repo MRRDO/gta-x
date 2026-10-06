@@ -145,6 +145,33 @@ function Driver:update(dt, sense, opts)
   local preview = s + v * 0.3
   local vt = plan.vcap and P.valueAt(path, plan.vcap, preview, pr.i) or 10
   if opts.speedBoost and opts.speedBoost > 0 then vt = vt + opts.speedBoost end -- the driver's light accelerator touch (stops and cars ahead still cap it below)
+  -- Just engaged above the speed the plan wants (limit, profile): do not stamp on the brake. Hold the speed when it is only a
+  -- little over, otherwise come down gently (about 0.6 m/s^2, a lift-off and a bit of regen). Stops, a car ahead, a bend that
+  -- is already too fast and any evasive manoeuvre still cap the speed below, so this only softens the speed-limit step.
+  if plan.easeId and not reverse and not plan.urgent then
+    if self.easeActive ~= plan.easeId and self.easeDone ~= plan.easeId then
+      self.easeActive, self.easeV, self.easeT = plan.easeId, v, 0
+    end
+    if self.easeActive == plan.easeId then
+      self.easeT = self.easeT + dt
+      local latG = 0
+      for i = pr.i, #path.pts - 1 do
+        if path.s[i] - s > 40 then break end
+        latG = math.max(latG, v * v * abs(P.curvatureAt(path.pts, i, 3)))
+      end
+      if self.easeV <= vt + 0.05 or latG > 3.5 or self.easeT > 60 then
+        self.easeActive, self.easeDone = nil, plan.easeId -- done, or a bend that needs the speed down now: normal control
+      else
+        local over = self.easeV - vt
+        local rate = over <= 2.2 and 0.15 or (self.easeT > 30 and 1.2 or 0.6)
+        self.easeV = math.max(vt, self.easeV - rate * dt)
+        self.easeV = math.min(self.easeV, math.max(v, vt) + 0.5) -- never above what the car is really doing
+        vt = self.easeV
+      end
+    end
+  elseif not plan.easeId then
+    self.easeActive = nil
+  end
   if plan.stopS then
     local dstop = plan.stopS - s
     -- Tesla-style: start easing off early and brake at a steady, gentle rate (per profile)

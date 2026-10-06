@@ -823,10 +823,10 @@ local function safetyTick()
   for _, ev in ipairs(so.events) do relayEvent(ev) end
   safetyStatus = { fcw = so.fcw or false, aeb = (so.aeb or 0) > 0, blindLeft = so.blindLeft or false, blindRight = so.blindRight or false,
     laneDeparture = so.lda ~= nil, ttc = so.ttc and num(so.ttc) or nil, rearWarn = so.rearWarn or nil }
-  local assist = { aeb = so.aeb or 0, ldaSteer = so.lda and num(so.lda.steer, 3) or 0, throttleCap = so.throttleCap }
+  local assist = { aeb = so.aeb or 0, ldaSteer = so.lda and num(so.lda.steer, 3) or 0, lkaSteer = so.lka and num(so.lka.steer, 3) or 0, throttleCap = so.throttleCap }
   if plannerSettings.valet and (ego.v or 0) > 29 then assist.throttleCap = 0 end -- Valet: top speed about 65 mph
-  local active = assist.aeb > 0 or assist.ldaSteer ~= 0 or assist.throttleCap ~= nil
-  if active or (lastAssist and (lastAssist.aeb > 0 or lastAssist.ldaSteer ~= 0 or lastAssist.throttleCap ~= nil)) then
+  local active = assist.aeb > 0 or assist.ldaSteer ~= 0 or assist.lkaSteer ~= 0 or assist.throttleCap ~= nil
+  if active or (lastAssist and (lastAssist.aeb > 0 or lastAssist.ldaSteer ~= 0 or (lastAssist.lkaSteer or 0) ~= 0 or lastAssist.throttleCap ~= nil)) then
     toVehicle(veh, 'assist', assist)
   end
   lastAssist = assist
@@ -1783,6 +1783,13 @@ function M.toggleAutopilot(mode)
   end
 end
 
+-- Lane Keep Assist on/off (a wheel button or the app's Settings); the app learns about it from the 'settings' event
+function M.toggleLaneKeep()
+  safetySettings.lka = not (safetySettings.lka == true)
+  safety:configure(safetySettings)
+  send({ t = 'event', kind = 'settings', detail = 'laneKeep ' .. (safetySettings.lka and 'on' or 'off'), data = { lka = safetySettings.lka } })
+end
+
 local function stepProfile(dir)
   if not planner then return end
   local i = 3
@@ -1798,6 +1805,7 @@ runAction = function(name)
   if name == 'toggleFSD' then M.toggleAutopilot('fsd')
   elseif name == 'toggleAutosteer' then M.toggleAutopilot('autosteer')
   elseif name == 'toggleTACC' then M.toggleAutopilot('tacc')
+  elseif name == 'toggleLKA' then M.toggleLaneKeep()
   elseif name == 'disengage' then handleCommand({ t = 'autopilot', mode = 'off' })
   elseif name == 'voiceNote' then M.voiceNote()
   elseif name == 'nudge' then M.nudge()

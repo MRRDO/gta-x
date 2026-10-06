@@ -1516,5 +1516,53 @@ scenario('engageAtRed', function()
   check(maxY < 0.8, string.format('stays in its lane (moved %.1f m sideways)', maxY))
 end)
 
+-- Quentin: turning FSD on above the speed limit must not stamp on the brake: hold a small overspeed, ease a big one down gently
+scenario('engageEase', function()
+  local function run(v0, easeOn)
+    local w = W.new({ easeEngage = easeOn, nodes = straight(0, 3000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = v0 } })
+    w:engage('fsd', 'standard')
+    local prevV, maxDecel, last, v10 = v0, 0, 0, nil
+    w:run(40, function(ww)
+      if ww.t - last >= 0.25 then
+        local dt = ww.t - last; last = ww.t
+        local a = (ww.ego.v - prevV) / dt
+        maxDecel = math.min(maxDecel, a); prevV = ww.ego.v
+      end
+      if ww.t >= 10 and not v10 then v10 = ww.ego.v end
+      return false
+    end)
+    return -maxDecel, v10 or 0, w.ego.v
+  end
+  local hardOld = run(25, false)
+  local hard, v10 = run(25, nil)
+  check(hard < 1.6, string.format('engage 25 m/s on a 13 m/s road: eases down (max braking %.2f m/s^2, before %.2f)', hard, hardOld))
+  check(v10 > 19, string.format('and it is still well above the limit after 10 s (%.1f m/s): gentle, not a stop-and-go', v10))
+  local small, _, vEnd = run(15, nil)
+  check(small < 0.8, string.format('15 m/s on a 13.4 m/s road: barely any braking (%.2f m/s^2)', small))
+  check(vEnd < 15.3, string.format('and it ends up at the road speed (%.1f m/s)', vEnd))
+end)
+
+-- Lane Keep Assist: a tiny nudge toward the lane middle, only when switched on, driving yourself, no signal, off centre
+scenario('laneKeepAssist', function()
+  local S = require('teslaBridge/safety')
+  local function nudge(settings, ego, lat)
+    local sf = S.new(settings)
+    local o
+    for k = 0, 3 do
+      local e = { x = 15 * k * 0.05, y = 0, z = 0, hx = 1, hy = 0, v = 15, yawRate = 0, len = 4.6, wid = 1.9, signal = ego and ego.signal, engaged = ego and ego.engaged }
+      o = sf:tick(k * 0.05, 0.05, { ego = e, cars = {} }, { rays = {}, lane = { lat = lat, halfW = 1.75, sameLeft = true, sameRight = true } })
+    end
+    return o.lka and o.lka.steer or 0
+  end
+  check(nudge({ lka = false }, nil, 0.9) == 0, 'LKA: off by default')
+  local l = nudge({ lka = true }, nil, 0.9)
+  check(l > 0 and l <= 0.045, string.format('LKA: left of centre nudges right, tiny (%.3f)', l))
+  local r = nudge({ lka = true }, nil, -0.9)
+  check(r < 0 and r >= -0.045, string.format('LKA: right of centre nudges left, tiny (%.3f)', r))
+  check(nudge({ lka = true }, nil, 0.2) == 0, 'LKA: nothing while roughly centred')
+  check(nudge({ lka = true }, { signal = 'left' }, 0.9) == 0, 'LKA: nothing while the turn signal is on (a lane change)')
+  check(nudge({ lka = true }, { engaged = true }, 0.9) == 0, 'LKA: nothing while FSD / autosteer drives')
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

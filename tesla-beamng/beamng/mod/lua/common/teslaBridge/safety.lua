@@ -14,7 +14,7 @@ local sqrt, abs, min, max, cos, sin, atan2 = math.sqrt, math.abs, math.min, math
 
 local FCW_TIME = { early = 2.8, medium = 2.2, late = 1.6 }
 
-M.DEFAULTS = { fcw = 'medium', aeb = true, evasion = true, lda = true, blindSpot = true, obstacleAware = true }
+M.DEFAULTS = { fcw = 'medium', aeb = true, evasion = true, lda = true, lka = false, blindSpot = true, obstacleAware = true }
 
 local Safety = {}
 Safety.__index = Safety
@@ -280,6 +280,24 @@ function Safety:tick(t, dt, snap, ctx)
     self.prevLat = lat
   else
     self.prevLat = ctx.lane and ctx.lane.lat or nil
+  end
+  -- Lane Keep Assist (manual driving, switched on by the driver): a tiny, steady nudge back toward the middle of the lane
+  -- once the car is more than about a third of a metre off it. Gentler than Lane Departure Avoidance and it works at city speed too.
+  -- It never fights the driver (the vehicle side drops it while the wheel is being steered) and stays out of the way of a signal,
+  -- an intersection (no lane there) and a corner being driven on purpose.
+  out.lka = nil
+  if st.lka and not ego.engaged and ctx.lane and speed > 6 and not ego.signal and abs(ego.yawRate or 0) < 0.25 then
+    local lat = ctx.lane.lat
+    local rate = self.lkaPrev and (lat - self.lkaPrev) / max(dt, 1e-3) or 0
+    local off = abs(lat) - 0.35
+    local back = (lat > 0 and rate < -0.3) or (lat < 0 and rate > 0.3) -- already coming back on its own
+    if off > 0 and abs(lat) < ctx.lane.halfW + 1.2 and not back then
+      local mag = math.min(0.045, 0.03 * off)
+      out.lka = { steer = lat > 0 and mag or -mag }
+    end
+    self.lkaPrev = lat
+  else
+    self.lkaPrev = nil
   end
   if t <= self.ldaUntil then
     -- positive steering input turns right: push back toward the lane center

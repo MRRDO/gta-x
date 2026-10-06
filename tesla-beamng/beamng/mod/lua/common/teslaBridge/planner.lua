@@ -645,6 +645,7 @@ function Planner:engage(mode, profile, ego, cars)
   -- signalling still change it)
   if self.settings.laneLock ~= false then self.lanePinUntil = math.huge end
   self.farTicks = 0 -- a fresh start: an earlier off-road spell must not count against this one
+  if mode ~= 'tacc' and self.settings.easeEngage ~= false and abs(ego.v or 0) > 3 then self.engageSeq = (self.engageSeq or 0) + 1; self.easeUntil = (self.t or 0) + 70 else self.easeUntil = nil end
   if self.nag.lockedOut then return false, 'FSD is locked out for this drive (too many strikes)' end
   if profile and P.PROFILES[profile] then self.profile = profile end
   self.mode = mode
@@ -2090,6 +2091,7 @@ function Planner:tick(snap)
     maxSpeed = maxSpeed, wiggle = wiggle or nil,
     urgent = (self.urgentUntil and t < self.urgentUntil) or nil,
     mode = self.mode,
+    easeId = (self.easeUntil and (self.t or 0) < self.easeUntil) and self.engageSeq or nil,
     maneuver = self.pullingOver and 'pullOver' or nil,
   }
   st.maxSpeed = maxSpeed

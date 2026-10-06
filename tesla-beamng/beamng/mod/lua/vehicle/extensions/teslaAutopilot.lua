@@ -42,7 +42,7 @@ local watch = nil        -- after a steering takeover: was it an accidental bump
 local lastReengage = -1e9
 local handsNudges = 0
 local lastNudgeT = -1e9
-local assist = { aeb = 0, ldaSteer = 0, throttleCap = nil, t = -1e9 }
+local assist = { aeb = 0, ldaSteer = 0, lkaSteer = 0, throttleCap = nil, t = -1e9 }
 local assistHeld = false -- local throttle/brake taken away for an assist
 local hazardOn = false
 local swerve = { on = true, flips = {}, lastSign = 0, active = false, calmT = 0, t0 = 0 } -- Swerve Assist
@@ -1275,7 +1275,7 @@ end
 function M.assist(json)
   local ok, a = pcall(jsonDecode, json)
   if not ok or type(a) ~= 'table' then return end
-  assist = { aeb = tonumber(a.aeb) or 0, ldaSteer = tonumber(a.ldaSteer) or 0, throttleCap = tonumber(a.throttleCap), t = now }
+  assist = { aeb = tonumber(a.aeb) or 0, ldaSteer = tonumber(a.ldaSteer) or 0, lkaSteer = tonumber(a.lkaSteer) or 0, throttleCap = tonumber(a.throttleCap), t = now }
 end
 
 ---------------------------------------------------------------------------
@@ -1431,6 +1431,8 @@ local function applyAssist(engaged, s)
   local aeb = fresh and assist.aeb or 0
   local cap = fresh and assist.throttleCap or nil
   local lda = (fresh and not engaged) and assist.ldaSteer or 0
+  -- Lane Keep Assist only helps a driver who is not steering: past a light touch on the wheel it lets go completely
+  if fresh and not engaged and (assist.lkaSteer or 0) ~= 0 and math.abs(rawValue('steering') or 0) < 0.15 then lda = lda + assist.lkaSteer end
   if engaged then return aeb end -- under FSD the drive loop folds AEB into its own brake
   local need = aeb > 0 or cap ~= nil
   if need and not assistHeld then

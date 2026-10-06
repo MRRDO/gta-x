@@ -238,7 +238,7 @@ export type Debug = { t: 'debug'; ge: Record<string, unknown>; vehicle?: Record<
 
 /** Things a wheel button can do (mapped in the app's settings). */
 export type ActionName =
-  | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'disengage' | 'voiceNote' | 'nudge'
+  | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'toggleLKA' | 'disengage' | 'voiceNote' | 'nudge'
   | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
   | 'followCloser' | 'followFarther' | 'confirm' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
   | 'dialUp' | 'dialDown' | 'dialClick' // the G29 red dial: turn = up/down, click cycles what it controls (DIAL_MODES)
@@ -248,6 +248,7 @@ export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'toggleFSD', label: 'Start / stop FSD' },
   { name: 'toggleAutosteer', label: 'Start / stop Autosteer' },
   { name: 'toggleTACC', label: 'Start / stop cruise (TACC)' },
+  { name: 'toggleLKA', label: 'Lane Keep Assist on / off' },
   { name: 'disengage', label: 'Turn autopilot off' },
   { name: 'voiceNote', label: 'Voice note (iPad mic)' },
   { name: 'nudge', label: 'Hands-on nudge' },
@@ -434,7 +435,7 @@ export type Command =
 /** Backup camera: on in R (default on), frames per second 1..10 (default 5), quality low 320x180 (default) / medium 480x270 / high 640x360. Higher costs more fps in the game. */
 export type CameraSettings = { backup?: boolean; side?: boolean; fps?: number; quality?: 'low' | 'medium' | 'high' }
 export type Quirks = { phantomBraking: boolean; yellowHesitation: boolean; wiggle: boolean; weather: boolean; creep: boolean }
-export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: boolean; evasion: boolean; lda: boolean; blindSpot: boolean; obstacleAware: boolean }
+export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: boolean; evasion: boolean; lda: boolean; lka: boolean; blindSpot: boolean; obstacleAware: boolean }
 
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
