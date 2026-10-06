@@ -261,6 +261,7 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
         return true
       }
       const action = (Object.keys(buttonMap) as ActionName[]).find((k) => buttonMap[k] === button)
+      log(`wheel button ${button} pressed: ${action ? `mapped to ${action}, game ${gameConnected ? 'connected' : 'NOT connected'}` : `nothing mapped (map: ${JSON.stringify(buttonMap)})`}`)
       if (action) {
         sendGame({ t: 'buttonGuard' }) // the game may have its own binding on this button (ignition): the mod puts that back
         const act = action.startsWith('dial') ? dialAction(action) : action
