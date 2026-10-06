@@ -1061,16 +1061,6 @@ local function sigVerify()
 end
 
 local handlers = {}
--- 'wheelHold': ignore the wheel for a few seconds (see checkTakeover): the PC is restarting it
--- the wheel was unplugged and plugged back: forget what we knew about it so the next FSD finds the device again
-handlers.ffbReprobe = function()
-  if ffb.held then ffbRelease(true) end
-  ffb.own, ffb.helper, ffb.method, ffb.id, ffb.restoreUntil = false, nil, nil, nil, nil
-  ffb.status, ffb.reason = 'available', nil
-end
--- Banish / Summon: nobody is in the seat. Wheel, pedals and the wheel's own noise must not read as a driver taking over.
-handlers.unattended = function(cmd) ap.unattended = cmd.on and true or false end
-handlers.wheelHold = function(cmd) ap.wheelHoldUntil = now + math.max(1, math.min(20, tonumber(cmd.seconds) or 8)) + 0.5 end
 
 handlers.gear = function(cmd)
   local g = cmd.gear
@@ -1388,10 +1378,17 @@ local function checkTakeover(dt)
     -- the game's own force feedback may turn the wheel along with the car, or leave it where it was:
     -- only a wheel that is neither where it started nor where FSD steers is a driver taking over
     steerDev = math.min(steerDev, abs(st - wheelTarget(lastOut.steer or 0)))
+    -- a wheel that is on its way to FSD's angle (the game's force feedback turning it with the car, a bit behind in a quick turn) is
+    -- not a hand: only a wheel that is not closing in on it counts. This was "FSD turns the wheel, then switches itself off".
+    local tgt = wheelTarget(lastOut.steer or 0)
+    local prev = ap.stPrev
+    ap.stPrev = st
+    if prev and dt > 1e-4 then
+      local vel = (st - prev) / dt
+      ap.stVelLP = (ap.stVelLP or vel) + (vel - (ap.stVelLP or vel)) * math.min(1, dt / 0.1)
+      if (tgt - st) * ap.stVelLP > 0 and abs(ap.stVelLP) > 0.1 then steerDev = 0 end
+    end
   end
-  -- The wheel is being restarted by the PC: it vanishes and comes back at some angle, which is not a hand. The planner gave the
-  -- car to FSD for a few seconds ('wheelHold'); steering from the wheel is ignored until then.
-  if ap.wheelHoldUntil and now < ap.wheelHoldUntil then steerDev, steerBias = 0, 0 end
   -- a wheel that is shaking (ringing at several Hz) is not a hand: ask for a bigger, longer deviation before it counts
   local shaking = ffb.held and (ffb.jHz or 0) > 2.5 and math.sqrt(ffb.jRms or 0) > 0.008
   if shaking then devLimit, holdT = devLimit * 2.2, math.max(holdT, 0.35) end

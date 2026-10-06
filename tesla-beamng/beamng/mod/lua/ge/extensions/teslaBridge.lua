@@ -36,7 +36,6 @@ local level = nil
 local graph = nil        -- pathing graph
 local mapMsg = nil       -- cached map message (table)
 local mapPending = false
-local wheelAssistUntil = nil -- game time FSD lets go again after a wheel restart that it covered
 local signals = {}       -- { id, x, y, z, kind = 'stop'|'signal', dirx, diry, get = fn -> 'red'|'yellow'|'green'|nil }
 local parking = {}       -- { x, y, z, dx, dy }
 local traffic = {}       -- [id] = { x, y, z, dx, dy, v, w, l, t }
@@ -1608,32 +1607,6 @@ handleCommand = function(msg)
     planner.builtFor = planner.profile
     send(planner:routeMessage())
     planner.routeDirty = false
-  elseif t == 'wheelReset' then
-    -- The PC is restarting the wheel (a few seconds with no steering input or force feedback). If asked to, and the car is
-    -- moving above 10 mph with nobody driving it, FSD holds it for a few seconds, then hands back.
-    local pv = playerVehicle()
-    if msg.assist and pv and planner and planner.mode == 'off' then
-      local ego = egoSnapshot(pv)
-      if (ego.v or 0) > 4.47 then
-        engageFromApp('fsd', planner.profile)
-        if planner.mode ~= 'off' then
-          wheelAssistUntil = gameTime + math.max(3, math.min(20, tonumber(msg.seconds) or 8))
-          toVehicle(pv, 'command', { t = 'wheelHold', seconds = math.max(3, math.min(20, tonumber(msg.seconds) or 8)) })
-          event('notice', 'wheel restarting: FSD holds the car for a few seconds')
-        end
-      end
-    end
-  elseif t == 'wheelRescan' then
-    -- the wheel is back on USB: make the game look for it again and let the car pick its force feedback up afresh.
-    -- Which of these exists differs per game version, so try each and say which ones answered.
-    local tried = {}
-    for _, fn in ipairs({ 'reloadDevices', 'rescanDevices', 'refreshDevices', 'onDeviceChanged', 'reloadBindings' }) do
-      local m = rawget(_G, 'core_input_bindings')
-      if type(m) == 'table' and type(m[fn]) == 'function' then tried[#tried + 1] = fn; pcall(m[fn]) end
-    end
-    local pv = playerVehicle()
-    if pv then toVehicle(pv, 'command', { t = 'ffbReprobe' }) end
-    event('notice', 'wheel back: game asked to rescan (' .. (#tried > 0 and table.concat(tried, ', ') or 'no rescan call found in this game version') .. ')')
   elseif t == 'cancelRoute' then
     if not planner then return end
     planner:cancelRoute()
@@ -2299,14 +2272,6 @@ local function onUpdate(dtReal, dtSim)
     end
   end
 
-  if wheelAssistUntil and gameTime >= wheelAssistUntil then
-    wheelAssistUntil = nil
-    if planner and planner.mode ~= 'off' then
-      planner:disengage('app')
-      if veh then syncVehicleMode(veh) end
-      event('notice', 'wheel is back: your turn')
-    end
-  end
 
   if realTime >= tHeartbeat then
     tHeartbeat = realTime + 1

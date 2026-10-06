@@ -33,12 +33,12 @@ local MPH = 0.44704
 M.BEHAVIOR = {
   -- leftAbove: at this speed (m/s) it lives in the fast (left) lane; cut: scale on the gap it needs
   -- to change lanes (1 = normal); signalDelay: seconds of blinker before it moves over
-  sloth    = { pass = nil,       gapLeft = 8, keepLeft = false, crossEta = 6,   cut = 1.2,  signalDelay = 1.6 },
-  chill    = { pass = 8 * MPH,   gapLeft = 7, keepLeft = false, crossEta = 5.5, cut = 1.1,  signalDelay = 1.4 },
-  standard = { pass = 5 * MPH,   gapLeft = 6, keepLeft = false, crossEta = 5,   cut = 1,    signalDelay = 1.2 },
-  hurry    = { pass = 3 * MPH,   gapLeft = 5, keepLeft = false, leftAbove = 22, crossEta = 4.5, cut = 0.8, signalDelay = 0.9 },
-  madmax   = { pass = 2 * MPH,   gapLeft = 4, keepLeft = true,  leftAbove = 14, crossEta = 4,   cut = 0.6, signalDelay = 0.7 },
-  furious  = { pass = 0.5 * MPH, gapLeft = 3, keepLeft = true,  leftAbove = 8,  crossEta = 3,   cut = 0.4, signalDelay = 0.4 },
+  sloth    = { pass = nil,       gapLeft = 8, keepLeft = false, crossEta = 6,   cut = 1.2,  signalDelay = 3.0 },
+  chill    = { pass = 8 * MPH,   gapLeft = 7, keepLeft = false, crossEta = 5.5, cut = 1.1,  signalDelay = 3.0 },
+  standard = { pass = 5 * MPH,   gapLeft = 6, keepLeft = false, crossEta = 5,   cut = 1,    signalDelay = 2.5 },
+  hurry    = { pass = 3 * MPH,   gapLeft = 5, keepLeft = false, leftAbove = 22, crossEta = 4.5, cut = 0.8, signalDelay = 2.0 },
+  madmax   = { pass = 2 * MPH,   gapLeft = 4, keepLeft = true,  leftAbove = 14, crossEta = 4,   cut = 0.6, signalDelay = 1.2 },
+  furious  = { pass = 0.5 * MPH, gapLeft = 3, keepLeft = true,  leftAbove = 8,  crossEta = 3,   cut = 0.4, signalDelay = 0.6 },
 }
 
 M.DEFAULT_SETTINGS = {
@@ -546,6 +546,7 @@ function Planner:planPath(ego, cars)
   self.path, self.hint = path, nil
   self.cleared, self.clearedS, self.stopFsm = {}, -1e9, {}
   self.lane = { k = 0, change = nil, cooldown = 0 }
+  self.syncLane = true -- the lane we are really in, not "the right one", is where the new path starts
   self.bumps = {}
   self.arrived = false
   self.routeDirty = true
@@ -730,10 +731,15 @@ function Planner:engage(mode, profile, ego, cars)
       if segs then
         local okc, whyc = self:segsClear(segs, ego, cars)
         if not okc then
-          self.mode = 'off'
-          return false, 'not enough room to back out safely (' .. tostring(whyc) .. ')'
+          -- no room to swing out backwards: if the way ahead is open just drive off forward (FSD used to refuse to start)
+          if self:aheadBlocked(ego, 1) then
+            self.mode = 'off'
+            return false, 'not enough room to back out safely (' .. tostring(whyc) .. ')'
+          end
+          self:emit('notice', { detail = 'no room to back out: driving forward out of the spot' })
+        else
+          self:startManeuver(segs, 'drive', 'backOut')
         end
-        self:startManeuver(segs, 'drive', 'backOut')
       end
     elseif loc and self.uturnNeeded and not loc.ow and loc.r < 9 then
       -- centerline point: step from us back across our offset from it
@@ -782,7 +788,7 @@ function Planner:aheadBlocked(ego, dirSign)
   local hx, hy = ego.hx * dirSign, ego.hy * dirSign
   local half, wid = (ego.len or 4.6) * 0.5, (ego.wid or 1.9) * 0.5
   local z0 = ego.z or 0
-  local reach = half + 0.8
+  local reach = half + 1.1 -- (a bit more than the car's own length ahead: stop before touching, not on touching)
   for _, h in ipairs({ 0.5, 0.2 }) do
     for _, off in ipairs({ 0, wid * 0.5, -wid * 0.5, wid * 0.95, -wid * 0.95 }) do
       if cast(ego.x - hy * off, ego.y + hx * off, z0 + h, hx, hy, 0, reach) then return true end
@@ -1575,6 +1581,7 @@ function Planner:tick(snap)
   -- passed a turn: lane index resets
   if self.lastTurnS and sCar > self.lastTurnS + 15 then
     self.lane.k, self.lane.change, self.lastTurnS = 0, nil, nil
+    self.syncLane = true
   end
   if nextTurn and sCar > nextTurn.s - 5 then self.lastTurnS = nextTurn.s end
 
@@ -1583,6 +1590,14 @@ function Planner:tick(snap)
   for i = iL0, i1 do look.pts[#look.pts + 1] = path.pts[i]; look.s[#look.s + 1] = S[i] end
   local onPath = self:carsOnPath(look, cars, egoPt)
   local nHere, wHere = self:laneAt(pr.i)
+  -- After a new path or a turn the lane index starts at 0 (the right lane). If the car is really in another lane that made FSD swing
+  -- sideways with no signal ("a hard turn for no reason" on a highway): take the index from where the car is.
+  if self.syncLane and not self.lane.change then
+    self.syncLane = nil
+    if nHere and nHere > 1 and wHere and wHere > 0.5 then
+      self.lane.k = clamp(floor(pr.lat / wHere + 0.5), 0, nHere - 1)
+    end
+  end
   local egoLen, egoWid = ego.len or 4.6, ego.wid or 1.9
   local maxSpeed = nil
   local waitingFor = nil
@@ -2463,8 +2478,14 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   local n = P.laneModel(path.pts[iCar].r, path.pts[iCar].ow)
   local beh = self:beh()
   if lane.k > n - 1 and not lane.change then
-    -- road narrowed under us: merge right now
-    lane.change = { from = lane.k, to = n - 1, reason = 'merge', phase = 'signal', t = t }
+    -- road narrowed under us: merge (the lane count comes from node widths, which jitter along a highway: it has to stay narrow a while,
+    -- or FSD changed lanes "for no reason")
+    lane.narrowSince = lane.narrowSince or t
+    if t - lane.narrowSince > 2.5 then
+      lane.change = { from = lane.k, to = n - 1, reason = 'merge', phase = 'signal', t = t }
+    end
+  else
+    lane.narrowSince = nil
   end
   local ch = lane.change
   if ch then
@@ -2509,7 +2530,12 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
     local need = nextTurn.dir == 'left' and (n - 1) or 0
     if lane.k ~= need then want, reason = need, 'route' end
   end
-  if not want and lane.k > minN - 1 then want, reason = minN - 1, 'merge' end
+  if not want and lane.k > minN - 1 then
+    lane.narrowAheadSince = lane.narrowAheadSince or t
+    if t - lane.narrowAheadSince > 2.5 then want, reason = minN - 1, 'merge' end
+  else
+    lane.narrowAheadSince = nil
+  end
   if not want and self.driverLaneRequest and t - self.driverLaneRequest.t < 1 then
     local dir = self.driverLaneRequest.dir
     local d = dir == 'left' and 1 or -1
@@ -2692,13 +2718,35 @@ function Planner:tickManeuver(ego, cars, out)
               err = { lon = rx * tx + ry * ty, lat = -rx * ty + ry * tx, headingDeg = math.deg(math.acos(dot)) }
             end
           end
-          -- Crooked (or well off the stall's middle): pull forward and back in again, up to twice, instead of leaving it there
-          local badness = err and (err.headingDeg / 7 + abs(err.lat) / 0.5 + abs(err.lon) / 1.2) or 0
-          local worthIt = err and (err.headingDeg > 7 or abs(err.lat) > 0.5 or abs(err.lon) > 1.2)
+          -- Also measure against the stall itself (its painted axis from the level's data), not only against where the move meant to end:
+          -- the car is "right" when it sits inside the lines, however the plan was drawn. The worse of the two counts.
+          local sp0 = self.spot
+          if err and sp0 and sp0.known and (sp0.dx or 0) ^ 2 + (sp0.dy or 0) ^ 2 > 0.25 then
+            local al = sqrt(sp0.dx * sp0.dx + sp0.dy * sp0.dy)
+            local ax, ay = sp0.dx / al, sp0.dy / al
+            local bestC, bestD
+            for _, c in ipairs({ { ax, ay }, { -ax, -ay }, { -ay, ax }, { ay, -ax } }) do
+              local d = c[1] * ego.hx + c[2] * ego.hy
+              if not bestD or d > bestD then bestC, bestD = c, d end
+            end
+            local h2 = math.deg(math.acos(clamp(bestD, -1, 1)))
+            local rx, ry = ego.x - sp0.x, ego.y - sp0.y
+            local lat2 = -rx * bestC[2] + ry * bestC[1]
+            local lon2 = rx * bestC[1] + ry * bestC[2]
+            if h2 <= 35 then -- (an axis far from the car's heading is not this stall's axis)
+              if h2 > err.headingDeg then err.headingDeg = h2 end
+              if abs(lat2) > abs(err.lat) then err.lat = lat2 end
+              if abs(lon2) > abs(err.lon) then err.lon = lon2 end
+            end
+          end
+          -- Crooked or off the stall's middle (a car is about 1.9 m in a 2.5 m stall: 0.3 m each side): pull forward and back in again
+          -- (up to 4 times, each only when it made things clearly better) instead of leaving it over the lines
+          local badness = err and (err.headingDeg / 4 + abs(err.lat) / 0.3 + abs(err.lon) / 0.9) or 0
+          local worthIt = err and (err.headingDeg > 4 or abs(err.lat) > 0.3 or abs(err.lon) > 0.9)
           -- a second try only when the first one made it clearly better; otherwise this is as straight as the car gets
           if worthIt and (self.apFixBad or 1e9) - badness < 0.15 and (self.apFix or 0) > 0 then worthIt = false end
           self.apFixBad = badness
-          if worthIt and self.spot and self.settings.parkFix ~= false and (mv.kind == 'autopark' or mv.kind == 'backIn') and (self.apFix or 0) < 2 then
+          if worthIt and self.spot and self.settings.parkFix ~= false and (mv.kind == 'autopark' or mv.kind == 'backIn') and (self.apFix or 0) < 4 then
             self.apFix = (self.apFix or 0) + 1
             local okFix = self:autopark(ego, cars, self.spot, true)
             if okFix then

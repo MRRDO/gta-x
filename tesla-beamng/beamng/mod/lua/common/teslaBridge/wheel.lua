@@ -87,7 +87,10 @@ function Spring:update(dt, target, pos, fcap, strength)
   -- start from where the wheel IS (no snap to FSD's angle when it takes over) and move the target at a sane speed
   self.tf = self.tf or pos
   local want = self.tf + (target - self.tf) * clamp(dt / 0.06, 0, 1)
+  local tfPrev = self.tf
   self.tf = self.tf + clamp(want - self.tf, -6 * dt, 6 * dt)
+  -- how fast FSD is turning the wheel (a slow copy): the faster it turns, the further a real wheel trails it
+  self.trLP = (self.trLP or 0) + (abs(self.tf - tfPrev) / dt - (self.trLP or 0)) * clamp(dt / 0.3, 0, 1)
   local e = self.tf - pos
   -- a slow copy of the error: the grab check and the driver-bias use it, so wheel jitter is never mistaken for a hand
   self.eLP = (self.eLP or e) + (e - (self.eLP or e)) * clamp(dt / 0.15, 0, 1)
@@ -165,7 +168,10 @@ function Spring:update(dt, target, pos, fcap, strength)
   if self.gripErr then
     -- soft spring (the hydros path): its force stays small for small errors, so judge the driver's hand by how far the
     -- wheel is pulled from where FSD holds it, unless it is just lagging behind a quick turn
-    held = abs(self.eLP or e) > self.gripErr and not (converging and abs(self.vel) > 0.1)
+    -- (a quick turn leaves the wheel trailing by a lot: that is allowed for before it counts as a hand; a force that was backed off
+    -- because the wheel was ringing leaves it trailing as well)
+    local allow = min(0.12, (self.trLP or 0) * 0.25) + ((self.softUntil and self.softUntil > 0) and 0.05 or 0)
+    held = abs(self.eLP or e) > self.gripErr + allow and not (converging and abs(self.vel) > 0.1)
     resisting = false
   end
   if self.ramp >= 1 and (held or resisting) then

@@ -259,12 +259,121 @@ class FakeWheel:
     def close(self) -> None: ...
 
 
+# ----------------------------------------------------------------------------- G29 rev lights
+
+
+class WheelLeds:
+    """The row of lights on a Logitech G29 / G920 rim. Native mode takes an output report `f8 12 <mask> 00 00 00 00` (the same one the
+    Linux hid-logitech driver sends); bit 0 is the left-most light. Written with hidapi (installed on first use). Nothing here is
+    allowed to hurt the wheel link: every failure is logged to wheel_helper.log and the lights are simply left alone.
+    UNTESTED on Windows: the log says whether a write was accepted."""
+
+    PIDS = (0xC24F, 0xC260, 0xC262, 0xC261, 0xC266, 0xC268, 0xC24E)  # G29 (PC and PS modes), G920/G923 and relatives
+    LENGTHS = (7, 8, 16, 32, 64)
+
+    def __init__(self) -> None:
+        self.dev = None
+        self.mask = -1
+        self.length = None
+        self.next_try = 0.0
+        self.dead = False
+        self.logf = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wheel_helper.log')
+
+    def log(self, msg: str) -> None:
+        try:
+            with open(self.logf, 'a') as lf:
+                lf.write(f'{time.strftime("%H:%M:%S")} leds: {msg}\n')
+        except Exception:
+            pass
+
+    def _import(self):
+        try:
+            import hid  # type: ignore
+            return hid
+        except Exception:
+            pass
+        marker = self.logf + '.hidapi-tried'
+        if os.path.exists(marker):
+            return None
+        try:
+            open(marker, 'w').write('1')
+            self.log('hidapi missing: installing it with pip (once)')
+            import subprocess
+            subprocess.run([sys.executable, '-m', 'pip', 'install', '--user', '--quiet', '--disable-pip-version-check', 'hidapi'], timeout=180,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            import hid  # type: ignore
+            return hid
+        except Exception as e:
+            self.log(f'hidapi not available: {e}')
+            return None
+
+    def _open(self) -> bool:
+        hid = self._import()
+        if not hid:
+            self.dead = True
+            return False
+        try:
+            infos = [d for d in hid.enumerate(0x046D, 0) if d.get('product_id') in self.PIDS]
+        except Exception as e:
+            self.log(f'enumerate failed: {e}')
+            return False
+        if not infos:
+            return False
+        # the joystick interface (usage page 1, usage 4) if the list says; the first one otherwise
+        infos.sort(key=lambda d: 0 if (d.get('usage_page') == 1 and d.get('usage') in (4, 5)) else 1)
+        for info in infos:
+            try:
+                dev = hid.device()
+                dev.open_path(info['path'])
+                self.dev = dev
+                self.log(f'opened {info.get("product_string")} pid {info.get("product_id"):#06x} usage {info.get("usage_page")}/{info.get("usage")}')
+                return True
+            except Exception as e:
+                self.log(f'open failed: {e}')
+        return False
+
+    def set(self, mask: int, now: float | None = None) -> None:
+        """Show these lights (bit 0 = left-most); asks again every few seconds in case the wheel forgot."""
+        if self.dead:
+            return
+        now = time.monotonic() if now is None else now
+        if mask == self.mask and now < self.next_try:
+            return
+        self.next_try = now + 5
+        if self.dev is None and not self._open():
+            return
+        lengths = (self.length,) if self.length else self.LENGTHS
+        for n in lengths:
+            buf = bytes([0xF8, 0x12, mask & 0xFF]) + bytes(n - 3)
+            try:
+                if self.dev.write(buf) > 0:
+                    if self.length is None:
+                        self.length = n
+                        self.log(f'write accepted (report length {n}), lights {mask:#04x}')
+                    self.mask = mask
+                    return
+            except Exception:
+                pass
+        if self.length is None:
+            self.log('the wheel did not accept the light report (a different report layout, or another program owns the wheel)')
+            self.dead = True
+
+    def close(self) -> None:
+        try:
+            if self.dev is not None:
+                self.set(0)
+                self.dev.close()
+        except Exception:
+            pass
+
+
 # ----------------------------------------------------------------------------- relay link
 
 
 class Link:
-    def __init__(self, url: str, ctl: Controller, quiet: bool = False, ffb: bool = True, name: str = 'wheel', buttons: int = 0):
+    def __init__(self, url: str, ctl: Controller, quiet: bool = False, ffb: bool = True, name: str = 'wheel', buttons: int = 0, leds: 'WheelLeds | None' = None):
         self.url, self.ctl, self.quiet = url, ctl, quiet
+        self.leds = leds
         self.ffb, self.name, self.nbuttons = ffb, name, buttons
         self.ws = None
         self.connected = False
@@ -308,6 +417,9 @@ class Link:
                     m = json.loads(raw)
                     if m.get('t') == 'state':
                         self.ctl.on_state(m, time.monotonic())
+                        # the first two rim lights are on while FSD drives
+                        if self.leds:
+                            self.leds.set(0b00011 if (m.get('autopilot') or {}).get('engaged') else 0)
                         st = (m.get('wheel') or {}).get('status')
                         # a new car (or the mod reloading) forgets the helper: claim the wheel again
                         if self.ffb and st != 'helper' and time.time() - self.last_claim > 2:
@@ -346,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--fake', action='store_true', help='no wheel: print what it would do')
     ap.add_argument('--fake-press', default='', help=argparse.SUPPRESS)
     ap.add_argument('--seconds', type=float, default=0, help='stop after this long (testing)')
+    ap.add_argument('--no-leds', action='store_true', help='do not use the rim lights')
     ap.add_argument('--quiet', action='store_true')
     a = ap.parse_args(argv)
 
@@ -363,7 +476,8 @@ def main(argv: list[str] | None = None) -> int:
         print('wheel helper:', e, file=sys.stderr)
         return 2
     ctl = Controller(a.strength, a.invert)
-    link = Link(a.url, ctl, a.quiet, ffb=not a.buttons, name=wheel.name, buttons=wheel.nbuttons)
+    leds = None if (a.no_leds or a.fake) else WheelLeds()
+    link = Link(a.url, ctl, a.quiet, ffb=not a.buttons, name=wheel.name, buttons=wheel.nbuttons, leds=leds)
     if not a.quiet:
         what = 'buttons only' if a.buttons else f'buttons + force feedback, strength {ctl.strength:.2f}{" (inverted)" if a.invert else ""}'
         print(f'wheel companion: {wheel.name} ({wheel.nbuttons} buttons), {what}. Ctrl+C to stop.')
@@ -406,6 +520,8 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         link.close()
+        if leds:
+            leds.close()
         wheel.close()
         if not a.quiet:
             print('wheel companion stopped' + ('' if a.buttons else '; the mod has the wheel again'))

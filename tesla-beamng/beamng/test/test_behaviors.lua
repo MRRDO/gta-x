@@ -1089,6 +1089,16 @@ scenario('autopilotSharpBend', function()
   check(w2.planner.mode == 'autosteer', 'a straight road stays in Autopilot')
 end)
 
+-- Engaging in the left lane of a wide road keeps that lane: no swing to the right lane, no unsignalled move
+scenario('engageInLeftLane', function()
+  local w = W.new({ nodes = straight(0, 5000, 7.5, 24), laneLock = true, ego = { x = 100, y = LEFT2, psi = 0, v = 22 } })
+  w:engage('fsd', 'standard')
+  local minY, maxY = 99, -99
+  w:run(25, function(ww) local _, y = ww:refPos(); minY, maxY = math.min(minY, y), math.max(maxY, y) end)
+  check(maxY - minY < 0.8 and math.abs(minY - LEFT2) < 0.8, string.format('stays in the left lane (y %.2f..%.2f, lane at %.2f)', minY, maxY, LEFT2))
+  check(w:saw('laneChange') == nil, 'no lane change')
+end)
+
 scenario('obstacleAware', function()
   local w = W.new({ nodes = straight(0, 2000, 5, 17), ego = { x = 100, y = LANE1, psi = 0, v = 0 } })
   w:addCar({ id = 1, x = 100 + 1.4 + 4.6 + 1.5, y = LANE1, dx = 1, dy = 0 })
