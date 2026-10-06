@@ -130,7 +130,7 @@ function W:step(dt)
   local engaged = self.planner.mode ~= 'off' and self.plan
   local rx, ry = self:refPos()
   if engaged then
-    local out = self.driver:update(dt, { x = rx, y = ry, hx = cos(e.psi), hy = sin(e.psi), v = e.v, yawRate = e.v * math.tan(e.delta) / e.wb })
+    local out = self.driver:update(dt, { x = rx, y = ry, hx = cos(e.psi), hy = sin(e.psi), v = e.v, yawRate = e.v * math.tan(e.delta) / e.wb }, { speedBoost = self.speedBoost })
     steer, throttle, brake, pb = out.steer, out.throttle, out.brake, out.parkingbrake or 0
     self.lastOut = out
     local wantR = self.plan.dir == -1

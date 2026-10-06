@@ -1564,5 +1564,27 @@ scenario('laneKeepAssist', function()
   check(nudge({ lka = true }, { engaged = true }, 0.9) == 0, 'LKA: nothing while FSD / autosteer drives')
 end)
 
+-- Quentin: easing the gas in FSD to go faster, then lifting, must not make it slow itself down: it holds the speed for a while
+scenario('boostHold', function()
+  local w = W.new({ nodes = straight(0, 4000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 13 } })
+  w:engage('fsd', 'standard')
+  w.speedBoost = 6
+  local vPush
+  w:run(8, function(ww) vPush = ww.ego.v; return false end)
+  w.speedBoost = nil -- foot off
+  local v3, v6, v30
+  local t0 = w.t
+  w:run(40, function(ww)
+    if not v3 and ww.t - t0 >= 3 then v3 = ww.ego.v end
+    if not v6 and ww.t - t0 >= 6 then v6 = ww.ego.v end
+    return false
+  end)
+  v30 = w.ego.v
+  check(vPush > 15.5, string.format('the push raises the speed (%.1f m/s)', vPush))
+  check(v3 > vPush - 1.2, string.format('after lifting it holds for a while (%.1f m/s 3 s later, was %.1f)', v3 or 0, vPush))
+  check(v6 > vPush - 2.5, string.format('still close 6 s later (%.1f m/s)', v6 or 0))
+  check(v30 < vPush - 2, string.format('and eventually comes back down (%.1f m/s after 40 s)', v30))
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

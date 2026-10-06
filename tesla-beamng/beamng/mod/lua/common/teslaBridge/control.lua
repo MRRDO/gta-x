@@ -144,13 +144,41 @@ function Driver:update(dt, sense, opts)
   -- speed target
   local preview = s + v * 0.3
   local vt = plan.vcap and P.valueAt(path, plan.vcap, preview, pr.i) or 10
-  if opts.speedBoost and opts.speedBoost > 0 then vt = vt + opts.speedBoost end -- the driver's light accelerator touch (stops and cars ahead still cap it below)
+  -- The driver's light accelerator touch raises the speed (stops and cars ahead still cap it below). When the pedal comes off the
+  -- car KEEPS the speed it reached for a few seconds, then eases back to the plan's speed (it used to drop straight back and slow
+  -- itself down the moment the foot lifted). A bend that needs the speed down cancels the hold.
+  local vprof = vt
+  local boost = (opts.speedBoost or 0) > 0 and not reverse and not plan.urgent and opts.speedBoost or 0
+  if boost > 0 then
+    vt = vprof + boost
+    self.holdV, self.holdOver, self.holdUntil = vt, true, nil
+  elseif self.holdV and not reverse and not plan.urgent then
+    if self.holdOver then
+      self.holdOver = false
+      self.holdV = math.min(self.holdV, math.max(v, vprof) + 0.3) -- keep what the car is really doing
+      self.holdUntil = self.t + 8
+    end
+    local latH = 0
+    for i = pr.i, #path.pts - 1 do
+      if path.s[i] - s > 40 then break end
+      latH = math.max(latH, v * v * abs(P.curvatureAt(path.pts, i, 3)))
+    end
+    if latH > 3.0 or self.holdV <= vprof + 0.05 then
+      self.holdV = nil
+    else
+      if self.t >= self.holdUntil then self.holdV = math.max(vprof, self.holdV - 0.5 * dt) end -- the hold is over: back down gently
+      vt = math.max(vt, self.holdV)
+    end
+  elseif plan.urgent or reverse then
+    self.holdV = nil
+  end
   -- Just engaged above the speed the plan wants (limit, profile): do not stamp on the brake. Hold the speed when it is only a
   -- little over, otherwise come down gently (about 0.6 m/s^2, a lift-off and a bit of regen). Stops, a car ahead, a bend that
   -- is already too fast and any evasive manoeuvre still cap the speed below, so this only softens the speed-limit step.
   if plan.easeId and not reverse and not plan.urgent then
     if self.easeActive ~= plan.easeId and self.easeDone ~= plan.easeId then
       self.easeActive, self.easeV, self.easeT = plan.easeId, v, 0
+      self.holdV = nil
     end
     if self.easeActive == plan.easeId then
       self.easeT = self.easeT + dt
