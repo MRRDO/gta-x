@@ -197,6 +197,7 @@ export type EventKind =
   | 'turnRequest'      // paddle/stalk with no lane that way: FSD will turn at the next junction ({dir, dist} or {none})
   | 'notice'           // informational, e.g. "gear change ignored while FSD drives"
   | 'autoShift'        // Auto Shift out of Park picked a gear (detail: 'D' | 'R')
+  | 'banish' | 'summonTo' // Banish / Smart Summon accepted
   | 'autopark'         // a tapped spot was accepted (detail: 'parking now' | 'parking at destination')
   | 'unresponsive'     // unresponsive driver: {action: 'pullOver' | 'park' | 'pulledOver' | 'parked' | 'cancelled'}
   | 'swerveAssist'     // manual driving: stabilizing a swerve (detail: 'stabilizing' | 'done')
@@ -409,6 +410,8 @@ export type Command =
   | { t: 'pinLock'; on: boolean } // PIN to Drive: on = the car stays in Park (and FSD refuses) until the app sends on:false after the PIN is entered
   | { t: 'lightShow'; name: 'welcome' | 'goodbye' | 'holiday' | 'strobe' | null } // choreographed headlights/fog/blinkers while parked (null stops it)
   | { t: 'arrivalChoice'; choice: 'park' | 'street' | 'pullOver' | 'driveway' | 'takeOver' | 'driveThru' } // answer to the 'arriving' event
+  | { t: 'summonTo'; to?: [number, number] | [number, number, number]; back?: boolean } // Smart Summon: drive to a point (or back to where Banish started) and stop
+  | { t: 'banish' } // drive off by itself to the nearest free parking spot and park
   | { t: 'autopark'; spot?: number } // spot: an id from parkingSpots (tapped on the map); none = the nearest free spot beside the car
   | { t: 'requestParkingSpots'; near?: [number, number]; radius?: number }
   /** "I'm not feeling well": FSD takes over (engaging if off), hazards on, and stops at the safer of a quick-to-reach free parking spot or the roadside. cancel:true calls it off ("I'm fine"). Events: emergencyStop, emergencyStopped. */
@@ -435,7 +438,7 @@ export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: bo
 
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
-  'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'autopark', 'resetStrikes', 'voiceNote',
+  'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'summonTo', 'banish', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
   'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop',
 ])

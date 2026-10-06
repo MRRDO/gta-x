@@ -1457,5 +1457,26 @@ scenario('missedDest', function()
   check(not w.collided, 'no collision')
 end)
 
+scenario('banishAndSummon', function()
+  -- Banish: the car drives off alone to the nearest free spot (300 m away) and parks. Smart Summon: it comes to a picked point.
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 },
+    parking = { { x = 300, y = 9, z = 0, dx = 0, dy = -1, known = true }, { x = 303, y = 9, z = 0, dx = 0, dy = -1, known = true } } })
+  local snap = w:snapshot()
+  local id = w.planner:nearestFreeSpot(snap.ego, snap.cars or {}, 400)
+  check(id ~= nil, 'banish finds a free spot 300 m away')
+  local ok = w.planner:parkAtSpot(id, snap.ego, snap.cars or {})
+  check(ok, 'banish plans the trip')
+  check(w:engage('fsd', 'standard'), 'banish engages')
+  w:run(200, function(ww) return ww:saw('arrived') ~= nil end)
+  local x, y = w:refPos()
+  check(w:saw('arrived') ~= nil and math.sqrt((x - 300) ^ 2 + (y - 9) ^ 2) < 8 and w.ego.gear == 'P', string.format('parked in the spot by itself (%.0f, %.0f)', x, y))
+  -- summon back to a point on the road 250 m behind
+  w.planner:setRoute({ 40, LANE1, 0 }, nil, 'Pull Over')
+  check(w:engage('fsd', 'standard'), 'summon engages from the spot')
+  w:run(200, function(ww) return ww.planner.mode == 'off' end)
+  local x2, y2 = w:refPos()
+  check(math.abs(x2 - 40) < 40 and math.abs(y2) < 8 and not w.collided, string.format('comes to the picked point (%.0f, %.0f)', x2, y2))
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

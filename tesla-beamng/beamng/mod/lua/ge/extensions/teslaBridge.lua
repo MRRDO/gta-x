@@ -66,6 +66,7 @@ local planner = nil
 local reloadRequested = nil -- (update while playing) set by the reloadMod command, handled in onUpdate
 local setTraffic -- (practice runner) AI traffic, defined further down
 local castRay -- static ray cast, defined further down (the planner's closure needs it declared up here)
+local banishedFrom = nil   -- where Banish started (so the car can come back)
 local plannerSettings = {}   -- kept across level loads
 local safetySettings = {}
 local safety = Sf.new()
@@ -1681,6 +1682,35 @@ handleCommand = function(msg)
         end
         if not okS then event('error', 'autopark: ' .. tostring(errS)) end
       end
+    end
+    syncVehicleMode(veh)
+  elseif t == 'summonTo' or t == 'banish' then
+    -- Smart Summon: the car drives to a point you picked on the phone's map and stops there (P). Banish: it drives off by itself to the
+    -- nearest free parking spot (up to 400 m) and parks, remembering where it was so "come back" can fetch it. No driver needed.
+    if not planner or not veh then event('error', t .. ': no car'); return end
+    local ego, cars = egoSnapshot(veh), trafficList()
+    ensureVehicleExtension(veh)
+    if t == 'banish' then
+      local id = planner:nearestFreeSpot(ego, cars, 400)
+      if not id then event('error', 'banish: no free parking spot within 400 m'); return end
+      local ok, err, how = planner:parkAtSpot(id, ego, cars)
+      if not ok then event('error', 'banish: ' .. tostring(err)); return end
+      banishedFrom = { ego.x, ego.y, ego.z or 0 }
+      if planner.mode == 'off' then
+        local okE, errE = planner:engage('fsd', 'standard', ego, cars)
+        if not okE then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil; event('error', 'banish: ' .. tostring(errE)); return end
+      end
+      send(planner:routeMessage()); planner.routeDirty = false
+      relayEvent({ kind = 'banish', detail = 'parking by itself' })
+    else
+      local to = msg.back and banishedFrom or (type(msg.to) == 'table' and { tonumber(msg.to[1]), tonumber(msg.to[2]), tonumber(msg.to[3]) or ego.z or 0 } or nil)
+      if not to or not to[1] or not to[2] then event('error', 'summon: no place to come to'); return end
+      planner:setRoute(to, nil, 'Pull Over')
+      local okE, errE = true, nil
+      if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'standard', ego, cars) else planner.routeDirty = true end
+      if not okE then planner.dest, planner.arrival = nil, nil; event('error', 'summon: ' .. tostring(errE)); return end
+      send(planner:routeMessage()); planner.routeDirty = false
+      relayEvent({ kind = 'summonTo', detail = 'coming to you' })
     end
     syncVehicleMode(veh)
   elseif t == 'emergencyStop' then
