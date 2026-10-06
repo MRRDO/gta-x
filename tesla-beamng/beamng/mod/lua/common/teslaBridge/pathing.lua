@@ -917,7 +917,7 @@ function M.appendParking(path, px, py, pz, dx, dy, step)
     q.x = u * u * u * e.x + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * px
     q.y = u * u * u * e.y + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * py
     q.z = (e.z or 0) + ((pz or e.z or 0) - (e.z or 0)) * t
-    q.lim = 3
+    q.lim = 3.1 -- about 7 mph, only on the last stretch into the spot
     curve[#curve + 1] = q
   end
   local all = {}

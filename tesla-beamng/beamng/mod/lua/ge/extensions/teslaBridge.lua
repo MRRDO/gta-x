@@ -1653,7 +1653,7 @@ handleCommand = function(msg)
       if how == 'route' and planner.mode == 'off' then
         -- a spot that is not right here: FSD drives to it (before, the route was drawn and the car just sat there)
         ensureVehicleExtension(veh)
-        local okE, errE = planner:engage('fsd', 'chill', ego, cars)
+        local okE, errE = planner:engage('fsd', (planner.mode == 'fsd' and planner.profile) or 'standard', ego, cars)
         if not okE then
           planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil
           event('error', 'autopark: ' .. tostring(errE))
@@ -1672,7 +1672,7 @@ handleCommand = function(msg)
         if okS and how == 'route' then
           ensureVehicleExtension(veh)
           if planner.mode == 'off' then
-            local okE, errE = planner:engage('fsd', 'chill', ego, cars)
+            local okE, errE = planner:engage('fsd', (planner.mode == 'fsd' and planner.profile) or 'standard', ego, cars)
             if not okE then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil; okS, errS = false, errE end
           end
           if okS then send(planner:routeMessage()); planner.routeDirty = false; relayEvent({ kind = 'autopark', detail = 'parking at the nearest spot' }) end
