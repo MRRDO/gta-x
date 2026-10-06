@@ -1683,6 +1683,8 @@ handleCommand = function(msg)
         if not okS then event('error', 'autopark: ' .. tostring(errS)) end
       end
     end
+    -- a parking trip the driver just asked for needs no second "press the brake to confirm" (the car used to shift out of Park and sit)
+    if planner.mode ~= 'off' then pcall(function() planner:confirm(gameTime) end) end
     syncVehicleMode(veh)
   elseif t == 'summonTo' or t == 'banish' then
     -- Smart Summon: the car drives to a point you picked on the phone's map and stops there (P). Banish: it drives off by itself to the
@@ -1700,6 +1702,7 @@ handleCommand = function(msg)
         local okE, errE = planner:engage('fsd', 'standard', ego, cars)
         if not okE then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil; event('error', 'banish: ' .. tostring(errE)); return end
       end
+      pcall(function() planner:confirm(gameTime) end) -- nobody is in the car to press the brake for Brake Confirm
       send(planner:routeMessage()); planner.routeDirty = false
       relayEvent({ kind = 'banish', detail = 'parking by itself' })
     else
@@ -1709,6 +1712,7 @@ handleCommand = function(msg)
       local okE, errE = true, nil
       if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'standard', ego, cars) else planner.routeDirty = true end
       if not okE then planner.dest, planner.arrival = nil, nil; event('error', 'summon: ' .. tostring(errE)); return end
+      pcall(function() planner:confirm(gameTime) end) -- nobody is in the car to press the brake for Brake Confirm
       send(planner:routeMessage()); planner.routeDirty = false
       relayEvent({ kind = 'summonTo', detail = 'coming to you' })
     end
