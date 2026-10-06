@@ -998,8 +998,13 @@ local function setSignal(dir)
     if not on('hazard_enabled') then pcall(electrics.set_warn_signal, 1) end
     return
   end
-  if on('hazard_enabled') then pcall(electrics.set_warn_signal, 0) end
+  local hadHazard = on('hazard_enabled')
+  if hadHazard then pcall(electrics.set_warn_signal, 0) end
+  -- hazards just switched off (the app's Hazards button): the lamps still read as flashing for a moment, so do not "undo" them
+  -- (that toggled the right signal ON); nothing else to change when all that was asked is "off"
+  if hadHazard and dir ~= 'left' and dir ~= 'right' then ap.sigCheck = nil; return end
   local l, r = sigOn('l'), sigOn('r')
+  if hadHazard then l, r = false, false end
   local function tog(side, turnOn)
     local fn = side == 'left' and electrics.toggle_left_signal or electrics.toggle_right_signal
     if not fn then errorEvent('this car has no ' .. side .. ' signal toggle'); return end
