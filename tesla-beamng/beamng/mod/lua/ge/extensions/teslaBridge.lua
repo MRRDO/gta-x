@@ -2116,6 +2116,31 @@ local function saveCatalog()
   end
 end
 
+-- The road ahead for the app's driving view while nobody is driving a route (manual driving, FSD off): the street the
+-- car is on, followed along the level's road graph. Sent as a normal 'route' message flagged passive, about once a second
+-- while moving, and never when the planner has its own path (FSD or a navigate pin), so it can't fight the real one.
+local lookAt, lookSent = 0, false
+local function lookAheadTick()
+  if not (planner and graph and playerId) or realTime < lookAt then return end
+  local veh = vehicleById(playerId)
+  if not veh then return end
+  if planner.mode ~= 'off' or planner.path or planner.dest then lookSent = false; return end
+  local ego = egoSnapshot(veh)
+  lookAt = realTime + ((ego.v or 0) > 1 and 1 or 3)
+  local rt = P.followRoad(graph, ego.x, ego.y, ego.hx, ego.hy, 300, nil)
+  if not rt then
+    if lookSent then send({ t = 'route', points = {}, length = 0 }); lookSent = false end
+    return
+  end
+  local path = P.buildPath(graph, rt)
+  local pts = {}
+  for i = 1, #path.pts, math.max(1, math.floor(#path.pts / 120)) do local q = path.pts[i]; pts[#pts + 1] = { q.x, q.y, q.z or 0 } end
+  local q = path.pts[#path.pts]
+  pts[#pts + 1] = { q.x, q.y, q.z or 0 }
+  send({ t = 'route', points = pts, length = path.s[#path.s], openEnded = true, passive = true })
+  lookSent = true
+end
+
 local function onUpdate(dtReal, dtSim)
   dtReal = dtReal or 0
   realTime = realTime + dtReal
@@ -2126,6 +2151,7 @@ local function onUpdate(dtReal, dtSim)
   end
   gameTime = gameTime + (dtSim or dtReal)
   pcall(launchTick, dtReal)
+  pcall(lookAheadTick)
   if not catalogDone and realTime > 8 and realTime % 5 < dtReal then pcall(saveCatalog) end
   if dtReal > 0 then fpsAvg = fpsAvg + (1 / dtReal - fpsAvg) * 0.05 end
   local okNet, netErr = pcall(netUpdate)

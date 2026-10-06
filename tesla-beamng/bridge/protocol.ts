@@ -164,7 +164,7 @@ export type MapInfo = {
 
 /** The planned route (after `navigate`, or the road ahead when FSD has no destination). Empty points = no route. */
 export type Route = {
-  t: 'route'; points: Vec3[]; length: number; openEnded?: boolean; arrival?: 'parking' | 'curb' | 'point'
+  t: 'route'; points: Vec3[]; length: number; openEnded?: boolean; arrival?: 'parking' | 'curb' | 'point'; /** just the street ahead while FSD has no route */ passive?: boolean
   /** FSD v14 style "P" pin: the parking spot it picked */
   parkingPin?: { pos: Vec3 }
 }
