@@ -1598,6 +1598,17 @@ handleCommand = function(msg)
         end
       end
     end
+  elseif t == 'wheelRescan' then
+    -- the wheel is back on USB: make the game look for it again and let the car pick its force feedback up afresh.
+    -- Which of these exists differs per game version, so try each and say which ones answered.
+    local tried = {}
+    for _, fn in ipairs({ 'reloadDevices', 'rescanDevices', 'refreshDevices', 'onDeviceChanged', 'reloadBindings' }) do
+      local m = rawget(_G, 'core_input_bindings')
+      if type(m) == 'table' and type(m[fn]) == 'function' then tried[#tried + 1] = fn; pcall(m[fn]) end
+    end
+    local pv = playerVehicle()
+    if pv then toVehicle(pv, 'command', { t = 'ffbReprobe' }) end
+    event('notice', 'wheel back: game asked to rescan (' .. (#tried > 0 and table.concat(tried, ', ') or 'no rescan call found in this game version') .. ')')
   elseif t == 'cancelRoute' then
     if not planner then return end
     planner:cancelRoute()

@@ -430,6 +430,7 @@ export type Command =
   | { t: 'requestMap' }
   /** The PC is about to restart the wheel. With `assist`, a car moving above 10 mph is held by FSD for `seconds` (default 8) until the wheel is back. */
   | { t: 'wheelReset'; assist?: boolean; seconds?: number }
+  | { t: 'wheelRescan' }
   | { t: 'requestMinimap' }
   | { t: 'debug' }
   | { t: 'ping' }
@@ -443,7 +444,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'summonTo', 'banish', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop', 'wheelReset',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop', 'wheelReset', 'wheelRescan',
 ])
 
 export const MPH = 0.44704

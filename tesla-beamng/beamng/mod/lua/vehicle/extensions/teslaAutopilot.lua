@@ -1056,6 +1056,12 @@ end
 
 local handlers = {}
 -- 'wheelHold': ignore the wheel for a few seconds (see checkTakeover): the PC is restarting it
+-- the wheel was unplugged and plugged back: forget what we knew about it so the next FSD finds the device again
+handlers.ffbReprobe = function()
+  if ffb.held then ffbRelease(true) end
+  ffb.own, ffb.helper, ffb.method, ffb.id, ffb.restoreUntil = false, nil, nil, nil, nil
+  ffb.status, ffb.reason = 'available', nil
+end
 handlers.wheelHold = function(cmd) ap.wheelHoldUntil = now + math.max(1, math.min(20, tonumber(cmd.seconds) or 8)) + 0.5 end
 
 handlers.gear = function(cmd)
