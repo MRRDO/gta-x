@@ -20,7 +20,7 @@ import qrcode from 'qrcode-terminal'
 import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
-import { BlackBox, uploadToGitHub } from './blackbox.ts'
+import { BlackBox, uploadToGitHub, uploadConfig } from './blackbox.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand, chat as assistantChat } from './assistant.ts'
 import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
@@ -37,6 +37,23 @@ function arg(name: string, fallback?: string): string | undefined {
 }
 
 const blackBox = new BlackBox()
+/** Save the black box, upload it if a token is set up, and tell every app (the iPad asks "what went wrong?"). */
+async function markBlackBox(note = '') {
+  const file = blackBox.mark(note.slice(0, 500))
+  log('black box saved:', file)
+  const up = await uploadToGitHub(file)
+  log('black box upload:', up.status)
+  broadcast({ t: 'event', kind: 'blackbox', detail: up.status, data: { file, uploaded: up.ok, upload: up.status } })
+  return { file, up }
+}
+async function noteBlackBox(file: string, note: string) {
+  if (!/blackbox[\\/]mark-[0-9TZ-]+\.json$/.test(file)) return { ok: false, status: 'not a black box file' }
+  blackBox.addNote(file, note)
+  const up = await uploadToGitHub(file)
+  log('black box note:', up.status)
+  broadcast({ t: 'event', kind: 'blackboxNote', detail: up.status, data: { file, uploaded: up.ok } })
+  return { ok: true, status: up.status, uploaded: up.ok }
+}
 const RECORD = !(process.argv.includes('--no-record') || process.env.TESLA_RECORD === '0') // on by default now: every drive (yours, or the game's own AI at the wheel) becomes training data for the imitation policy // driving log for the AI (docs/AI_COMPUTE_PLAN.md)
 const PORT = Number(arg('port', process.env.BRIDGE_PORT ?? '8765'))
 const GAME_HOST = arg('game-host', '127.0.0.1')!
@@ -620,14 +637,10 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
       try {
         const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
         if (path === '/blackbox/mark') {
-          const file = blackBox.mark(String(b.note ?? '').slice(0, 500)); log('black box saved:', file)
-          void uploadToGitHub(file).then((up) => { log('black box upload:', up.status); json(200, { ok: true, file, upload: up.status, uploaded: up.ok }) })
+          void markBlackBox(String(b.note ?? '')).then(({ file, up }) => json(200, { ok: true, file, upload: up.status, uploaded: up.ok }))
           return
         }
-        const file = String(b.file ?? '')
-        if (!/blackbox[\\/]mark-[0-9TZ-]+\.json$/.test(file)) return json(400, { error: 'not a black box file' })
-        blackBox.addNote(file, String(b.note ?? ''))
-        void uploadToGitHub(file).then((up) => json(200, { ok: true, upload: up.status, uploaded: up.ok }))
+        void noteBlackBox(String(b.file ?? ''), String(b.note ?? '')).then((r) => json(r.ok ? 200 : 400, { ok: r.ok, upload: r.status, uploaded: (r as { uploaded?: boolean }).uploaded }))
         return
       } catch (e) { json(400, { error: (e as Error).message }) }
     })
@@ -793,6 +806,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (msg.t === 'settings' && typeof msg.assistant === 'boolean') setAssistantEnabled(msg.assistant) // the FSD Assistant (bridge/assistant.ts) lives here, the game needn't know
     if (msg.t === 'hello') { log(`app: ${msg.app ?? '?'} ${msg.version ?? ''}`); return }
     // the phone page's music buttons: skip, play/pause, volume go to the iPad app, like the wheel's media buttons do
+    if (msg.t === 'blackboxMark') { void markBlackBox(String(msg.note ?? '')); return }
+    if (msg.t === 'blackboxNote') { void noteBlackBox(String(msg.file ?? ''), String(msg.note ?? '')); return }
+    if (msg.t === 'blackboxStatus') { const c = uploadConfig(); ws.send(JSON.stringify({ t: 'event', kind: 'blackboxStatus', detail: c.token ? 'upload on' : 'upload off', data: { upload: !!c.token, repo: c.repo, dir: c.dir } })); return }
     if (msg.t === 'mediaKey') { if (MEDIA_ACTIONS.has(String(msg.action))) broadcast({ t: 'media', action: msg.action }); return }
     if (msg.t === 'requestMap' && lastMap) {
       ws.send(JSON.stringify(lastMap))
