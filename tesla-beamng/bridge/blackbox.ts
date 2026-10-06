@@ -93,15 +93,15 @@ export function uploadConfig(home = homedir()) {
 }
 
 /** PUT one file into the repo (create, or update when we uploaded it before). Never throws. */
-export async function uploadToGitHub(file: string, home = homedir(), fetchFn: typeof fetch = fetch): Promise<UploadResult> {
+export async function uploadToGitHub(file: string, home = homedir(), fetchFn: typeof fetch = fetch, nameAs?: string, text?: string): Promise<UploadResult> {
   try {
     const c = uploadConfig(home)
     if (!c.token) return { ok: false, status: 'not uploaded: no GitHub token on this PC (see docs/BLACKBOX.md)' }
-    const name = file.split(/[\\/]/).pop()!
+    const name = nameAs ?? file.split(/[\\/]/).pop()!
     const path = `${c.dir}/${name}`
     const body: Record<string, unknown> = {
       message: `black box ${name}`,
-      content: Buffer.from(readFileSync(file)).toString('base64'),
+      content: Buffer.from(text !== undefined ? text : readFileSync(file)).toString('base64'),
     }
     if (c.branch) body.branch = c.branch
     const sha = shas.get(name)

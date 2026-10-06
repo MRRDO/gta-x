@@ -43,6 +43,14 @@ async function markBlackBox(note = '') {
   log('black box saved:', file)
   const up = await uploadToGitHub(file)
   log('black box upload:', up.status)
+  // the wheel helper's log (G29 rim lights: "leds:" lines, what the wheel accepted) goes along, so it can be checked without asking for files
+  try {
+    const wl = join(dirname(fileURLToPath(import.meta.url)), 'wheel_helper.log')
+    if (up.ok && existsSync(wl)) {
+      const tail = readFileSync(wl, 'utf8').split(/\r?\n/).slice(-200).join('\n')
+      void uploadToGitHub(file, undefined, undefined, file.split(/[\\/]/).pop()!.replace(/\.json$/, '') + '.wheel-helper.txt', tail)
+    }
+  } catch { /* optional */ }
   broadcast({ t: 'event', kind: 'blackbox', detail: up.status, data: { file, uploaded: up.ok, upload: up.status } })
   return { file, up }
 }

@@ -25,6 +25,8 @@ Do this once. Nobody types the token for you; it only ever lives on the game PC.
    - By hand instead: save the token as a single line in that file, or set the `TESLA_GH_TOKEN` environment variable.
 3. **Test.** Press Ctrl+Alt+B. The toast and the iPad card say **uploaded**, and the file shows up in the repo under `blackbox/`. No restart needed.
 
+The wheel helper log (G29 rim light results) is uploaded next to each black box as `<mark name>.wheel-helper.txt`.
+
 Another repo or folder: `%USERPROFILE%\.tesla-beamng\blackbox-upload.json` with `{"repo": "owner/name", "dir": "blackbox", "branch": "main"}`.
 
 If it says "not uploaded": no token file (step 2), the token expired, the repository access does not include the repo, or Contents is not Read and write. The message names which. The file is always saved on the PC either way. The upload is a plain HTTPS request from the relay to api.github.com; the token is never logged or sent anywhere else.
