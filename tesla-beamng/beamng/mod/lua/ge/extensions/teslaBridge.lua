@@ -67,7 +67,8 @@ local planner = nil
 local reloadRequested = nil -- (update while playing) set by the reloadMod command, handled in onUpdate
 local setTraffic -- (practice runner) AI traffic, defined further down
 local castRay -- static ray cast, defined further down (the planner's closure needs it declared up here)
-local banishedFrom = nil   -- where Banish started (so the car can come back)
+local banishedFrom = nil   -- where Banish started (so the car can come back): { x, y, z, level }
+local BANISH_FILE = '/settings/teslaBridgeBanish.json'
 local plannerSettings = {}   -- kept across level loads
 local safetySettings = {}
 local safety = Sf.new()
@@ -1494,6 +1495,42 @@ end
 local PROFILE_ORDER = { 'sloth', 'chill', 'standard', 'hurry', 'madmax' }
 local runAction
 
+-- A free, drivable point near (x, y) for the car to come back to: the spot itself when it is clear, else the road point beside it,
+-- else a few metres along the road either way. Clear = no other car within 4 m (and not inside a building's footprint, which
+-- the road graph never is). Returns x, y, note or nil, reason.
+local function clearReturnPoint(x, y, cars)
+  local function free(px, py)
+    for _, c in ipairs(cars or {}) do
+      local r = ((c.l or 4.6) + 4.6) * 0.5 * 0.5 + 2.2
+      if (c.x - px) ^ 2 + (c.y - py) ^ 2 < r * r then return false end
+    end
+    return true
+  end
+  if not graph then return x, y end
+  local e, t, d = P.nearestEdge(graph, x, y, nil, nil, 60)
+  if not e then return nil, 'no road near where it was' end
+  local a, b = graph.nodes[e.a], graph.nodes[e.b]
+  local dx, dy = b.x - a.x, b.y - a.y
+  local l = math.sqrt(dx * dx + dy * dy)
+  if l < 1e-6 then return x, y end
+  dx, dy = dx / l, dy / l
+  local cx, cy = a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t
+  local onRoad = d <= (a.r or 4) + 0.5
+  if onRoad and free(x, y) then return x, y end
+  local note = (not onRoad) and 'it was off the road, coming to the road beside it' or nil
+  for _, along in ipairs({ 0, 7, -7, 14, -14, 22, -22 }) do
+    local px, py = cx + dx * along, cy + dy * along
+    -- (the right-hand lane side so it stops at the curb, not in the middle)
+    local off = (a.r or 4) * 0.5
+    px, py = px + dy * off, py - dx * off
+    if free(px, py) then
+      if along ~= 0 then note = 'something is parked there now, stopping ' .. math.abs(along) .. ' m ' .. (along > 0 and 'ahead' or 'back') end
+      return px, py, note
+    end
+  end
+  return nil, 'the place is blocked by parked cars'
+end
+
 handleCommand = function(msg)
   local t = msg.t
   if t == 'action' then return runAction(msg.name) end
@@ -1718,11 +1755,17 @@ handleCommand = function(msg)
     local ego, cars = egoSnapshot(veh), trafficList()
     ensureVehicleExtension(veh)
     if t == 'banish' then
-      local id = planner:nearestFreeSpot(ego, cars, 400)
-      if not id then event('error', 'banish: no free parking spot within 400 m'); return end
-      local ok, err, how = planner:parkAtSpot(id, ego, cars)
+      -- the nearest few free spots in turn: one that does not work out (taken, no route, no way in) does not end it
+      local ok, err, how
+      local tried = planner:freeSpotsNear(ego, cars, 400, 6)
+      if #tried == 0 then event('error', 'banish: no free parking spot within 400 m'); return end
+      for _, id in ipairs(tried) do
+        ok, err, how = planner:parkAtSpot(id, ego, cars)
+        if ok then break end
+      end
       if not ok then event('error', 'banish: ' .. tostring(err)); return end
-      banishedFrom = { ego.x, ego.y, ego.z or 0 }
+      banishedFrom = { ego.x, ego.y, ego.z or 0, level = levelName() }
+      if jsonWriteFile then try(jsonWriteFile, BANISH_FILE, { x = banishedFrom[1], y = banishedFrom[2], z = banishedFrom[3], level = banishedFrom.level }, true) end -- survives a mod reload / restart
       if planner.mode == 'off' then
         local okE, errE = planner:engage('fsd', 'standard', ego, cars)
         if not okE then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil; event('error', 'banish: ' .. tostring(errE)); return end
@@ -1732,7 +1775,17 @@ handleCommand = function(msg)
       relayEvent({ kind = 'banish', detail = 'parking by itself' })
     else
       local to = msg.back and banishedFrom or (type(msg.to) == 'table' and { tonumber(msg.to[1]), tonumber(msg.to[2]), tonumber(msg.to[3]) or ego.z or 0 } or nil)
+      if msg.back and not to then event('error', 'summon: nothing to come back to yet (use Banish first)'); return end
       if not to or not to[1] or not to[2] then event('error', 'summon: no place to come to'); return end
+      if msg.back and to.level and levelName() and to.level ~= levelName() then event('error', 'summon: that was in another level'); return end
+      if msg.back then
+        -- coming back to where Banish started: somebody may be parked there now, or it was off the road (a driveway, a stall).
+        -- Aim for a free spot on the road beside it and let the normal Pull Over stop short of anything in the way.
+        local px, py, why = clearReturnPoint(to[1], to[2], cars)
+        if not px then event('error', 'summon: ' .. tostring(why)); return end
+        if why then event('notice', 'summon: ' .. why) end
+        to = { px, py, to[3] }
+      end
       planner:setRoute(to, nil, 'Pull Over')
       local okE, errE = true, nil
       if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'standard', ego, cars) else planner.routeDirty = true end
@@ -2335,6 +2388,7 @@ end
 
 local function onExtensionLoaded()
   logI('loaded (v2) ' .. tostring(os.time()))
+  if jsonReadFile then local b = try(jsonReadFile, BANISH_FILE); if type(b) == 'table' and b.x and b.y then banishedFrom = { b.x, b.y, b.z or 0, level = b.level } end end
   loadLearn()
   if levelName() then mapPending = true end
   refreshBindings()

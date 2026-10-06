@@ -182,6 +182,19 @@ function Planner:pickSpot(dest, cars, radius)
 end
 
 -- The nearest free parking spot to the car (index into self.parking and the spot), within `radius` m; nil if none.
+-- The free spots within `radius`, nearest first (up to n): Banish tries them in turn instead of giving up on the first
+function Planner:freeSpotsNear(ego, cars, radius, n)
+  local list = {}
+  for i, sp in ipairs(self.parking or {}) do
+    local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
+    if d < (radius or 200) and not spotOccupied(sp, cars) then list[#list + 1] = { id = i, d = d } end
+  end
+  table.sort(list, function(a, b) return a.d < b.d end)
+  local out = {}
+  for i = 1, math.min(n or 5, #list) do out[i] = list[i].id end
+  return out
+end
+
 function Planner:nearestFreeSpot(ego, cars, radius)
   local best, bi, bd
   for i, sp in ipairs(self.parking or {}) do
@@ -845,7 +858,9 @@ function Planner:parkAtSpot(id, ego, cars)
   local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
   if d < 40 and (ego.v or 0) < 3 then
     local ok, err = self:autopark(ego, cars, sp)
-    return ok, err, 'now'
+    if ok then return ok, err, 'now' end
+    -- the direct approach did not fit (spot behind the car, a wall or neighbours in the way): drive there by road and park on
+    -- arrival instead (this used to give up with "no room to maneuver into that spot", even in the middle of an empty road)
   end
   self.chosenSpot = sp
   self.dest, self.stops, self.arrival = { sp.x, sp.y, sp.z or 0 }, nil, 'Parking Lot'

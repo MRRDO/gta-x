@@ -56,5 +56,25 @@ for _, side in ipairs({ 1, -1 }) do
   if not ok then fails = fails + 1 end
   if not ok or VERBOSE then print(string.format('%s crooked side=%2d -> plan=%s arrived=%s at (%.1f,%.1f) off by %.1f deg%s', ok and 'ok  ' or 'FAIL', side, tostring(ok0), tostring(w:saw('arrived') ~= nil), x, y, math.deg(d), w.collided and ' COLLIDED' or '')) end
 end
+-- Banish: the nearest free spot is 25 m BEHIND the stopped car. The direct approach cannot start from there; it used to give up
+-- ("no room to maneuver into that spot"). It must drive round by road and park in it.
+for _, side in ipairs({ 1, -1 }) do
+  total = total + 1
+  local sy = side * 9
+  local spot = { x = 275, y = sy, z = 0, dx = 0, dy = -side, known = true }
+  local nodes = {}
+  local prev
+  for x = 0, 1000, 50 do local id = 'n' .. x; nodes[id] = { pos = { x = x, y = 0, z = 0 }, radius = 5, links = {} }; if prev then nodes[prev].links[id] = { drivability = 1, oneWay = false, speedLimit = 13.4 } end; prev = id end
+  local w = W.new({ nodes = nodes, ego = { x = 300, y = LANE1, psi = 0, v = 0 }, parking = { spot } })
+  local egoSnap = { x = 300, y = LANE1, z = 0, hx = 1, hy = 0, v = 0, gear = 'D', len = 4.6, wid = 1.9 }
+  w.planner.autopark = function() return false, 'no room to maneuver into that spot' end -- what the real game says when the direct approach does not fit
+  local ok0, err0, how = w.planner:parkAtSpot(1, egoSnap, {})
+  if ok0 and how ~= 'now' then w:engage('fsd', 'standard') end
+  w:run(300, function(ww) return ww:saw('arrived') ~= nil end)
+  local x, y = w:refPos()
+  local ok = ok0 and w:saw('arrived') ~= nil and math.sqrt((x - 275) ^ 2 + (y - sy) ^ 2) < 1.6 and w.ego.gear == 'P' and not w.collided
+  if not ok then fails = fails + 1 end
+  if not ok or VERBOSE then print(string.format('%s banish behind side=%2d -> plan=%s (%s) how=%s arrived=%s at (%.1f,%.1f)%s', ok and 'ok  ' or 'FAIL', side, tostring(ok0), tostring(err0), tostring(how), tostring(w:saw('arrived') ~= nil), x, y, w.collided and ' COLLIDED' or '')) end
+end
 print(string.format('%d cases, %d failed', total, fails))
 os.exit(fails == 0 and 0 or 1)
