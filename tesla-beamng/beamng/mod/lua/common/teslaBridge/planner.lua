@@ -1060,7 +1060,7 @@ end
 
 function Planner:autopark(ego, cars, want, retry)
   local best, bd
-  if not retry then self.apBlocked, self.apRetries = nil, 0 end
+  if not retry then self.apBlocked, self.apRetries, self.apFix, self.apFixBad = nil, 0, 0, nil end
   self.gcache = {}
   if self.apBlocked then -- places where an earlier try got stuck count as obstacles
     local c2 = {}
@@ -1963,6 +1963,7 @@ function Planner:tick(snap)
     if path.afterManeuver then
       local segs = path.afterManeuver
       path.afterManeuver = nil
+      self.apFix, self.apFixBad = 0, nil
       self:startManeuver(segs, 'park', path.afterKind or 'backIn')
       return self:finish(out)
     end
@@ -2607,8 +2608,6 @@ function Planner:tickManeuver(ego, cars, out)
           return
         end
         if mv.after == 'park' then
-          out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
-          if self:finishUnresponsive(out) then self.dest, self.path = nil, nil; out.route = self:routeMessage(); return end
           -- where did we end up, against where the maneuver meant to (and the spot's own data)?
           local last = mv.segs[#mv.segs]
           local n = last and #last.pts or 0
@@ -2625,6 +2624,23 @@ function Planner:tickManeuver(ego, cars, out)
               err = { lon = rx * tx + ry * ty, lat = -rx * ty + ry * tx, headingDeg = math.deg(math.acos(dot)) }
             end
           end
+          -- Crooked (or well off the stall's middle): pull forward and back in again, up to twice, instead of leaving it there
+          local badness = err and (err.headingDeg / 7 + abs(err.lat) / 0.5 + abs(err.lon) / 1.2) or 0
+          local worthIt = err and (err.headingDeg > 7 or abs(err.lat) > 0.5 or abs(err.lon) > 1.2)
+          -- a second try only when the first one made it clearly better; otherwise this is as straight as the car gets
+          if worthIt and (self.apFixBad or 1e9) - badness < 0.15 and (self.apFix or 0) > 0 then worthIt = false end
+          self.apFixBad = badness
+          if worthIt and self.spot and self.settings.parkFix ~= false and (mv.kind == 'autopark' or mv.kind == 'backIn') and (self.apFix or 0) < 2 then
+            self.apFix = (self.apFix or 0) + 1
+            local okFix = self:autopark(ego, cars, self.spot, true)
+            if okFix then
+              self:emit('notice', { detail = string.format('parking: %.0f deg off, %.1f m to the side: pulling forward to straighten up', err.headingDeg, err.lat) })
+              mv.lastT = self.t
+              return
+            end
+          end
+          out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+          if self:finishUnresponsive(out) then self.dest, self.path = nil, nil; out.route = self:routeMessage(); return end
           local sp = self.spot
           self:emit('arrived', { detail = 'parking', err = err, destDist = self.dest and floor(sqrt((self.dest[1] - ego.x) ^ 2 + (self.dest[2] - ego.y) ^ 2)) or nil,
             spot = sp and { x = sp.x, y = sp.y, dx = sp.dx, dy = sp.dy, known = sp.known } or nil,
