@@ -861,7 +861,16 @@ local function vehicleInfo(veh)
     local b, n = md.model.Brand, md.model.Name
     if n then name = (b and (b .. ' ') or '') .. n end
   end
-  return { id = veh:getID(), name = name, model = jb }
+  -- Paint colour as #rrggbb (veh.color is a 0..1 vector; field names differ by build).
+  local color = try(function()
+    local c = veh.color or (veh.getColor and veh:getColor())
+    if not c then return nil end
+    local r, g, b = c.x or c.r or c[1], c.y or c.g or c[2], c.z or c.b or c[3]
+    if not (r and g and b) then return nil end
+    local function h(v) return math.max(0, math.min(255, math.floor(v * 255 + 0.5))) end
+    return string.format('#%02x%02x%02x', h(r), h(g), h(b))
+  end)
+  return { id = veh:getID(), name = name, model = jb, color = color }
 end
 
 -- Tesla-style driving aids that run whether or not FSD drives (settings, default in brackets):

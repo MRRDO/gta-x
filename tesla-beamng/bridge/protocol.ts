@@ -23,7 +23,7 @@ export type DisengageReason = 'steer' | 'brake' | 'throttle' | 'arrived' | 'erro
 export type State = {
   t: 'state'
   time: number // game seconds
-  vehicle: { id: number; name: string; model: string }
+  vehicle: { id: number; name: string; model: string; color?: string /* paint, #rrggbb */ }
   pos: Vec3
   dir: Vec3 // unit forward vector
   speed: number // m/s (wheel speed)
