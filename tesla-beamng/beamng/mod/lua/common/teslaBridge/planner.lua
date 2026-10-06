@@ -481,7 +481,8 @@ function Planner:planPath(ego, cars)
       P.appendParking(path, self.dest[1], self.dest[2], e.z, ux, uy)
       path.arrivalKind = 'parking'
     elseif kind ~= 'Driveway' and kind ~= 'Take Over' then
-      P.pullOver(path, 30)
+      -- the driver asked to pull over: as far to the edge as the car fits (about 0.15 m of clearance), else the usual 0.5 m
+      P.pullOver(path, self.pullingOver and 20 or 30, 1, self.pullingOver and 1.1 or nil)
       path.arrivalKind = 'curb'
     end
   else
@@ -1258,7 +1259,8 @@ function Planner:pullOverNow(ego)
   local pr = P.project(path, ego.x, ego.y)
   if not pr then return false end
   local v = max(0, ego.v or 0)
-  local sAt = min(path.s[#path.s] - 1, pr.s + max(35, v * 4))
+  -- stopped: only far enough ahead to move over to the edge; moving: a stopping distance
+  local sAt = min(path.s[#path.s] - 1, pr.s + (v < 1 and 18 or max(35, v * 4)))
   local qx, qy, qz = P.pointAt(path, sAt, pr.i)
   self.pullingOver = { saved = { dest = self.dest, stops = self.stops, arrival = self.arrival } }
   self.dest, self.stops, self.arrival, self.turnVia, self.chosenSpot = { qx, qy, qz or 0 }, nil, 'Pull Over', nil, nil

@@ -866,8 +866,9 @@ function M.purePursuit(path, s, x, y, hx, hy, L, hint)
 end
 
 -- Offset the last `dist` meters of a path toward the right edge (curbside stop).
-function M.pullOver(path, dist, side)
+function M.pullOver(path, dist, side, margin)
   side = side or 1
+  margin = margin or 1.5 -- the car's centre stays this far from the road edge (about 0.5 m of clearance at the usual 1.9 m width)
   local pts = path.pts
   local S = path.s
   local total = S[#S]
@@ -882,7 +883,7 @@ function M.pullOver(path, dist, side)
       local a, b = pts[max(1, i - 1)], pts[min(#pts, i + 1)]
       local tx, ty = norm2(b.x - a.x, b.y - a.y)
       local lane = p.ow and 0 or min((p.r or 3) * 0.5, 1.8)
-      local extra = max(0, (p.r or 3) - 1.5 - lane) * w * side -- stay ~0.5 m off the edge (guardrails)
+      local extra = max(0, (p.r or 3) - margin - lane) * w * side -- stay ~0.5 m off the edge (guardrails)
       q.x, q.y = p.x + ty * extra, p.y - tx * extra
     end
     shifted[i] = q

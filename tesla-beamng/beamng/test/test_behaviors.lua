@@ -1175,7 +1175,7 @@ scenario('parkPullOver', function()
   w:run(40, function(ww) return ww:saw('arrived') ~= nil end)
   local x, y = w:refPos()
   check(w:saw('arrived') ~= nil and w.ego.gear == 'P' and w.planner.mode == 'off', 'pulled over, in P, FSD off')
-  check(y < LANE1 - 1.0 and y > -5 + 1.3, string.format('at the side of the road (y %.2f)', y))
+  check(y < LANE1 - 1.0 and y > -5 + 0.95, string.format('at the side of the road (y %.2f)', y))
   check(x - x0 < 120, string.format('stopped soon after (%.0f m)', x - x0))
   -- cancelled by a takeover: trip kept
   local w2 = W.new({ nodes = straight(0, 5000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 15 } })
@@ -1194,6 +1194,19 @@ scenario('parkPullOver', function()
   w3.planner:setRoute({ 4000, LANE1, 0 }, nil, 'Driveway')
   w3.planner:disengage('steer')
   check(w3.planner.dest and w3.planner.dest[1] == 4000, 'a new trip picked mid pull-over is kept after a takeover')
+end)
+
+-- Grok "pull over" while stopped in the lane: moves over to the very edge and stops there
+scenario('pullOverStopped', function()
+  local w = W.new({ nodes = straight(0, 5000, 5, 17), ego = { x = 100, y = LANE1, psi = 0, v = 0 } })
+  w:engage('fsd', 'standard')
+  w.ego.gear = 'D'
+  check(w.planner:pullOverNow(w:snapshot().ego), 'stopped: pull over starts')
+  w:run(40, function(ww) return ww:saw('arrived') ~= nil end)
+  local x, y = w:refPos()
+  check(w:saw('arrived') ~= nil and w.ego.gear == 'P', 'arrived and parked')
+  check(y < -3.6 and y > -4.1, string.format('as far to the edge as it fits (y %.2f, edge at -5)', y))
+  check(x - 100 < 40, string.format('only moved a short way (%.0f m)', x - 100))
 end)
 
 scenario('arrivalChoice', function()

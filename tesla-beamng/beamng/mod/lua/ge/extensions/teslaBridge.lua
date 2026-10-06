@@ -1537,15 +1537,26 @@ handleCommand = function(msg)
   if t == 'action' then return runAction(msg.name) end
   local veh = playerVehicle()
   if t == 'pullOver' then
-    -- "pull over" from the assistant: FSD (started if it is not on) drives to the side of the road, stops and parks. Taking over cancels.
+    -- "pull over" from the assistant, any time (moving, stopped in the lane, or in Park): FSD is started if it is not on, shifts to
+    -- Drive if needed and takes the car to the very edge of the road, stops and parks. Taking over cancels.
     if not veh or not planner then event('error', 'pull over: no car or map yet'); return end
-    if (lastVehSt.speed or 0) < 1 then event('notice', 'already stopped'); return end
-    if planner.mode == 'off' then engageFromApp('fsd', planner.profile) end
-    if planner.mode == 'off' then event('error', 'pull over: FSD would not start here'); return end
+    if plannerSettings.valet then event('error', 'Valet Mode: self-driving is off'); return end
+    local still = (lastVehSt.speed or 0) < 1
+    if planner.mode == 'off' then
+      ensureVehicleExtension(veh)
+      local ego = egoSnapshot(veh)
+      if still then ego.gear = 'D' end -- no "back out of the spot" from Park: just move over
+      local ok, err = planner:engage('fsd', planner.profile, ego, trafficList())
+      if not ok then event('error', 'pull over: ' .. tostring(err)); return end
+      if still and lastVehSt.gear ~= 'D' then toVehicle(veh, 'command', { t = 'gear', gear = 'D' }) end
+      syncVehicleMode(veh)
+      planTick()
+    end
     if planner.pullingOver or planner:pullOverNow(egoSnapshot(veh)) then
       relayEvent({ kind = 'pullOver', detail = 'pulling over (take over to cancel)' })
     else
-      event('error', 'pull over: no road ahead to pull over on')
+      event('error', 'pull over: no road here to pull over on')
+      if planner.mode ~= 'off' and planner.activity == 'drive' and not planner.dest then planner:disengage('error', 'pull over failed'); syncVehicleMode(veh) end
     end
     return
   end
