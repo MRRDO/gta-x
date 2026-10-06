@@ -1778,8 +1778,8 @@ handleCommand = function(msg)
       if msg.back and not to then event('error', 'summon: nothing to come back to yet (use Banish first)'); return end
       if not to or not to[1] or not to[2] then event('error', 'summon: no place to come to'); return end
       if msg.back and to.level and levelName() and to.level ~= levelName() then event('error', 'summon: that was in another level'); return end
-      if msg.back then
-        -- coming back to where Banish started: somebody may be parked there now, or it was off the road (a driveway, a stall).
+      do
+        -- coming to a point (and "back" to where Banish started): somebody may be parked there now, or it was off the road (a driveway, a stall).
         -- Aim for a free spot on the road beside it and let the normal Pull Over stop short of anything in the way.
         local px, py, why = clearReturnPoint(to[1], to[2], cars)
         if not px then event('error', 'summon: ' .. tostring(why)); return end
