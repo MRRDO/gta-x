@@ -37,7 +37,7 @@ function arg(name: string, fallback?: string): string | undefined {
 }
 
 const blackBox = new BlackBox()
-const RECORD = process.argv.includes('--record') || process.env.TESLA_RECORD === '1' // driving log for the AI (docs/AI_COMPUTE_PLAN.md)
+const RECORD = !(process.argv.includes('--no-record') || process.env.TESLA_RECORD === '0') // on by default now: every drive (yours, or the game's own AI at the wheel) becomes training data for the imitation policy // driving log for the AI (docs/AI_COMPUTE_PLAN.md)
 const PORT = Number(arg('port', process.env.BRIDGE_PORT ?? '8765'))
 const GAME_HOST = arg('game-host', '127.0.0.1')!
 const GAME_PORT = Number(arg('game-port', '8766'))
