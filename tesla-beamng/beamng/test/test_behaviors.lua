@@ -1504,5 +1504,17 @@ scenario('noCrossCentre', function()
   check(x < 150 and not w.collided, 'waits behind the car, no collision')
 end)
 
+scenario('engageAtRed', function()
+  -- stopped at a red light in a left-turn pocket position: starting FSD must not make it speed off, or change lanes
+  local w = W.new({ laneLock = true, nodes = grid(2, 2, 150), ego = { x = 125, y = LANE1, psi = 0, v = 0 },
+    signals = { { id = 'r', x = 141, y = -7, kind = 'signal', dirx = 1, diry = 0, get = function() return 'red' end } } })
+  w:engage('fsd', 'standard')
+  local x0 = w:refPos()
+  local maxX, maxY = x0, 0
+  w:run(12, function(ww) local x, y = ww:refPos(); maxX = math.max(maxX, x); maxY = math.max(maxY, math.abs(y - LANE1)); return false end)
+  check(maxX < 142, string.format('stays behind the line while it is red (reached x %.1f)', maxX))
+  check(maxY < 0.8, string.format('stays in its lane (moved %.1f m sideways)', maxY))
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)
