@@ -36,6 +36,7 @@ local level = nil
 local graph = nil        -- pathing graph
 local mapMsg = nil       -- cached map message (table)
 local mapPending = false
+local wheelAssistUntil = nil -- game time FSD lets go again after a wheel restart that it covered
 local signals = {}       -- { id, x, y, z, kind = 'stop'|'signal', dirx, diry, get = fn -> 'red'|'yellow'|'green'|nil }
 local parking = {}       -- { x, y, z, dx, dy }
 local traffic = {}       -- [id] = { x, y, z, dx, dy, v, w, l, t }
@@ -1545,6 +1546,21 @@ handleCommand = function(msg)
     planner.builtFor = planner.profile
     send(planner:routeMessage())
     planner.routeDirty = false
+  elseif t == 'wheelReset' then
+    -- The PC is restarting the wheel (a few seconds with no steering input or force feedback). If asked to, and the car is
+    -- moving above 10 mph with nobody driving it, FSD holds it for a few seconds, then hands back.
+    local pv = playerVehicle()
+    if msg.assist and pv and planner and planner.mode == 'off' then
+      local ego = egoSnapshot(pv)
+      if (ego.v or 0) > 4.47 then
+        engageFromApp('fsd', planner.profile)
+        if planner.mode ~= 'off' then
+          wheelAssistUntil = gameTime + math.max(3, math.min(20, tonumber(msg.seconds) or 8))
+          toVehicle(pv, 'command', { t = 'wheelHold', seconds = math.max(3, math.min(20, tonumber(msg.seconds) or 8)) })
+          event('notice', 'wheel restarting: FSD holds the car for a few seconds')
+        end
+      end
+    end
   elseif t == 'cancelRoute' then
     if not planner then return end
     planner:cancelRoute()
@@ -2185,6 +2201,15 @@ local function onUpdate(dtReal, dtSim)
       pcall(pushVehicleSettings, veh)
       event('vehicleChanged', vehicleInfo(veh).name)
       if mapMsg then send(mapMsg) end
+    end
+  end
+
+  if wheelAssistUntil and gameTime >= wheelAssistUntil then
+    wheelAssistUntil = nil
+    if planner and planner.mode ~= 'off' then
+      planner:disengage('app')
+      if veh then syncVehicleMode(veh) end
+      event('notice', 'wheel is back: your turn')
     end
   end
 

@@ -1054,6 +1054,8 @@ local function sigVerify()
 end
 
 local handlers = {}
+-- 'wheelHold': ignore the wheel for a few seconds (see checkTakeover): the PC is restarting it
+handlers.wheelHold = function(cmd) ap.wheelHoldUntil = now + math.max(1, math.min(20, tonumber(cmd.seconds) or 8)) + 0.5 end
 
 handlers.gear = function(cmd)
   local g = cmd.gear
@@ -1249,6 +1251,7 @@ handlers.autopilot = function(cmd)
   end
 end
 
+
 function M.command(json)
   local ok, cmd = pcall(jsonDecode, json)
   if not ok or type(cmd) ~= 'table' then return end
@@ -1360,6 +1363,9 @@ local function checkTakeover(dt)
     -- only a wheel that is neither where it started nor where FSD steers is a driver taking over
     steerDev = math.min(steerDev, abs(st - wheelTarget(lastOut.steer or 0)))
   end
+  -- The wheel is being restarted by the PC: it vanishes and comes back at some angle, which is not a hand. The planner gave the
+  -- car to FSD for a few seconds ('wheelHold'); steering from the wheel is ignored until then.
+  if ap.wheelHoldUntil and now < ap.wheelHoldUntil then steerDev, steerBias = 0, 0 end
   -- slight hand movement above steers a little; a strong one is a takeover
   takeover.steering = (steerDev > devLimit) and takeover.steering + dt or 0
   takeover.brake = (br > 0.04) and takeover.brake + dt or 0
