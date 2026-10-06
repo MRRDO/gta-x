@@ -1307,6 +1307,16 @@ local function checkTakeover(dt)
   end
   local steerDev = st and abs(st - baseline.steering) or 0
   local devLimit, holdT = Wh.takeoverLimit(takeoverLevel), 0.08
+  do
+    -- a quick turn of FSD's own steering leaves the physical wheel lagging behind it for a moment; that gap is not a hand.
+    -- The faster FSD is steering, the more the wheel may trail before it counts as a takeover (felt as "FSD turns the
+    -- wheel hard, then switches itself off")
+    local cs = lastOut and lastOut.steer or 0
+    local rate = abs(cs - (ap.prevCmd or cs)) / math.max(dt, 1e-3)
+    ap.prevCmd = cs
+    ap.rateLP = (ap.rateLP or 0) + (rate - (ap.rateLP or 0)) * math.min(1, dt / 0.25)
+    devLimit = devLimit + math.min(0.1, ap.rateLP * 0.12)
+  end
   steerBias = 0
   do
     -- a slight turn of the wheel steers the car a little (how far the driver has moved it from where FSD has it);
