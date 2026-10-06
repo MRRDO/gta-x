@@ -423,7 +423,9 @@ function onGameLine(line: string) {
       return
     case 'event':
       // back to the menu / level change: a new app must not get the old world's state or route
-      if (msg.kind === 'levelUnloaded') { lastState = null; lastRoute = null }
+      // The app throws its map away on levelUnloaded, so forget it here too: reloading the SAME level sends an identical map, which
+      // used to be treated as "unchanged" and never reached the app (the map sometimes did not load).
+      if (msg.kind === 'levelUnloaded') { lastState = null; lastRoute = null; lastMap = null; lastMapKey = ''; minimapRequestedFor = '' }
       log('event', msg.kind, msg.detail ?? '')
       if (msg.kind === 'stuck' && (msg.data?.level ?? 0) >= 2) {
         // FSD stopped and can't say why: ask the local model (if any) for advice, shown in the app
