@@ -119,6 +119,12 @@ function Driver:update(dt, sense, opts)
     self.latI = clamp(self.latI + pr.lat * dt, -3, 3)
   end
   if not reverse then k = k - 0.004 * self.latI end
+  -- Highway speeds: never ask for more sideways acceleration than about 4 m/s^2 (an evasion may use more). A big path error at 30 m/s
+  -- used to turn into a hard wheel move and a spin; now it is corrected over a longer stretch. Slow driving is not limited by this.
+  if not reverse and v > 8 then
+    local kcap = (plan.urgent and 9 or 4) / (v * v)
+    k = clamp(k, -kcap, kcap)
+  end
   local kmax = self.kmax[binOf(v)]
   -- backing up, the same curvature needs the opposite steering
   local uWant = clamp((reverse and 1 or -1) * self.steerSign * k / kmax, -1, 1)

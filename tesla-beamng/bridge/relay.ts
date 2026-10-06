@@ -786,6 +786,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (handleButtons(ws, msg)) return
     if (msg.t === 'settings' && typeof msg.assistant === 'boolean') setAssistantEnabled(msg.assistant) // the FSD Assistant (bridge/assistant.ts) lives here, the game needn't know
     if (msg.t === 'hello') { log(`app: ${msg.app ?? '?'} ${msg.version ?? ''}`); return }
+    // the phone page's music buttons: skip, play/pause, volume go to the iPad app, like the wheel's media buttons do
+    if (msg.t === 'mediaKey') { if (MEDIA_ACTIONS.has(String(msg.action))) broadcast({ t: 'media', action: msg.action }); return }
     if (msg.t === 'requestMap' && lastMap) {
       ws.send(JSON.stringify(lastMap))
       if (lastMinimap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))

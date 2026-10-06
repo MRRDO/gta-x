@@ -1796,7 +1796,7 @@ handleCommand = function(msg)
       local tried = planner:freeSpotsNear(ego, cars, 400, 6)
       if #tried == 0 then event('error', 'banish: no free parking spot within 400 m'); return end
       for _, id in ipairs(tried) do
-        ok, err, how = planner:parkAtSpot(id, ego, cars)
+        ok, err, how = planner:parkAtSpot(id, ego, cars, { road = true })
         if ok then break end
       end
       if not ok then event('error', 'banish: ' .. tostring(err)); return end
@@ -1831,6 +1831,12 @@ handleCommand = function(msg)
       relayEvent({ kind = 'summonTo', detail = 'coming to you' })
     end
     syncVehicleMode(veh)
+    -- nobody is driving: no nagging for hands on the wheel (it used to end in "unresponsive driver: pulling over" by itself) and no
+    -- wheel or pedal reading as a takeover. Turning FSD off from the app still stops it.
+    if planner.mode ~= 'off' then
+      planner.unattended = true
+      toVehicle(veh, 'command', { t = 'unattended', on = true })
+    end
   elseif t == 'emergencyStop' then
     if not planner or not veh then event('error', 'emergency: no car'); return end
     if msg.cancel then

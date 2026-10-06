@@ -386,6 +386,16 @@ scenario('unresponsive', function()
   check(w2:saw('strike') ~= nil and w2.planner.mode == 'off', 'parked: strike, FSD off')
 end)
 
+-- Banish / Summon: nobody is in the car, so nobody can be nagged (it used to pull over and park "for no reason")
+scenario('unattendedNoNag', function()
+  local w = W.new({ nodes = straight(0, 20000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 15 } })
+  w:engage('fsd', 'standard')
+  w.planner.unattended = true
+  w.attention = { state = 'phone', t = 0 }
+  w:run(90, function(ww) ww.attention.t = ww.t; return ww:saw('unresponsive') ~= nil or ww:saw('strike') ~= nil end)
+  check(w:saw('unresponsive') == nil and w:saw('strike') == nil and w.planner.mode == 'fsd', 'unattended: no nag, no pull over, still driving')
+end)
+
 -- driver monitoring modes (nagMode): off / camera / wheel, wheel interval by road context
 scenario('monitoringModes', function()
   local N = require('teslaBridge/nag')

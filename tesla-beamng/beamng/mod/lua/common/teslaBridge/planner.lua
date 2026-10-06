@@ -142,11 +142,35 @@ function Planner:beh() return M.BEHAVIOR[self.profile] or M.BEHAVIOR.standard en
 -- routes
 ---------------------------------------------------------------------------
 
-local function spotOccupied(spot, cars)
+-- Is something solid standing in the spot (a pole, a tree, a bin, a wall: the level's parking data lists spots like that)? Looked at
+-- with static rays from the middle, once per spot every 20 s. Parked cars are not static, they are handled by spotOccupied.
+local function spotObstructed(spot, cast)
+  if not cast then return false end
+  local now = os.clock()
+  if spot.chk and now - spot.chk.t < 20 then return spot.chk.v end
+  local blocked = false
+  local z = (spot.z or 0)
+  local ax, ay = spot.dx or 0, spot.dy or 1
+  local l = sqrt(ax * ax + ay * ay)
+  if l < 0.5 then ax, ay, l = 0, 1, 1 end
+  ax, ay = ax / l, ay / l
+  local px, py = -ay, ax
+  -- something solid inside the car's footprint (half length ~2.2 m along the spot, half width ~0.9 m across)
+  if not blocked then
+    for _, d in ipairs({ { ax, ay, 2.0 }, { -ax, -ay, 2.0 }, { px, py, 0.85 }, { -px, -py, 0.85 } }) do
+      local ok, hit = pcall(cast, spot.x, spot.y, z + 0.7, d[1], d[2], 0, d[3])
+      if ok and hit then blocked = true; break end
+    end
+  end
+  spot.chk = { t = now, v = blocked }
+  return blocked
+end
+
+local function spotOccupied(spot, cars, cast)
   for _, c in ipairs(cars or {}) do
     if (c.x - spot.x) ^ 2 + (c.y - spot.y) ^ 2 < 2.4 ^ 2 then return true end
   end
-  return false
+  return spotObstructed(spot, cast)
 end
 
 -- Best free parking spot near the destination (FSD v14: nearer, and not taken).
@@ -169,11 +193,11 @@ local function snapToSpotAxis(spot, ox, oy)
 end
 
 function Planner:pickSpot(dest, cars, radius)
-  if self.chosenSpot and not spotOccupied(self.chosenSpot, cars) then return self.chosenSpot end
+  if self.chosenSpot and not spotOccupied(self.chosenSpot, cars, self.castRay) then return self.chosenSpot end
   local best, bestScore
   for _, sp in ipairs(self.parking) do
     local d = sqrt((sp.x - dest[1]) ^ 2 + (sp.y - dest[2]) ^ 2)
-    if d < (radius or 80) and not spotOccupied(sp, cars) then
+    if d < (radius or 80) and not spotOccupied(sp, cars, self.castRay) then
       local score = d
       if not bestScore or score < bestScore then best, bestScore = sp, score end
     end
@@ -187,7 +211,7 @@ function Planner:freeSpotsNear(ego, cars, radius, n)
   local list = {}
   for i, sp in ipairs(self.parking or {}) do
     local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-    if d < (radius or 200) and not spotOccupied(sp, cars) then list[#list + 1] = { id = i, d = d } end
+    if d < (radius or 200) and not spotOccupied(sp, cars, self.castRay) then list[#list + 1] = { id = i, d = d } end
   end
   table.sort(list, function(a, b) return a.d < b.d end)
   local out = {}
@@ -199,7 +223,7 @@ function Planner:nearestFreeSpot(ego, cars, radius)
   local best, bi, bd
   for i, sp in ipairs(self.parking or {}) do
     local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-    if d < (radius or 200) and not spotOccupied(sp, cars) and (not bd or d < bd) then best, bi, bd = sp, i, d end
+    if d < (radius or 200) and not spotOccupied(sp, cars, self.castRay) and (not bd or d < bd) then best, bi, bd = sp, i, d end
   end
   return bi, best, bd
 end
@@ -659,6 +683,7 @@ function Planner:engage(mode, profile, ego, cars)
   -- signalling still change it)
   if self.settings.laneLock ~= false then self.lanePinUntil = math.huge end
   self.curveAlertUntil = nil
+  self.unattended = nil -- Banish / Summon set it again after engaging
   self.farTicks = 0 -- a fresh start: an earlier off-road spell must not count against this one
   if mode ~= 'tacc' and self.settings.easeEngage ~= false and abs(ego.v or 0) > 3 then self.engageSeq = (self.engageSeq or 0) + 1; self.easeUntil = (self.t or 0) + 70 else self.easeUntil = nil end
   if self.nag.lockedOut then return false, 'FSD is locked out for this drive (too many strikes)' end
@@ -725,6 +750,10 @@ function Planner:engage(mode, profile, ego, cars)
       end
     end
   end
+  if self.dest and mode == 'fsd' then
+    -- a trip from earlier still being there is the likely reason FSD "just parks" (it drives to the old destination and finishes there)
+    self:emit('notice', { detail = string.format('FSD is following a trip (arrival: %s, %.0f m away)', tostring(self.arrival or 'auto'), sqrt((self.dest[1] - ego.x) ^ 2 + (self.dest[2] - ego.y) ^ 2)) })
+  end
   self:emit('engaged', { mode = mode, profile = self.profile })
   return true
 end
@@ -732,6 +761,7 @@ end
 function Planner:disengage(reason, detail)
   if self.mode == 'off' then return end
   self.mode = 'off'
+  self.unattended = nil
   self.activity = 'drive'
   self.maneuver = nil
   self.lastDisengage = { reason = reason, time = self.t }
@@ -843,7 +873,7 @@ function Planner:spotsNear(x, y, radius, cars)
   for i, sp in ipairs(self.parking) do
     local d = sqrt((sp.x - x) ^ 2 + (sp.y - y) ^ 2)
     if d < (radius or 80) then
-      out[#out + 1] = { id = i, x = sp.x, y = sp.y, z = sp.z or 0, dx = sp.dx, dy = sp.dy, free = not spotOccupied(sp, cars), d = d }
+      out[#out + 1] = { id = i, x = sp.x, y = sp.y, z = sp.z or 0, dx = sp.dx, dy = sp.dy, free = not spotOccupied(sp, cars, self.castRay), d = d }
     end
   end
   table.sort(out, function(a, b) return a.d < b.d end)
@@ -853,12 +883,13 @@ end
 
 -- The driver tapped a parking spot on the map: park there. Close by: Autopark now. On a
 -- trip: make it the destination (FSD parks there on arrival). Returns ok, err, how.
-function Planner:parkAtSpot(id, ego, cars)
+function Planner:parkAtSpot(id, ego, cars, opts)
   local sp = self.parking[id]
   if not sp then return false, 'no such parking spot' end
-  if spotOccupied(sp, cars) then return false, 'that spot is taken' end
+  if spotOccupied(sp, cars, self.castRay) then return false, 'that spot is taken' end
   local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-  if d < 40 and (ego.v or 0) < 3 then
+  -- opts.road (Banish): drive there like a car, at road speed; the slow direct maneuver (walking pace) only for a spot right beside us
+  if d < ((opts and opts.road) and 14 or 40) and (ego.v or 0) < 3 then
     local ok, err = self:autopark(ego, cars, sp)
     if ok then return ok, err, 'now' end
     -- the direct approach did not fit (spot behind the car, a wall or neighbours in the way): drive there by road and park on
@@ -1086,11 +1117,11 @@ function Planner:autopark(ego, cars, want, retry)
     cars = c2
   end
   if want then
-    best = (not spotOccupied(want, cars)) and want or nil
+    best = (not spotOccupied(want, cars, self.castRay)) and want or nil
   else
     for _, sp in ipairs(self.parking) do
       local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-      if d < 25 and not spotOccupied(sp, cars) and (not bd or d < bd) then best, bd = sp, d end
+      if d < 25 and not spotOccupied(sp, cars, self.castRay) and (not bd or d < bd) then best, bd = sp, d end
     end
   end
   if not best then return false, 'no free parking spot nearby' end
@@ -1434,7 +1465,7 @@ function Planner:tick(snap)
 
   -- supervision
   local lim = self.status and self.status.speedLimit
-  local nagOut = self.nag:tick(t, self.mode ~= 'off' and self.mode ~= 'tacc' and self.activity ~= 'summon', self.profile, ego.attention,
+  local nagOut = self.nag:tick(t, self.mode ~= 'off' and self.mode ~= 'tacc' and self.activity ~= 'summon' and not self.unattended, self.profile, ego.attention,
     { v = ego.v or 0, limit = lim, highway = self.onHighway })
   for _, ev in ipairs(nagOut.events) do self:emit(ev.kind, ev) end
   if ego.handsNudgeT and ego.handsNudgeT > (self.lastNudgeSeen or -1) then
@@ -1483,7 +1514,7 @@ function Planner:tick(snap)
       self.arrivingFor = key
       local free = 0
       for _, sp in ipairs(self.parking) do
-        if (sp.x - self.dest[1]) ^ 2 + (sp.y - self.dest[2]) ^ 2 < 100 * 100 and not spotOccupied(sp, cars) then free = free + 1 end
+        if (sp.x - self.dest[1]) ^ 2 + (sp.y - self.dest[2]) ^ 2 < 100 * 100 and not spotOccupied(sp, cars, self.castRay) then free = free + 1 end
       end
       self:emit('arriving', { dist = floor(remaining), current = self.arrival or 'auto', freeSpots = free,
         options = { 'park', 'street', 'pullOver', 'driveway', 'takeOver', 'driveThru' } })
@@ -1926,7 +1957,7 @@ function Planner:tick(snap)
           local d = sqrt(rx * rx + ry * ry)
           -- an emergency takes a spot only if it is quick and ahead (about 8 s away); otherwise the roadside is safer
           local reach = not self.emergency or (d < 130 and d / max(v, 5) < 8 and rx * ego.hx + ry * ego.hy > 0.2 * d)
-          if d < 500 and reach and not spotOccupied(cand, cars) and (not bd or d < bd) then sp, bd = cand, d end
+          if d < 500 and reach and not spotOccupied(cand, cars, self.castRay) and (not bd or d < bd) then sp, bd = cand, d end
         end
         if sp then
           kind = 'park'

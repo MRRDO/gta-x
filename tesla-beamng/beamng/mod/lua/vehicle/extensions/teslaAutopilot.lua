@@ -893,6 +893,7 @@ local function disengage(reason, detail)
   local wheelDriven = ffb.held or ffb.helper
   feel.held = false -- pedals go back to the player below; driveFeel takes them again next frame
   ap.engaged = false
+  ap.unattended = false
   ap.mode = 'off'
   ffbRelease()
   allowLocal(ALL, true)
@@ -1067,6 +1068,8 @@ handlers.ffbReprobe = function()
   ffb.own, ffb.helper, ffb.method, ffb.id, ffb.restoreUntil = false, nil, nil, nil, nil
   ffb.status, ffb.reason = 'available', nil
 end
+-- Banish / Summon: nobody is in the seat. Wheel, pedals and the wheel's own noise must not read as a driver taking over.
+handlers.unattended = function(cmd) ap.unattended = cmd.on and true or false end
 handlers.wheelHold = function(cmd) ap.wheelHoldUntil = now + math.max(1, math.min(20, tonumber(cmd.seconds) or 8)) + 0.5 end
 
 handlers.gear = function(cmd)
@@ -1075,6 +1078,9 @@ handlers.gear = function(cmd)
   if ap.engaged and g ~= 'D' and not cmd.fromPlanner then disengage('app') end
   if not shiftTo(g) then errorEvent('this car has no gearbox we can shift') end
   if g ~= 'P' and isManual(gearboxDevice()) then inject('parkingbrake', 0) end
+  -- Park on a hill: the game will not lock the gearbox while the car is still rolling, and on a slope it never quite stops. Pull the
+  -- handbrake and ask again every moment until P is in (a few seconds at most).
+  ap.parkAssist = (g == 'P') and { t = now, next = now + 0.15 } or nil
 end
 
 handlers.lights = function(cmd)
@@ -1692,7 +1698,7 @@ local function updateGFX(dt)
 
   if ap.engaged then
     local aeb = applyAssist(true, s)
-    if not checkTakeover(dt) then
+    if ap.unattended or not checkTakeover(dt) then -- Banish / Summon: nobody is driving, so no wheel / pedal can be a takeover
       -- the accelerator: a light touch NUDGES the speed up (the target rises with the pedal, stop points and cars ahead
       -- still count, and it eases back on release); a firm press (past ACCEL_FORCE) forces it: throttle straight through
       local pedalNow = max(rawSinceEngage('throttle') or 0, (override.active and override.value > 0) and override.value or 0)
@@ -1807,6 +1813,19 @@ local function updateGFX(dt)
     applyAssist(false, s)
     -- Auto Shift out of Park: tell GE when the driver presses the brake in P (it picks D or R
     -- if the setting is on)
+    if ap.parkAssist then
+      local pa = ap.parkAssist
+      if gearLetter() == 'P' then
+        ap.parkAssist = nil
+        if not isManual(gearboxDevice()) then inject('parkingbrake', 0) end
+      elseif now - pa.t > 4 or ap.engaged then
+        ap.parkAssist = nil
+        inject('parkingbrake', 0)
+      else
+        if abs(s.v) < 4 then inject('parkingbrake', 1) end
+        if now >= pa.next then pa.next = now + 0.15; shiftTo('P') end
+      end
+    end
     swerveAssist(dt, s)
     driveFeel(dt, s)
     local bp = math.max(rawValue('brake') or 0, tonumber(electrics.values.brake_input) or 0, tonumber(electrics.values.brake) or 0) > 0.3
