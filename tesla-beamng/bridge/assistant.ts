@@ -5,10 +5,10 @@
 // On by default; does nothing (and costs nothing) when no local model is running.
 //
 //   TESLA_LLM_URL    default http://127.0.0.1:11434 (Ollama)
-//   TESLA_LLM_MODEL  default llama3.2:1b (any small instruct model; ~1 GB, runs on the CPU)
+//   TESLA_LLM_MODEL  default llama3.2:1b-instruct-q4_K_M (small 4-bit instruct model, ~0.8 GB; the PC service runs it on the spare GPU)
 
 const URL_BASE = (process.env.TESLA_LLM_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, '')
-const MODEL = process.env.TESLA_LLM_MODEL ?? 'llama3.2:1b'
+const MODEL = process.env.TESLA_LLM_MODEL ?? 'llama3.2:1b-instruct-q4_K_M'
 const OPTIONS = ['wait', 'replan', 'creep', 'askDriver'] as const
 export type Advice = (typeof OPTIONS)[number]
 
