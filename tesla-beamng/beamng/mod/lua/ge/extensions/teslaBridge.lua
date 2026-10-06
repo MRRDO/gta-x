@@ -1536,6 +1536,19 @@ handleCommand = function(msg)
   local t = msg.t
   if t == 'action' then return runAction(msg.name) end
   local veh = playerVehicle()
+  if t == 'pullOver' then
+    -- "pull over" from the assistant: FSD (started if it is not on) drives to the side of the road, stops and parks. Taking over cancels.
+    if not veh or not planner then event('error', 'pull over: no car or map yet'); return end
+    if (lastVehSt.speed or 0) < 1 then event('notice', 'already stopped'); return end
+    if planner.mode == 'off' then engageFromApp('fsd', planner.profile) end
+    if planner.mode == 'off' then event('error', 'pull over: FSD would not start here'); return end
+    if planner.pullingOver or planner:pullOverNow(egoSnapshot(veh)) then
+      relayEvent({ kind = 'pullOver', detail = 'pulling over (take over to cancel)' })
+    else
+      event('error', 'pull over: no road ahead to pull over on')
+    end
+    return
+  end
   if t == 'gear' and msg.gear == 'P' and planner and planner.mode ~= 'off' and planner.activity == 'drive'
     and not planner.pullingOver and veh and (lastVehSt.speed or 0) > 1 then
     -- P while FSD drives: pull over to the side of the road and park (take over to cancel)
