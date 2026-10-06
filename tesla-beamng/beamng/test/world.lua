@@ -18,6 +18,7 @@ function W.new(o)
   local w = setmetatable({}, W)
   w.g = g
   w.planner = Pl.new({ graph = g, signals = o.signals or {}, parking = o.parking or {}, rng = o.rng or function() return 0.99 end })
+  if o.laneLock then w.planner:configure({ laneLock = true }) else w.planner:configure({ laneLock = false }) end -- the lane-choice tests are about the free behaviours
   w.planner:configure(o.settings or { quirks = { phantomBraking = false, yellowHesitation = false, wiggle = false, weather = true, creep = true } })
   w.safety = S.new(o.safety)
   w.driver = C.new()

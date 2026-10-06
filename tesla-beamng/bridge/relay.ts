@@ -20,6 +20,7 @@ import qrcode from 'qrcode-terminal'
 import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
+import { BlackBox } from './blackbox.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand, chat as assistantChat } from './assistant.ts'
 import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
@@ -35,6 +36,7 @@ function arg(name: string, fallback?: string): string | undefined {
   return v && !v.startsWith('--') ? v : 'true'
 }
 
+const blackBox = new BlackBox()
 const RECORD = process.argv.includes('--record') || process.env.TESLA_RECORD === '1' // driving log for the AI (docs/AI_COMPUTE_PLAN.md)
 const PORT = Number(arg('port', process.env.BRIDGE_PORT ?? '8765'))
 const GAME_HOST = arg('game-host', '127.0.0.1')!
@@ -369,6 +371,7 @@ function onGameLine(line: string) {
   }
   msg = normalize_(msg)
   recordDrive(msg, RECORD)
+  blackBox.push(msg)
   switch (msg.t) {
     case 'hello':
       gameVersion = msg.version
@@ -579,6 +582,45 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
       } catch (e: any) {
         return json(e?.status ?? 500, { error: e?.message ?? 'failed' })
       }
+    })
+    return
+  }
+  if (path === '/app-settings') {
+    // The app's own settings (profiles, toggles, map choices...) kept here too, so every address the app is opened from (:8765, :8770,
+    // https, the tunnel: each is its own storage in the browser) shows the same settings, and they survive clearing the iPad.
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const f = join(homedir(), '.tesla-beamng', 'app-settings.json')
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (req.method === 'GET') { try { return json(200, JSON.parse(readFileSync(f, 'utf8'))) } catch { return json(200, { savedAt: 0, items: {} }) } }
+    const chunks: Buffer[] = []; let size = 0
+    req.on('data', (c: Buffer) => { size += c.length; if (size < 2 * 1024 * 1024) chunks.push(c) })
+    req.on('end', () => {
+      try {
+        if (size >= 2 * 1024 * 1024) return json(413, { error: 'too large' })
+        const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        const items: Record<string, string> = {}
+        for (const [k, v] of Object.entries(b.items ?? {})) if (/^tesla-/.test(k) && !/xai|token|key/i.test(k) && typeof v === 'string') items[k] = v
+        mkdirSync(join(homedir(), '.tesla-beamng'), { recursive: true })
+        writeFileSync(f, JSON.stringify({ savedAt: Date.now(), items }))
+        json(200, { ok: true, keys: Object.keys(items).length })
+      } catch (e) { json(400, { error: (e as Error).message }) }
+    })
+    return
+  }
+  if (path === '/blackbox/mark' || path === '/blackbox/note') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (req.method !== 'POST') return json(405, { error: 'POST only' })
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => { if (chunks.length < 20) chunks.push(c) })
+    req.on('end', () => {
+      try {
+        const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        if (path === '/blackbox/mark') { const file = blackBox.mark(String(b.note ?? '').slice(0, 500)); log('black box saved:', file); return json(200, { ok: true, file }) }
+        const file = String(b.file ?? '')
+        if (!/blackbox[\\/]mark-[0-9TZ-]+\.json$/.test(file)) return json(400, { error: 'not a black box file' })
+        blackBox.addNote(file, String(b.note ?? '')); return json(200, { ok: true })
+      } catch (e) { json(400, { error: (e as Error).message }) }
     })
     return
   }

@@ -178,6 +178,7 @@ scenario('goAround', function()
   local w = W.new({ nodes = straight(0, 1500, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 10 } })
   w:addCar({ id = 4, x = 150, y = LANE1, dx = 1, dy = 0 })
   w.cars[1].stoppedFor = 10
+  w.planner:configure({ crossCenter = true })
   w:engage('fsd', 'standard')
   w:run(60, function(ww) return ww:refPos() > 230 end)
   check(w:saw('goAround') ~= nil, 'goes around the stopped car')
@@ -1476,6 +1477,31 @@ scenario('banishAndSummon', function()
   w:run(200, function(ww) return ww.planner.mode == 'off' end)
   local x2, y2 = w:refPos()
   check(math.abs(x2 - 40) < 40 and math.abs(y2) < 8 and not w.collided, string.format('comes to the picked point (%.0f, %.0f)', x2, y2))
+end)
+
+scenario('laneLock', function()
+  -- started in the right lane of a 2+2 road behind a slow car: it stays in the lane (no passing) and follows the car
+  local w = W.new({ laneLock = true, nodes = straight(0, 3000, 7.5, 20), ego = { x = 0, y = RIGHT2, psi = 0, v = 15 } })
+  w:addCar({ id = 1, pts = { { x = 80, y = RIGHT2 }, { x = 3000, y = RIGHT2 } }, speedFn = function() return 8 end, s0 = 0 })
+  w:engage('fsd', 'standard')
+  local maxOff = 0
+  w:run(60, function(ww) local _, y = ww:refPos(); maxOff = math.max(maxOff, math.abs(y - RIGHT2)); return false end)
+  check(maxOff < 1.0, string.format('keeps its lane behind the slow car (max %.1f m off)', maxOff))
+  check(w:saw('laneChange') == nil, 'no lane change')
+  check(not w.collided, 'no collision')
+end)
+
+scenario('noCrossCentre', function()
+  -- a stopped car in the lane on a 1+1 road: by default FSD waits behind it, it does not swing over the centre line
+  local w = W.new({ nodes = straight(0, 1500, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 10 } })
+  w:addCar({ id = 4, x = 150, y = LANE1, dx = 1, dy = 0 })
+  w.cars[1].stoppedFor = 10
+  w:engage('fsd', 'standard')
+  local minY = 0
+  w:run(40, function(ww) local _, y = ww:refPos(); minY = math.max(minY, y); return false end)
+  local x = w:refPos()
+  check(w:saw('goAround') == nil and minY < 0.2, string.format('stays on its side of the centre line (max y %.1f)', minY))
+  check(x < 150 and not w.collided, 'waits behind the car, no collision')
 end)
 
 print(string.format('%d passed, %d failed', passes, failures))

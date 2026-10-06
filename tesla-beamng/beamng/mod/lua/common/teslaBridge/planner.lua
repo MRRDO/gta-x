@@ -641,6 +641,9 @@ end
 
 -- mode: 'fsd' | 'autosteer' (steer + cruise) | 'tacc' (cruise only). Returns ok, err.
 function Planner:engage(mode, profile, ego, cars)
+  -- the lane you start in is the lane you stay in: no passing, no fast-lane or back-to-the-right drifting (the route, a merge, or you
+  -- signalling still change it)
+  if self.settings.laneLock ~= false then self.lanePinUntil = math.huge end
   self.farTicks = 0 -- a fresh start: an earlier off-road spell must not count against this one
   if self.nag.lockedOut then return false, 'FSD is locked out for this drive (too many strikes)' end
   if profile and P.PROFILES[profile] then self.profile = profile end
@@ -1645,7 +1648,8 @@ function Planner:tick(snap)
   st.leadGap = lead and (lead.s - sCar) or nil
 
   ---------------------------------------------------------------- go around a blocking stopped car
-  if fsd and lead and lead.o.c and abs(lead.o.c.v) < 0.3 and (lead.o.c.stoppedFor or 0) > 5 and nHere == 1 and not path.pts[pr.i].ow
+  -- (only when allowed: settings.crossCenter. By default FSD does not cross the centre line on its own, it waits like a driver told not to)
+  if fsd and self.settings.crossCenter == true and lead and lead.o.c and abs(lead.o.c.v) < 0.3 and (lead.o.c.stoppedFor or 0) > 5 and nHere == 1 and not path.pts[pr.i].ow
     and lead.s - sCar < 25 and not self.goAround and not lead.o.c.schoolBus then
     local ctlNear = false
     for _, sg in ipairs(self.signals) do
@@ -2465,7 +2469,7 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   if not want and fsd and not prep then
     -- pass a slower car
     local cruise = path.vcap[iCar] or v
-    local wantsPass = beh.pass and lead and lead.s - sCar < 80 and lead.v < cruise - beh.pass and lane.k < minN - 1
+    local wantsPass = beh.pass and not pinned and lead and lead.s - sCar < 80 and lead.v < cruise - beh.pass and lane.k < minN - 1
     -- a car that is only slow for a moment (braking for a light, a lane change) isn't worth passing
     if wantsPass then lane.slowSince = lane.slowSince or t else lane.slowSince = nil end
     if wantsPass and t - lane.slowSince >= 2.5 then
