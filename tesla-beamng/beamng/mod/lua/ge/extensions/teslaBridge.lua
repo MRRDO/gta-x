@@ -451,6 +451,33 @@ local function minimapInfo(lvl)
   end
 end
 
+-- named places for the app's map (gas stations, garages, shops...): the level's "facilities", best effort (the shape varies by
+-- game version and they may only exist a while after the level loaded), each with a position when it has one
+function M.collectPois(lvl)
+  local pois = {}
+  try(function()
+    local fac = freeroam_facilities and freeroam_facilities.getFacilities and freeroam_facilities.getFacilities(lvl)
+    if type(fac) ~= 'table' then return end
+    local function posOf(f)
+      local p = f.pos or f.position or f.center or f.doorPos or (f.doors and f.doors[1] and f.doors[1].pos)
+      if p and p.x then return p.x, p.y, p.z end
+      if type(p) == 'table' and p[1] then return p[1], p[2], p[3] end
+    end
+    for kind, list in pairs(fac) do
+      if type(list) == 'table' then
+        for _, f in pairs(list) do
+          if type(f) == 'table' and #pois < 400 then
+            local x, y, z = posOf(f)
+            local nm = f.name or f.label or f.id
+            if x and nm then pois[#pois + 1] = { name = tostring(nm):gsub('^"?(.-)"?$', '%1'), pos = { num(x), num(y), num(z or 0) }, kind = tostring(kind) } end
+          end
+        end
+      end
+    end
+  end)
+  return pois
+end
+
 local function buildMap()
   local lvl = levelName()
   if not lvl or not map or not map.getMap then return false end
@@ -483,28 +510,9 @@ local function buildMap()
   for _, p in ipairs(parking) do park[#park + 1] = { pos = { num(p.x), num(p.y), num(p.z) }, dir = { num(p.dx, 3), num(p.dy, 3), 0 } } end
   -- named places for the app's map (gas stations, garages, shops...): the level's "facilities", best effort (the shape varies by
   -- game version), each with a position when it has one
-  local pois = {}
-  try(function()
-    local fac = freeroam_facilities and freeroam_facilities.getFacilities and freeroam_facilities.getFacilities(lvl)
-    if type(fac) ~= 'table' then return end
-    local function posOf(f)
-      local p = f.pos or f.position or f.center or f.doorPos or (f.doors and f.doors[1] and f.doors[1].pos)
-      if p and p.x then return p.x, p.y, p.z end
-      if type(p) == 'table' and p[1] then return p[1], p[2], p[3] end
-    end
-    for kind, list in pairs(fac) do
-      if type(list) == 'table' then
-        for _, f in pairs(list) do
-          if type(f) == 'table' and #pois < 400 then
-            local x, y, z = posOf(f)
-            local nm = f.name or f.label or f.id
-            if x and nm then pois[#pois + 1] = { name = tostring(nm):gsub('^"?(.-)"?$', '%1'), pos = { num(x), num(y), num(z or 0) }, kind = tostring(kind) } end
-          end
-        end
-      end
-    end
-  end)
+  local pois = M.collectPois(lvl)
   level = lvl
+  M._poi = { tries = 0, next = 0 } -- late named places: see the update loop
   mapMsg = {
     t = 'map', level = lvl, pois = pois,
     bounds = { min = { num(minx), num(miny) }, max = { num(maxx), num(maxy) } },
@@ -1328,6 +1336,7 @@ local function engageFromApp(mode, profile)
     local front = sampleRays(ego).front
     if front and front < 4 then event('error', 'autopilot: something is right in front of the car - back up first'); return end
   end
+  if planner.mode == 'off' and planner:freshStart() then event('notice', 'FSD: an earlier parking trip was forgotten') end
   local ok, err = planner:engage(mode, profile, ego, trafficList())
   if not ok then event('error', 'autopilot: ' .. tostring(err)); return end
   syncVehicleMode(veh)
@@ -1603,6 +1612,7 @@ handleCommand = function(msg)
     if type(to) ~= 'table' or not to[1] then event('error', 'navigate: bad destination'); return end
     if not planner or not veh then event('error', 'map not loaded yet'); return end
     planner:setRoute(to, msg.stops, msg.arrival)
+    planner.internalTrip = nil -- the driver's own trip
     local ok, err = planner:planPath(egoSnapshot(veh), trafficList())
     if not ok then event('error', 'navigate: ' .. tostring(err)); return end
     planner.builtFor = planner.profile
@@ -1823,6 +1833,7 @@ handleCommand = function(msg)
         to = { px, py, to[3] }
       end
       planner:setRoute(to, nil, 'Pull Over')
+      planner.internalTrip = true
       local okE, errE = true, nil
       if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'standard', ego, cars) else planner.routeDirty = true end
       if not okE then planner.dest, planner.arrival = nil, nil; event('error', 'summon: ' .. tostring(errE)); return end
@@ -2325,6 +2336,18 @@ local function onUpdate(dtReal, dtSim)
   end
 
   pcall(camTick, veh)
+
+  -- places can show up after the level has finished loading: look again every few seconds for a minute and resend the map when found
+  local pz = M._poi
+  if mapMsg and level and pz and #(mapMsg.pois or {}) == 0 and pz.tries < 12 and realTime >= pz.next then
+    pz.tries, pz.next = pz.tries + 1, realTime + 5
+    local found = M.collectPois(level)
+    if #found > 0 then
+      mapMsg.pois = found
+      send(mapMsg)
+      logI(string.format('map %s: %d places found after loading', level, #found))
+    end
+  end
 
   if realTime >= tWeather then
     tWeather = realTime + 2

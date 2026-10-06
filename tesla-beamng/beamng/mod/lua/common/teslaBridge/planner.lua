@@ -764,6 +764,19 @@ function Planner:engage(mode, profile, ego, cars)
   return true
 end
 
+-- A trip FSD made up itself (Banish's spot, a summon point, a tapped parking spot) is not the driver's: when it was interrupted (taken
+-- over, stopped) it stayed, so the next "start FSD" drove back to it and parked "where it previously parked". A fresh start from the
+-- driver forgets such a trip; a trip the app handed over (navigate) is kept.
+function Planner:freshStart()
+  if self.internalTrip then
+    self:cancelRoute()
+    self.chosenSpot, self.spot, self.maneuver = nil, nil, nil
+    self.internalTrip = nil
+    return true
+  end
+  return false
+end
+
 function Planner:disengage(reason, detail)
   if self.mode == 'off' then return end
   self.mode = 'off'
@@ -903,6 +916,7 @@ function Planner:parkAtSpot(id, ego, cars, opts)
   end
   self.chosenSpot = sp
   self.dest, self.stops, self.arrival = { sp.x, sp.y, sp.z or 0 }, nil, 'Parking Lot'
+  self.internalTrip = true
   self.turnVia = nil
   if self.mode ~= 'off' then self.replanNow = true else self.path = nil end
   return true, nil, 'route'

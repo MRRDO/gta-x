@@ -1099,6 +1099,16 @@ scenario('engageInLeftLane', function()
   check(w:saw('laneChange') == nil, 'no lane change')
 end)
 
+-- a parking trip FSD made up itself (Banish / tapped spot) that was interrupted is forgotten at the next fresh start; the driver's own trip is kept
+scenario('freshStart', function()
+  local w = W.new({ nodes = straight(0, 5000, 5, 17), ego = { x = 0, y = LANE1, psi = 0, v = 0 } })
+  w.planner:setRoute({ 3000, LANE1, 0 }, nil, 'Parking Lot')
+  w.planner.internalTrip = true
+  check(w.planner:freshStart() and w.planner.dest == nil, 'an interrupted parking trip is forgotten')
+  w.planner:setRoute({ 3000, LANE1, 0 }, nil, 'Parking Lot')
+  check(not w.planner:freshStart() and w.planner.dest ~= nil, "the driver's own trip stays")
+end)
+
 scenario('obstacleAware', function()
   local w = W.new({ nodes = straight(0, 2000, 5, 17), ego = { x = 100, y = LANE1, psi = 0, v = 0 } })
   w:addCar({ id = 1, x = 100 + 1.4 + 4.6 + 1.5, y = LANE1, dx = 1, dy = 0 })
