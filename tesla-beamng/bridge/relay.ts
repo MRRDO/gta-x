@@ -20,7 +20,7 @@ import qrcode from 'qrcode-terminal'
 import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
-import { BlackBox } from './blackbox.ts'
+import { BlackBox, uploadToGitHub } from './blackbox.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand, chat as assistantChat } from './assistant.ts'
 import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
@@ -619,10 +619,16 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
     req.on('end', () => {
       try {
         const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
-        if (path === '/blackbox/mark') { const file = blackBox.mark(String(b.note ?? '').slice(0, 500)); log('black box saved:', file); return json(200, { ok: true, file }) }
+        if (path === '/blackbox/mark') {
+          const file = blackBox.mark(String(b.note ?? '').slice(0, 500)); log('black box saved:', file)
+          void uploadToGitHub(file).then((up) => { log('black box upload:', up.status); json(200, { ok: true, file, upload: up.status, uploaded: up.ok }) })
+          return
+        }
         const file = String(b.file ?? '')
         if (!/blackbox[\\/]mark-[0-9TZ-]+\.json$/.test(file)) return json(400, { error: 'not a black box file' })
-        blackBox.addNote(file, String(b.note ?? '')); return json(200, { ok: true })
+        blackBox.addNote(file, String(b.note ?? ''))
+        void uploadToGitHub(file).then((up) => json(200, { ok: true, upload: up.status, uploaded: up.ok }))
+        return
       } catch (e) { json(400, { error: (e as Error).message }) }
     })
     return

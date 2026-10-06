@@ -1,7 +1,7 @@
 // Black box: the last 90 s of what the car and the driver were doing, kept in memory, written to a file when you press the hotkey
 // (Ctrl+Alt+B, see laptop/blackbox-hotkey.ps1) so that when FSD "almost crashed" there is a record: steering wheel angle, pedals, speed,
 // FSD state, the road ahead (stop / signal / lead gap), and the events around it. A note can be added afterwards.
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -71,5 +71,52 @@ export class BlackBox {
     const j = JSON.parse(readFileSync(file, 'utf8'))
     j.note = String(note).slice(0, 500)
     writeFileSync(file, JSON.stringify(j))
+  }
+}
+
+// ---- auto-upload to GitHub --------------------------------------------------------------------------------------------------
+// So a black box can be read from anywhere (the cloud session) without anyone copying files around. Needs a GitHub token that you put on
+// this PC yourself, in %USERPROFILE%\.tesla-beamng\github-token.txt (one line) or the TESLA_GH_TOKEN environment variable: a fine-grained
+// token for ONE repository with "Contents: read and write". The repo and folder default to MRRDO/tesla-ui-atv and blackbox/ and can be
+// changed in %USERPROFILE%\.tesla-beamng\blackbox-upload.json ({"repo": "owner/name", "dir": "blackbox", "branch": "main"}).
+// Without a token nothing is sent; the file stays on this PC.
+export type UploadResult = { ok: boolean; status: string; url?: string }
+const shas = new Map<string, string>() // file name -> blob sha of what we uploaded, for the note update
+
+export function uploadConfig(home = homedir()) {
+  const dir = join(home, '.tesla-beamng')
+  let token = (process.env.TESLA_GH_TOKEN ?? '').trim()
+  try { if (!token) token = readFileSync(join(dir, 'github-token.txt'), 'utf8').trim() } catch { /* none */ }
+  let cfg: { repo?: string; dir?: string; branch?: string } = {}
+  try { if (existsSync(join(dir, 'blackbox-upload.json'))) cfg = JSON.parse(readFileSync(join(dir, 'blackbox-upload.json'), 'utf8')) } catch { /* bad json: defaults */ }
+  return { token, repo: cfg.repo || 'MRRDO/tesla-ui-atv', dir: (cfg.dir || 'blackbox').replace(/^\/+|\/+$/g, ''), branch: cfg.branch || '' }
+}
+
+/** PUT one file into the repo (create, or update when we uploaded it before). Never throws. */
+export async function uploadToGitHub(file: string, home = homedir(), fetchFn: typeof fetch = fetch): Promise<UploadResult> {
+  try {
+    const c = uploadConfig(home)
+    if (!c.token) return { ok: false, status: 'not uploaded: no GitHub token on this PC (see docs/BLACKBOX.md)' }
+    const name = file.split(/[\\/]/).pop()!
+    const path = `${c.dir}/${name}`
+    const body: Record<string, unknown> = {
+      message: `black box ${name}`,
+      content: Buffer.from(readFileSync(file)).toString('base64'),
+    }
+    if (c.branch) body.branch = c.branch
+    const sha = shas.get(name)
+    if (sha) body.sha = sha
+    const r = await fetchFn(`https://api.github.com/repos/${c.repo}/contents/${path}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${c.token}`, accept: 'application/vnd.github+json', 'user-agent': 'tesla-beamng-bridge', 'x-github-api-version': '2022-11-28' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000),
+    })
+    const j = (await r.json().catch(() => ({}))) as { content?: { sha?: string; html_url?: string }; message?: string }
+    if (!r.ok) return { ok: false, status: `GitHub said ${r.status}: ${String(j.message ?? '').slice(0, 120)}` }
+    if (j.content?.sha) shas.set(name, j.content.sha)
+    return { ok: true, status: 'uploaded', url: j.content?.html_url }
+  } catch (e) {
+    return { ok: false, status: `not uploaded: ${(e as Error).message}`.slice(0, 160) }
   }
 }

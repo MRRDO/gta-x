@@ -144,24 +144,24 @@ function Planner:beh() return M.BEHAVIOR[self.profile] or M.BEHAVIOR.standard en
 
 -- Is something solid standing in the spot (a pole, a tree, a bin, a wall: the level's parking data lists spots like that)? Looked at
 -- with static rays from the middle, once per spot every 20 s. Parked cars are not static, they are handled by spotOccupied.
+local rayChecks, rayBlocked = 0, 0
 local function spotObstructed(spot, cast)
   if not cast then return false end
+  -- a check that says "blocked" for most spots is the check being wrong (a bad ray origin, odd level geometry), not the spots: switch it
+  -- off, or free spots (and the blips for them on the map) would vanish
+  if rayChecks >= 20 and rayBlocked / rayChecks > 0.6 then return false end
   local now = os.clock()
   if spot.chk and now - spot.chk.t < 20 then return spot.chk.v end
   local blocked = false
   local z = (spot.z or 0)
-  local ax, ay = spot.dx or 0, spot.dy or 1
-  local l = sqrt(ax * ax + ay * ay)
-  if l < 0.5 then ax, ay, l = 0, 1, 1 end
-  ax, ay = ax / l, ay / l
-  local px, py = -ay, ax
-  -- something solid inside the car's footprint (half length ~2.2 m along the spot, half width ~0.9 m across)
-  if not blocked then
-    for _, d in ipairs({ { ax, ay, 2.0 }, { -ax, -ay, 2.0 }, { px, py, 0.85 }, { -px, -py, 0.85 } }) do
-      local ok, hit = pcall(cast, spot.x, spot.y, z + 0.7, d[1], d[2], 0, d[3])
-      if ok and hit then blocked = true; break end
-    end
+  -- something solid right in the middle of the stall (the car is 1.9 m wide: the footprint's core is within 0.9 m of the centre in any
+  -- direction; the axis of a stall in the level data is not reliable enough to look further along it)
+  for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+    local ok, hit = pcall(cast, spot.x, spot.y, z + 0.8, d[1], d[2], 0, 0.9)
+    if ok and hit then blocked = true; break end
   end
+  rayChecks = rayChecks + 1
+  if blocked then rayBlocked = rayBlocked + 1 end
   spot.chk = { t = now, v = blocked }
   return blocked
 end
@@ -1988,7 +1988,9 @@ function Planner:tick(snap)
       self.turnVia = nil
       self.unresponsive.kind = kind
       self.replanNow = true
-      self:emit('unresponsive', { action = kind })
+      self:emit('unresponsive', { action = kind, reason = self.nag.reason, mode = self.nag.active })
+      self:emit('notice', { detail = string.format('no answer to the %s reminder (%s monitoring): %s. Settings > Autopilot > Driver Monitoring > Off stops this',
+        tostring(self.nag.reason or 'attention'), tostring(self.nag.active or '?'), kind == 'park' and 'parking' or 'pulling over') })
     end
     cap(self.emergency and 9 or 11) -- ~20-25 mph
   elseif self.unresponsive then

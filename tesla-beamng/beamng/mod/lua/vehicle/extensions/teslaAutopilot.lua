@@ -1389,6 +1389,9 @@ local function checkTakeover(dt)
       if (tgt - st) * ap.stVelLP > 0 and abs(ap.stVelLP) > 0.1 then steerDev = 0 end
     end
   end
+  -- The wheel is being restarted by the PC: it vanishes and comes back at some angle, which is not a hand. The planner gave the
+  -- car to FSD for a few seconds ('wheelHold'); steering from the wheel is ignored until then.
+  if ap.wheelHoldUntil and now < ap.wheelHoldUntil then steerDev, steerBias = 0, 0 end
   -- a wheel that is shaking (ringing at several Hz) is not a hand: ask for a bigger, longer deviation before it counts
   local shaking = ffb.held and (ffb.jHz or 0) > 2.5 and math.sqrt(ffb.jRms or 0) > 0.008
   if shaking then devLimit, holdT = devLimit * 2.2, math.max(holdT, 0.35) end
