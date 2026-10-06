@@ -246,7 +246,7 @@ export type ActionName =
 
 export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'toggleFSD', label: 'Start / stop FSD' },
-  { name: 'toggleAutosteer', label: 'Start / stop Autosteer' },
+  { name: 'toggleAutosteer', label: 'Start / stop Autopilot (TACC)' },
   { name: 'toggleTACC', label: 'Start / stop cruise (TACC)' },
   { name: 'toggleLKA', label: 'Lane Keep Assist on / off' },
   { name: 'disengage', label: 'Turn autopilot off' },

@@ -1051,6 +1051,34 @@ scenario('tacc', function()
   check(math.abs(y - LANE1) < 0.6, 'and keeps the lane')
 end)
 
+scenario('autopilotSharpBend', function()
+  -- Autopilot (cruise + lane centering, no navigation): a tight bend ends the steering at once ("take over"), plain cruise after that
+  local nodes = {}
+  local function n(id, x, y) nodes[id] = { pos = { x = x, y = y, z = 0 }, radius = 5, links = {} } end
+  local ids = {}
+  for x = 0, 300, 25 do ids[#ids + 1] = { 'a' .. x, x, 0 } end
+  -- a quarter circle of radius 15 m, then straight north
+  for k = 1, 6 do local a = k * math.pi / 12; ids[#ids + 1] = { 'c' .. k, 300 + 15 * math.sin(a), 15 - 15 * math.cos(a) } end
+  for y = 40, 900, 25 do ids[#ids + 1] = { 'b' .. y, 315, y } end
+  for i, d in ipairs(ids) do n(d[1], d[2], d[3]) end
+  for i = 1, #ids - 1 do nodes[ids[i][1]].links[ids[i + 1][1]] = { drivability = 1, oneWay = false, speedLimit = 14 } end
+  local w = W.new({ nodes = nodes, ego = { x = 0, y = LANE1, psi = 0, v = 12 } })
+  w.planner:configure({ setSpeed = 12 })
+  w:engage('autosteer', 'standard')
+  local took = false
+  w:run(40, function(ww)
+    if ww.planner.mode == 'tacc' and ww.planner.status.curveTakeover then took = true end
+    return took
+  end)
+  check(took, 'Autopilot hands over at a tight bend (take over alert, mode drops to cruise)')
+  check(w.planner.mode == 'tacc', 'and carries on as plain cruise control')
+  -- a gentle road stays in Autopilot
+  local w2 = W.new({ nodes = straight(0, 5000, 5, 20), ego = { x = 0, y = LANE1, psi = 0, v = 12 } })
+  w2:engage('autosteer', 'standard')
+  w2:run(20)
+  check(w2.planner.mode == 'autosteer', 'a straight road stays in Autopilot')
+end)
+
 scenario('obstacleAware', function()
   local w = W.new({ nodes = straight(0, 2000, 5, 17), ego = { x = 100, y = LANE1, psi = 0, v = 0 } })
   w:addCar({ id = 1, x = 100 + 1.4 + 4.6 + 1.5, y = LANE1, dx = 1, dy = 0 })

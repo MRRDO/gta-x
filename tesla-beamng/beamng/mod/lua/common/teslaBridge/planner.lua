@@ -374,7 +374,7 @@ function Planner:planPath(ego, cars)
   local hx, hy = ego.hx, ego.hy
   local path
   self.uturnNeeded = false
-  if self.dest then
+  if self.dest and self.mode ~= 'autosteer' then -- Autopilot does not navigate
     local legs = {}
     if self.turnVia then legs[1] = { self.turnVia.x, self.turnVia.y } end
     for _, s in ipairs(self.stops or {}) do legs[#legs + 1] = s end
@@ -657,6 +657,7 @@ function Planner:engage(mode, profile, ego, cars)
   -- the lane you start in is the lane you stay in: no passing, no fast-lane or back-to-the-right drifting (the route, a merge, or you
   -- signalling still change it)
   if self.settings.laneLock ~= false then self.lanePinUntil = math.huge end
+  self.curveAlertUntil = nil
   self.farTicks = 0 -- a fresh start: an earlier off-road spell must not count against this one
   if mode ~= 'tacc' and self.settings.easeEngage ~= false and abs(ego.v or 0) > 3 then self.engageSeq = (self.engageSeq or 0) + 1; self.easeUntil = (self.t or 0) + 70 else self.easeUntil = nil end
   if self.nag.lockedOut then return false, 'FSD is locked out for this drive (too many strikes)' end
@@ -674,7 +675,7 @@ function Planner:engage(mode, profile, ego, cars)
       return false, 'not on a road'
     end
   end
-  if not self.path or (self.path.openEnded and self.dest) or (not self.path.openEnded and not self.dest) or self.builtFor ~= self.profile then
+  if not self.path or (self.path.openEnded and self.dest and mode ~= 'autosteer') or (not self.path.openEnded and (not self.dest or mode == 'autosteer')) or self.builtFor ~= self.profile then
     local ok, err = self:planPath(ego, cars)
     if not ok then self.mode = 'off'; return false, err end
     self.builtFor = self.profile
@@ -1512,6 +1513,25 @@ function Planner:tick(snap)
   local prof = self:prof()
   local fsd = self.mode == 'fsd'
   local steering = self.mode ~= 'tacc'
+
+  -- Autopilot (the old Autosteer: cruise + lane centering, no navigation): a bend it was not built for ends the steering at once.
+  -- "Take over immediately", then it carries on as plain cruise control (mode 'tacc') until the driver steers or turns it off.
+  if self.mode == 'autosteer' and v > 3 then
+    local ahead = 40 + v * 3
+    local kMax = 0
+    for i = pr.i, #path.pts do
+      if S[i] - sCar > ahead then break end
+      local kk = math.abs(P.curvatureAt(path.pts, i, 3))
+      if kk > kMax then kMax = kk end
+    end
+    -- a bend that needs under 25 mph at 2.5 m/s^2 sideways (radius under about 48 m), like a junction turn or a tight ramp
+    if kMax > 0.0205 and v > math.sqrt(2.5 / kMax) - 1 then
+      self.mode, steering = 'tacc', false
+      self.curveAlertUntil = (self.t or 0) + 7
+      self:emit('notice', { detail = 'Autopilot cannot take this bend: take over' })
+    end
+  end
+  st.curveTakeover = (self.curveAlertUntil and (self.t or 0) < self.curveAlertUntil) or nil
 
   -- the next turn (lanes reset through it)
   local nextTurn

@@ -1083,6 +1083,7 @@ local function computeAlert(vid, st, ps, nag)
   if crash.active then return { kind = 'crash', message = 'Pull over immediately', level = 3 } end
   local engaged = st.autopilot and st.autopilot.engaged
   local lim = ps.speedLimit
+  if ps.curveTakeover then return { kind = 'takeover', message = 'Take over immediately', level = 3 } end
   if engaged and planner and planner.mode == 'fsd' and (st.speed or 0) > 35.8 and lim and lim < 24.6 then
     return { kind = 'takeover', message = 'Take over immediately', level = 3 }
   end
