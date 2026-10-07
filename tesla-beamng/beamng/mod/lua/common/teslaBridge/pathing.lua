@@ -743,7 +743,7 @@ end
 
 -- Per-point speed caps: limit + profile offset, lateral-accel curve limit,
 -- then a backward pass so we brake at `decel` into every slow point.
--- opts: { offset, aLat, decel = 2.5, endSpeed = 0 (nil = open end), arrivalSlow = 3, arrivalDist = 40 }
+-- opts: { offset, aLat, decel = 2.5, endSpeed = 0 (nil = open end), arrivalSlow = 4.5, arrivalDist = 30 }
 function M.speedProfile(path, opts)
   local pts = path.pts
   local n = #pts
@@ -777,7 +777,7 @@ function M.speedProfile(path, opts)
   if opts.endSpeed then
     local total = path.s[n]
     for i = 1, n do
-      if total - path.s[i] < (opts.arrivalDist or 40) then vcap[i] = min(vcap[i], opts.arrivalSlow or 3) end
+      if total - path.s[i] < (opts.arrivalDist or 30) then vcap[i] = min(vcap[i], opts.arrivalSlow or 4.5) end
     end
     vcap[n] = opts.endSpeed
   end

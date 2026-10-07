@@ -66,6 +66,7 @@ export type SafetyState = {
   blindRight: boolean
   laneDeparture: boolean // lane departure avoidance is steering you back
   ttc: number | null // seconds to a predicted collision
+  rearDist?: number // metres to what is behind the bumper, only while in Reverse (wheel lights as a parking meter)
   rearWarn?: boolean // Rear Cross Traffic Alert: something crosses behind while reversing (beep + red on the rear view); braking follows if it gets close
 }
 

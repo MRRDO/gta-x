@@ -79,7 +79,7 @@ function M.backOut(ego, road, rmin)
   local e = { x = road.x - dx * rmin * 0.9, y = road.y - dy * rmin * 0.9, z = road.z }
   -- reversing: we move along -heading; at the end we move along -road direction
   local pts, k = feasibleBezier(ego, -ego.hx, -ego.hy, e, -dx, -dy, rmin)
-  return { { dir = -1, pts = pts, maxSpeed = 1.6, kind = 'backOut', curvature = k } }
+  return { { dir = -1, pts = pts, maxSpeed = 2.2, kind = 'backOut', curvature = k } }
 end
 
 -- Kinematic bicycle roll-out used by kTurn: advance the car along a constant-steer arc.
@@ -132,7 +132,7 @@ function M.kTurnNext(ego, road, rmin, lastDir)
       for d = 1, 6 do seg[#seg + 1] = { x = ex + cos(eps) * d, y = ey + sin(eps) * d } end
     end
     for _, p in ipairs(seg) do p.z = z end
-    return { dir = 1, pts = seg, maxSpeed = 1.5, kind = 'kTurn' }
+    return { dir = 1, pts = seg, maxSpeed = 2.2, kind = 'kTurn' }
   end
   -- reverse, full right (heading keeps rotating left), until the tail nears the near edge
   local start = psi0
@@ -141,7 +141,7 @@ function M.kTurnNext(ego, road, rmin, lastDir)
       or (ps - start) > math.rad(80)
   end)
   for _, p in ipairs(seg) do p.z = z end
-  return { dir = -1, pts = seg, maxSpeed = 1.3, kind = 'kTurn' }
+  return { dir = -1, pts = seg, maxSpeed = 1.8, kind = 'kTurn' }
 end
 
 --- Reverse into a perpendicular spot.
@@ -155,7 +155,7 @@ function M.backIn(spot, road, rmin)
   local q = { x = road.x + dx * (rmin + 2), y = road.y + dy * (rmin + 2), z = road.z }
   -- reverse: start moving along -road dir, finish moving into the spot (-out)
   local pts, k = feasibleBezier(q, -dx, -dy, spot, -ox, -oy, rmin)
-  return q, { dir = -1, pts = pts, maxSpeed = 1.3, kind = 'backIn', curvature = k }
+  return q, { dir = -1, pts = pts, maxSpeed = 1.4, kind = 'backIn', curvature = k }
 end
 
 --- Reverse into a perpendicular spot on a fixed-radius arc: straight back `extra` m, a 90 degree arc of radius R, then a straight tail
@@ -222,8 +222,8 @@ function M.parallel(spot, road, rmin)
   local fwd = {}
   for d = 0, 8 do fwd[#fwd + 1] = { x = e.x + dx * d * 0.25, y = e.y + dy * d * 0.25, z = spot.z } end
   return bestQ, {
-    { dir = -1, pts = best, maxSpeed = 1.2, kind = 'parallel', curvature = bestK },
-    { dir = 1, pts = fwd, maxSpeed = 0.6, kind = 'parallel' },
+    { dir = -1, pts = best, maxSpeed = 1.3, kind = 'parallel', curvature = bestK },
+    { dir = 1, pts = fwd, maxSpeed = 0.9, kind = 'parallel' },
   }
 end
 

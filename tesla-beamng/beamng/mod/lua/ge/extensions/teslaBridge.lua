@@ -833,6 +833,20 @@ local function safetyTick()
   for _, ev in ipairs(so.events) do relayEvent(ev) end
   safetyStatus = { fcw = so.fcw or false, aeb = (so.aeb or 0) > 0, blindLeft = so.blindLeft or false, blindRight = so.blindRight or false,
     laneDeparture = so.lda ~= nil, ttc = so.ttc and num(so.ttc) or nil, rearWarn = so.rearWarn or nil }
+  if ego.gear == 'R' then
+    -- metres to whatever is behind the bumper (wall/pole by ray, a car by its gap): the G29 rim lights work as a parking meter
+    local rd = rays.rear
+    for _, c in ipairs(cars) do
+      local rx, ry = c.x - ego.x, c.y - ego.y
+      local lon = -(rx * ego.hx + ry * ego.hy)
+      local lat = math.abs(-rx * ego.hy + ry * ego.hx)
+      if lon > 0 and lat < ((ego.wid or 1.9) + (c.w or 1.9)) * 0.5 + 0.3 then
+        local g = lon - ((ego.len or 4.6) + (c.l or 4.6)) * 0.5
+        if g >= 0 and (not rd or g < rd) then rd = g end
+      end
+    end
+    safetyStatus.rearDist = rd and num(rd, 1) or nil
+  end
   local assist = { aeb = so.aeb or 0, ldaSteer = so.lda and num(so.lda.steer, 3) or 0, lkaSteer = so.lka and num(so.lka.steer, 3) or 0, throttleCap = so.throttleCap }
   if plannerSettings.valet and (ego.v or 0) > 29 then assist.throttleCap = 0 end -- Valet: top speed about 65 mph
   local active = assist.aeb > 0 or assist.ldaSteer ~= 0 or assist.lkaSteer ~= 0 or assist.throttleCap ~= nil
@@ -1172,6 +1186,8 @@ function M.onVehicleState(vid, json)
   st.autopilot = {
     engaged = va.engaged or false,
     mode = (va.engaged and planner) and planner.mode or 'off',
+    unattended = (planner and planner.unattended) or nil, -- Banish / Summon: the wheel lights scan
+    pullingOver = (planner and (planner.pullingOver or planner.unresponsive or planner.emergency)) and true or nil,
     profile = planner and planner.profile or 'standard',
     activity = ps.activity,
     phase = ps.phase,
@@ -1804,16 +1820,31 @@ handleCommand = function(msg)
       -- the nearest few free spots in turn: one that does not work out (taken, no route, no way in) does not end it
       local ok, err, how
       local tried = planner:freeSpotsNear(ego, cars, 400, 6)
-      if #tried == 0 then event('error', 'banish: no free parking spot within 400 m'); return end
       for _, id in ipairs(tried) do
         ok, err, how = planner:parkAtSpot(id, ego, cars, { road = true })
         if ok then break end
       end
-      if not ok then event('error', 'banish: ' .. tostring(err)); return end
+      if not ok then
+        -- like the real car ("drive to the vicinity and park if possible, otherwise pull over"): no spot that works out -> pull over
+        local okE, errE = true, nil
+        if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'hurry', ego, cars) end
+        if okE and planner:pullOverNow(ego) then
+          planner.internalTrip = true
+          banishedFrom = { ego.x, ego.y, ego.z or 0, level = levelName() }
+          event('notice', 'banish: no free spot that works, pulling over instead (' .. tostring(err or 'no spot within 400 m') .. ')')
+          pcall(function() planner:confirm(gameTime) end)
+          syncVehicleMode(veh)
+          planner.unattended = true
+          toVehicle(veh, 'command', { t = 'unattended', on = true })
+          relayEvent({ kind = 'banish', detail = 'pulling over' })
+          return
+        end
+        event('error', 'banish: ' .. tostring(errE or err or 'no free parking spot within 400 m')); return
+      end
       banishedFrom = { ego.x, ego.y, ego.z or 0, level = levelName() }
       if jsonWriteFile then try(jsonWriteFile, BANISH_FILE, { x = banishedFrom[1], y = banishedFrom[2], z = banishedFrom[3], level = banishedFrom.level }, true) end -- survives a mod reload / restart
       if planner.mode == 'off' then
-        local okE, errE = planner:engage('fsd', 'standard', ego, cars)
+        local okE, errE = planner:engage('fsd', 'hurry', ego, cars)
         if not okE then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil; event('error', 'banish: ' .. tostring(errE)); return end
       end
       pcall(function() planner:confirm(gameTime) end) -- nobody is in the car to press the brake for Brake Confirm
@@ -1835,7 +1866,7 @@ handleCommand = function(msg)
       planner:setRoute(to, nil, 'Pull Over')
       planner.internalTrip = true
       local okE, errE = true, nil
-      if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'standard', ego, cars) else planner.routeDirty = true end
+      if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'hurry', ego, cars) else planner.routeDirty = true end
       if not okE then planner.dest, planner.arrival = nil, nil; event('error', 'summon: ' .. tostring(errE)); return end
       pcall(function() planner:confirm(gameTime) end) -- nobody is in the car to press the brake for Brake Confirm
       send(planner:routeMessage()); planner.routeDirty = false

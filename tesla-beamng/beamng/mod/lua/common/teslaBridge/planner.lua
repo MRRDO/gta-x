@@ -35,8 +35,8 @@ M.BEHAVIOR = {
   -- to change lanes (1 = normal); signalDelay: seconds of blinker before it moves over
   sloth    = { pass = nil,       gapLeft = 8, keepLeft = false, crossEta = 6,   cut = 1.2,  signalDelay = 3.0 },
   chill    = { pass = 8 * MPH,   gapLeft = 7, keepLeft = false, crossEta = 5.5, cut = 1.1,  signalDelay = 3.0 },
-  standard = { pass = 5 * MPH,   gapLeft = 6, keepLeft = false, crossEta = 5,   cut = 1,    signalDelay = 2.5 },
-  hurry    = { pass = 3 * MPH,   gapLeft = 5, keepLeft = false, leftAbove = 22, crossEta = 4.5, cut = 0.8, signalDelay = 2.0 },
+  standard = { pass = 5 * MPH,   gapLeft = 6, keepLeft = false, crossEta = 5,   cut = 1,    signalDelay = 3.0 },
+  hurry    = { pass = 3 * MPH,   gapLeft = 5, keepLeft = false, leftAbove = 22, crossEta = 4.5, cut = 0.8, signalDelay = 2.5 },
   madmax   = { pass = 2 * MPH,   gapLeft = 4, keepLeft = true,  leftAbove = 14, crossEta = 4,   cut = 0.6, signalDelay = 1.2 },
   furious  = { pass = 0.5 * MPH, gapLeft = 3, keepLeft = true,  leftAbove = 8,  crossEta = 3,   cut = 0.4, signalDelay = 0.6 },
 }
@@ -382,7 +382,7 @@ function Planner:planBackIn(ego, cars, spot, road, ox, oy)
       for _, extra in ipairs({ 1.0, 2.5 }) do
         local Q, pts = Mv.backInArc({ x = spot.x, y = spot.y, z = spot.z }, { x = ox, y = oy }, { x = road.dx, y = road.dy }, R, extra, tail)
         if sweepClear(pts, ego, cars, spot, ox, oy) and (not best or tail + R > best.lat) then
-          best = { lat = tail + R, Q = Q, seg = { dir = -1, pts = pts, maxSpeed = 1.2, kind = 'backIn', curvature = 1 / R, validated = true } }
+          best = { lat = tail + R, Q = Q, seg = { dir = -1, pts = pts, maxSpeed = 1.4, kind = 'backIn', curvature = 1 / R, validated = true } }
         end
       end
     end
@@ -1040,7 +1040,7 @@ end
 
 -- The learned parking policy (trained by the practice runner, tools/practice): a linear Gaussian policy over a few features of
 -- where the car is relative to the spot; its mean picks the autopark knobs. Must match features() in practice.mjs.
-local AP_RANGE = { rmin = { 5, 8 }, fwdSpeed = { 1.4, 3.2 }, revSpeed = { 0.9, 1.9 }, tail = { 3, 6 }, margin = { 0, 0.8 } }
+local AP_RANGE = { rmin = { 5, 8 }, fwdSpeed = { 1.8, 4.0 }, revSpeed = { 0.9, 2.0 }, tail = { 3, 6 }, margin = { 0, 0.8 } }
 local AP_ORDER = { 'rmin', 'fwdSpeed', 'revSpeed', 'tail', 'margin' }
 local function apFeatures(ego, sx, sy, ax, ay)
   local dx, dy = sx - ego.x, sy - ego.y
@@ -1094,7 +1094,7 @@ function Planner:autoparkParallel(ego, cars, best, ax, ay, z)
     self.mode = 'fsd'
     self.spot = best
     self.autoparkTries = 0
-    self:startManeuver({ { dir = 1, pts = fwd, maxSpeed = 2.2, kind = 'autoparkApproach' }, segs[1], segs[2] }, 'park', 'autopark')
+    self:startManeuver({ { dir = 1, pts = fwd, maxSpeed = 2.5, kind = 'autoparkApproach' }, segs[1], segs[2] }, 'park', 'autopark')
     return true
   end
   -- not reachable from here: a short straight move forward (or back) first, then again
@@ -1211,7 +1211,7 @@ function Planner:autopark(ego, cars, want, retry)
     self.mode = 'fsd'
     self.spot = best
     self.autoparkTries = 0
-    self:startManeuver({ { dir = 1, pts = plan.fwd, maxSpeed = tonumber(tune.fwdSpeed) or 2.2, kind = 'autoparkApproach' }, { dir = -1, pts = plan.rev, maxSpeed = tonumber(tune.revSpeed) or 1.3, kind = 'backIn' } }, 'park', 'autopark')
+    self:startManeuver({ { dir = 1, pts = plan.fwd, maxSpeed = tonumber(tune.fwdSpeed) or 2.5, kind = 'autoparkApproach' }, { dir = -1, pts = plan.rev, maxSpeed = tonumber(tune.revSpeed) or 1.4, kind = 'backIn' } }, 'park', 'autopark')
     return true
   end
   if pre then
@@ -2815,7 +2815,7 @@ function Planner:tickManeuver(ego, cars, out)
   self.seq = self.seq + 1
   out.plan = {
     seq = self.seq, pts = flat, vcap = vcap, dir = seg.dir, maxSpeed = blocked and 0 or seg.maxSpeed,
-    hold = blocked, openEnded = false, gapTime = 2, throttleMax = 0.35, signal = false, mode = self.mode,
+    hold = blocked, openEnded = false, gapTime = 2, throttleMax = 0.45, signal = false, mode = self.mode,
     maneuver = mv.kind,
   }
 end

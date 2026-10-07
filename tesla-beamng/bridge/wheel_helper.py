@@ -259,6 +259,127 @@ class FakeWheel:
     def close(self) -> None: ...
 
 
+# ----------------------------------------------------------------------------- rim light patterns
+
+# bit 0 = left-most light ... bit 4 = right-most (3 green, 2 amber on a G29)
+ALL = 0x1F
+
+
+def _blink(t: float, hz: float, on: int, off: int = 0) -> int:
+    return on if int(t * hz * 2) % 2 == 0 else off
+
+
+def _steps(t: float, hz: float, steps: list[int]) -> int:
+    return steps[int(t * hz * len(steps)) % len(steps)]
+
+
+def led_mask(t: float, s: dict) -> int:
+    """Which rim lights to show. `s` is what the car reports (see LedState.update). Highest priority first:
+    FSD warnings (pulse, faster the longer they are ignored, then flashing), emergency, braking (all flash), reverse parking
+    distance (lights fill up only when close), hazards, turn signals (a sweep to that side), Banish/Summon (scanner), speed warning,
+    FSD on (first two lights solid, with a short fill when it starts)."""
+    lvl = s.get('alert_level', 0)
+    kind = s.get('alert_kind')
+    if kind or lvl:
+        age = max(0.0, t - s.get('alert_since', t))
+        if kind in ('crash', 'takeover') or lvl >= 3:
+            return _blink(t, 8, ALL)                       # "take over now": all lights flash fast
+        if lvl >= 2 or age > 12:
+            return _blink(t, 3.5, ALL)                      # ignored a while: all flash
+        # a pulse that speeds up the longer it is ignored (1.2 Hz, up to 4 Hz after 12 s)
+        return _steps(t, min(4.0, 1.2 + 0.25 * age), [0x04, 0x0E, ALL, 0x0E, 0x04, 0x00])
+    if s.get('emergency'):
+        return _blink(t, 3, 0x15, 0x0A)                    # pulling over for you: alternating
+    if s.get('brake', 0) > 0.3 and s.get('speed', 0) > 1.5:
+        return _blink(t, 7, ALL)                            # braking: all flash rapidly
+    rear = s.get('rear')
+    if s.get('gear') == 'R' and rear is not None and rear < 4.0:
+        if rear < 0.5:
+            return _blink(t, 10, ALL)                       # about to touch
+        n = max(1, min(5, int((4.0 - rear) / 0.8) + 1))     # 3.2 m: 1 light ... under 0.8 m: all 5
+        return (1 << n) - 1
+    sig = s.get('signal')
+    if sig == 'hazard':
+        return _blink(t, 1.6, 0x03)                         # first lights flash with the hazards
+    if sig == 'left':
+        return _steps(t, 1.5, [0x04, 0x06, 0x07, 0x00])
+    if sig == 'right':
+        return _steps(t, 1.5, [0x04, 0x0C, 0x1C, 0x00])
+    found = s.get('found_at')
+    if found is not None and 0 <= t - found < 1.0:
+        return _blink(t - found, 3, ALL)                    # a spot was found: three quick flashes
+    if s.get('searching'):
+        pos = int(t * 5) % 8                                # looking for parking: a pair of lights sweeping back and forth
+        return 0x03 << (pos if pos < 4 else 7 - pos)
+    if s.get('unattended'):
+        pos = int(t * 7) % 8                                # Banish / Summon: a light sweeping back and forth
+        return 1 << (pos if pos < 5 else 8 - pos)
+    if s.get('speed_warn'):
+        return _blink(t, 1.2, 0x18)                         # over the limit: the two amber lights
+    if s.get('engaged'):
+        since = t - s.get('engaged_since', t - 99)
+        if since < 0.6:
+            return (1 << min(5, int(since / 0.12) + 1)) - 1  # a quick fill when FSD starts
+        return 0x03                                         # FSD on: first two lights solid
+    return 0
+
+
+class LedState:
+    """What the lights need from the car, taken from each `state` message the relay sends."""
+
+    def __init__(self) -> None:
+        self.d: dict = {}
+        self._kind = None
+        self._eng = False
+
+    def event(self, m: dict, now: float) -> None:
+        """Relay events: looking for parking / spot found."""
+        k = m.get('kind')
+        data = m.get('data') or {}
+        if k == 'parkingSearch':
+            st = data.get('state') or m.get('detail')
+            if st == 'looking':
+                self.d['searching'] = True
+            elif st == 'found':
+                self.d['searching'] = False
+                self.d['found_at'] = now
+        elif k in ('arrived', 'disengage', 'cancelRoute'):
+            self.d['searching'] = False
+
+    def update(self, m: dict, now: float) -> None:
+        ap = m.get('autopilot') or {}
+        al = ap.get('alert') or {}
+        kind, lvl = al.get('kind'), int(al.get('level') or 0)
+        if kind in ('attention', 'lowConfidence', 'degraded', 'takeover', 'crash') or lvl:
+            if self._kind != (kind, lvl // 3):
+                self.d['alert_since'] = now if self._kind is None else self.d.get('alert_since', now)
+            self._kind = (kind, lvl // 3)
+            self.d['alert_kind'], self.d['alert_level'] = kind, lvl
+        else:
+            self._kind = None
+            self.d['alert_kind'], self.d['alert_level'] = None, 0
+        # nag levels ramp the same way even without an alert card
+        nag = ap.get('nag') or {}
+        if not kind and int(nag.get('level') or 0) >= 1 and ap.get('engaged'):
+            self.d['alert_kind'], self.d['alert_level'] = 'attention', int(nag['level'])
+            if self._kind is None:
+                self.d['alert_since'] = now
+            self._kind = ('attention', int(nag['level']) // 3)
+        eng = bool(ap.get('engaged'))
+        if eng and not self._eng:
+            self.d['engaged_since'] = now
+        self._eng = eng
+        self.d['engaged'] = eng
+        self.d['signal'] = m.get('signal')
+        self.d['brake'] = float(m.get('brake') or 0)
+        self.d['speed'] = abs(float(m.get('speed') or 0))
+        self.d['gear'] = m.get('gear')
+        self.d['rear'] = (m.get('safety') or {}).get('rearDist')
+        self.d['unattended'] = bool(ap.get('unattended'))
+        self.d['emergency'] = bool(ap.get('pullingOver') or (ap.get('phase') == 'parking' and ap.get('pullOver')))
+        self.d['speed_warn'] = bool(m.get('speedWarning'))
+
+
 # ----------------------------------------------------------------------------- G29 rev lights
 
 
@@ -275,6 +396,8 @@ class WheelLeds:
         self.dev = None
         self.mask = -1
         self.length = None
+        self.layout = None
+        self.retry_at = 0.0
         self.next_try = 0.0
         self.dead = False
         self.logf = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wheel_helper.log')
@@ -340,20 +463,28 @@ class WheelLeds:
         if mask == self.mask and now < self.next_try:
             return
         self.next_try = now + 5
-        if self.dev is None and not self._open():
-            return
+        if self.dev is None:
+            if now < self.retry_at:
+                return
+            if not self._open():
+                self.retry_at = now + 5  # no wheel (or not yet): look again in a few seconds, not every frame
+                return
+        # the layout that worked once is the only one used again; first time: the Linux driver's layout, then a plain 2-byte one
+        layouts = (self.layout,) if self.layout is not None else (0, 1)
         lengths = (self.length,) if self.length else self.LENGTHS
-        for n in lengths:
-            buf = bytes([0xF8, 0x12, mask & 0xFF]) + bytes(n - 3)
-            try:
-                if self.dev.write(buf) > 0:
-                    if self.length is None:
-                        self.length = n
-                        self.log(f'write accepted (report length {n}), lights {mask:#04x}')
-                    self.mask = mask
-                    return
-            except Exception:
-                pass
+        for lay in layouts:
+            for n in lengths:
+                head = bytes([0xF8, 0x12, mask & 0xFF]) if lay == 0 else bytes([0x12, mask & 0xFF])
+                buf = head + bytes(max(0, n - len(head)))
+                try:
+                    if self.dev.write(buf) > 0:
+                        if self.length is None:
+                            self.length, self.layout = n, lay
+                            self.log(f'write accepted (layout {lay}, report length {n}), lights {mask:#04x}')
+                        self.mask = mask
+                        return
+                except Exception:
+                    pass
         if self.length is None:
             self.log('the wheel did not accept the light report (a different report layout, or another program owns the wheel)')
             self.dead = True
@@ -374,6 +505,7 @@ class Link:
     def __init__(self, url: str, ctl: Controller, quiet: bool = False, ffb: bool = True, name: str = 'wheel', buttons: int = 0, leds: 'WheelLeds | None' = None):
         self.url, self.ctl, self.quiet = url, ctl, quiet
         self.leds = leds
+        self.ledstate = LedState()
         self.ffb, self.name, self.nbuttons = ffb, name, buttons
         self.ws = None
         self.connected = False
@@ -417,13 +549,17 @@ class Link:
                     m = json.loads(raw)
                     if m.get('t') == 'state':
                         self.ctl.on_state(m, time.monotonic())
-                        # the first two rim lights are on while FSD drives
+                        # what the rim lights show comes from this (see led_mask)
                         if self.leds:
-                            self.leds.set(0b00011 if (m.get('autopilot') or {}).get('engaged') else 0)
+                            self.ledstate.update(m, time.monotonic())
                         st = (m.get('wheel') or {}).get('status')
                         # a new car (or the mod reloading) forgets the helper: claim the wheel again
                         if self.ffb and st != 'helper' and time.time() - self.last_claim > 2:
                             self.claim()
+                    elif m.get('t') == 'event' and self.leds and m.get('kind') in ('parkingSearch', 'arrived', 'disengage', 'cancelRoute'):
+                        self.ledstate.event(m, time.monotonic())
+                        if m.get('kind') == 'disengage':
+                            self.say('FSD', m.get('kind'), m.get('detail') or '')
                     elif m.get('t') == 'event' and m.get('kind') in ('disengage', 'engaged', 'reengaged'):
                         self.say('FSD', m.get('kind'), m.get('detail') or '')
             except Exception as e:  # relay not up yet, dropped, ...
@@ -507,6 +643,10 @@ def main(argv: list[str] | None = None) -> int:
                         except Exception:
                             pass
             prev_buttons = now_buttons
+            if leds and link.connected:
+                leds.set(led_mask(time.monotonic(), link.ledstate.d))
+            elif leds and leds.mask not in (-1, 0):
+                leds.set(0)
             sp = ctl.spring(time.monotonic()) if not a.buttons else Spring()
             wheel.apply(sp)
             if not a.buttons and sp.on and sp.coeff > 0 and time.monotonic() - last_pos > 0.03:
