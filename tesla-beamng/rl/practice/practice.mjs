@@ -9,6 +9,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync, unl
 import { createServer } from 'node:http'
 import { homedir, cpus, setPriority, constants } from 'node:os'
 import { join } from 'node:path'
+import { screenshot, uploader } from '../lib.mjs'
 
 const require = createRequire(join(homedir(), 'tesla-beamng', 'package.json'))
 const WebSocket = require('ws')
@@ -130,6 +131,7 @@ async function waitEnd(timeout) {
   let last = st ? [...st.pos] : null, lastMove = Date.now()
   for (let i = 0; Date.now() - t0 < timeout && st; i++) {
     await sleep(500)
+    if (live.trail && st) live.trail.push([st.pos[0], st.pos[1], st.dir[0], st.dir[1], st.gear])
     if (existsSync(STOP)) break
     if (live.dmg0 != null && (st.damage || 0) - live.dmg0 > 8000) { log('hard crash: ending this attempt'); break }
     if (i > 12 && !st.autopilot?.engaged && Math.abs(st.speed) < 0.3) break
@@ -180,6 +182,7 @@ async function parkEpisode(kindWanted, fixed, greedy) {
   const f0 = features(st.pos, [st.dir[0], st.dir[1]], sp, a)
   const x = act(f0, !greedy)
   send({ t: 'settings', apTune: x.tune, nags: false })
+  live.trail = []
   send({ t: 'gear', gear: 'D' }); await settle(0.3)
   send({ t: 'autopark', spot: sp.id })
   const secs = await waitEnd(110000)
@@ -192,10 +195,74 @@ async function parkEpisode(kindWanted, fixed, greedy) {
   const hit = Math.max(0, (st.damage || 0) - live.dmg0)
   if (hit > 600) errs.push(`hit something (damage +${Math.round(hit)}) ${JSON.stringify(live.firstHit)}`)
   // hitting a curb or a wall costs points; a hard hit fails the run outright
-  const score = arrived && hit < 6000 ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - secs / 6 - hit / 80, 5, 100) : 0
+  const score = arrived && hit < 6000 ? clamp(100 - 25 * Math.abs(lat) - 6 * Math.abs(lon) - 2 * hdeg - Math.max(0, secs - 60) / 8 - hit / 80, 5, 100) : 0
+  // Parking is rarely one move: it pulls forward, backs in, adjusts. Count the extra moves (they are not punished: the finish is what is scored)
+  const adjusts = Math.max(0, evs.filter((e) => e.kind === 'autoparkPlan').length - 1) + evs.filter((e) => e.kind === 'notice' && /straighten|another way/.test(String(e.detail || ''))).length
+  const trail = live.trail || []
+  live.trail = null
+  void recordParking({ sp, a, trail, fin, hd, score, lat, lon, hdeg, adjusts, secs, arrived, hit })
   const noRoom = !arrived && secs < 14 && hit < 100 && errs.some((e) => /no room|no free parking/.test(e))
-  return { type: 'park', invalid: noRoom, cat: 'park:' + kind, hit: Math.round(hit), spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h }, tune: x.tune, act: x }
+  return { type: 'park', adjusts, invalid: noRoom, cat: 'park:' + kind, hit: Math.round(hit), spot: sp.id, kind, start: pos.map((x) => +x.toFixed(1)), arrived, lon: +lon.toFixed(2), lat: +lat.toFixed(2), hdeg: +hdeg.toFixed(1), secs: +secs.toFixed(1), score: +score.toFixed(1), errs, setup: { sp, pos, h }, tune: x.tune, act: x }
 }
+
+// --- pictures of parking jobs ----------------------------------------------------------------------------------------------------
+// After every parking episode a top-down picture (SVG: the stall, the path the car took with forward legs blue and reverse legs orange,
+// the final pose) is saved next to the numbers; a real screenshot of the game is taken for bad finishes and every 5th episode. Every 10
+// episodes a short report plus the worst three and the best one go to GitHub (practice/<stamp>/), so a person or Claude reads a page.
+const SHOTS = join(DIR, 'shots')
+mkdirSync(SHOTS, { recursive: true })
+const PSTAMP = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16)
+const pupload = uploader(`practice/${PSTAMP}`)
+const batch = []
+let pEp = 0
+function parkSvg({ sp, a, trail, fin, hd, score, lat, lon, hdeg, adjusts, secs }) {
+  const S = 22, W = 440, H = 440 // 22 px per metre, +-10 m
+  const al = Math.hypot(a[0], a[1]) || 1
+  const ax = a[0] / al, ay = a[1] / al // the stall's axis points up
+  const px = -ay, py = ax
+  const T = (x, y) => { const rx = x - sp.pos[0], ry = y - sp.pos[1]; return [W / 2 + (rx * px + ry * py) * S, H / 2 - (rx * ax + ry * ay) * S] }
+  const rect = (cx, cy, hx, hy, len, wid, cls) => { // a rectangle centred on (cx,cy), pointing along (hx,hy)
+    const hl = Math.hypot(hx, hy) || 1, fx = hx / hl, fy = hy / hl, gx = -fy, gy = fx
+    const pts = [[1, 1], [1, -1], [-1, -1], [-1, 1]].map(([u, v]) => T(cx + fx * len / 2 * u + gx * wid / 2 * v, cy + fy * len / 2 * u + gy * wid / 2 * v).map((q) => q.toFixed(1)).join(','))
+    return `<polygon points="${pts.join(' ')}" ${cls}/>`
+  }
+  const legs = []
+  for (let i = 1; i < trail.length; i++) {
+    const [x0, y0] = T(trail[i - 1][0], trail[i - 1][1]), [x1, y1] = T(trail[i][0], trail[i][1])
+    const rev = trail[i][4] === 'R'
+    legs.push(`<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${rev ? '#ff9f43' : '#4da3ff'}" stroke-width="2"/>`)
+  }
+  const col = score >= 80 ? '#3ddc84' : score >= 55 ? '#ffd24d' : '#ff5a5a'
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H + 44}" viewBox="0 0 ${W} ${H + 44}"><rect width="100%" height="100%" fill="#1b1c1e"/>
+${rect(sp.pos[0], sp.pos[1], ax, ay, 5.5, 2.6, 'fill="none" stroke="#e8e8e8" stroke-width="2"')}
+${legs.join('\n')}
+${rect(fin[0], fin[1], hd[0], hd[1], 4.6, 1.9, `fill="${col}" fill-opacity="0.35" stroke="${col}" stroke-width="2"`)}
+<text x="10" y="${H + 18}" fill="#ddd" font-family="monospace" font-size="13">score ${score.toFixed(0)}  side ${lat.toFixed(2)} m  along ${lon.toFixed(2)} m  angle ${hdeg.toFixed(1)} deg</text>
+<text x="10" y="${H + 36}" fill="#999" font-family="monospace" font-size="12">${secs.toFixed(0)} s, ${adjusts} adjusting move(s); blue = forward, orange = reverse, white box = the stall</text></svg>`
+}
+async function recordParking(e) {
+  try {
+    const n = ++pEp
+    const id = `ep${String(n).padStart(4, '0')}-s${Math.round(e.score)}`
+    const svg = parkSvg(e)
+    writeFileSync(join(SHOTS, id + '.svg'), svg)
+    let jpg = null
+    if (e.score < 70 || n % 5 === 0) { const f = join(SHOTS, id + '.jpg'); if (await screenshot(f)) jpg = f }
+    batch.push({ n, id, score: e.score, lat: e.lat, lon: e.lon, hdeg: e.hdeg, adjusts: e.adjusts, secs: e.secs, arrived: e.arrived, hit: e.hit, svg: join(SHOTS, id + '.svg'), jpg })
+    if (batch.length >= 10) await flushBatch()
+  } catch (err) { log('parking picture failed:', err.message) }
+}
+async function flushBatch() {
+  if (!batch.length) return
+  const b = batch.splice(0, batch.length)
+  const by = [...b].sort((x, y) => x.score - y.score)
+  const pick4 = [...by.slice(0, 3), by[by.length - 1]].filter((x, i, arr) => arr.indexOf(x) === i)
+  const md = ['# Parking practice ' + PSTAMP, '', '| ep | score | side m | along m | angle | adjusting moves | s | arrived | damage |', '|---|---|---|---|---|---|---|---|---|', ...b.map((x) => `| ${x.n} | ${x.score.toFixed(0)} | ${x.lat.toFixed(2)} | ${x.lon.toFixed(2)} | ${x.hdeg.toFixed(1)} | ${x.adjusts} | ${x.secs.toFixed(0)} | ${x.arrived} | ${x.hit} |`), '', 'Pictures (top-down, blue forward, orange reverse): ' + pick4.map((x) => x.id + '.svg').join(', ')].join('\n')
+  const ups = [await pupload(`report-${String(b[0].n).padStart(4, '0')}.md`, Buffer.from(md))]
+  for (const x of pick4) { ups.push(await pupload(`${x.id}.svg`, readFileSync(x.svg))); if (x.jpg) ups.push(await pupload(`${x.id}.jpg`, readFileSync(x.jpg))) }
+  log('parking batch uploaded:', [...new Set(ups)].join(', '))
+}
+if (Number(process.env.PRACTICE_HOURS)) setTimeout(() => { try { writeFileSync(STOP, 'time') } catch {} }, Number(process.env.PRACTICE_HOURS) * 3600 * 1000)
 
 // --- scenarios -----------------------------------------------------------------------------------------------------------
 // Each scenario has a category; the runner keeps a running score per category and picks weak ones more often.
@@ -453,7 +520,7 @@ async function main() {
       }
     } catch (e) { log('episode error', e.message); await sleep(3000) }
   }
-  send({ t: 'autopilot', mode: 'off' }); send({ t: 'traffic', count: 0 }); send({ t: 'settings', nags: true }); save(); log('stopped')
+  send({ t: 'autopilot', mode: 'off' }); send({ t: 'traffic', count: 0 }); send({ t: 'settings', nags: true }); save(); await flushBatch(); log('stopped')
   process.exit(0)
 }
 main()

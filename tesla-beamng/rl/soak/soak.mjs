@@ -12,6 +12,7 @@ import { mkdirSync, appendFileSync, writeFileSync, readFileSync, existsSync, unl
 import { gzipSync } from 'node:zlib'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { screenshot, uploader } from '../lib.mjs'
 
 const require = createRequire(import.meta.url)
 const WebSocket = require('ws')
@@ -55,7 +56,25 @@ function connect() {
 
 // ---- recording ----------------------------------------------------------------------------------------------------------------
 // one sample = a compact array so a 12 minute run stays under a megabyte (gzipped much less); COLS names every position
-const COLS = ['t', 'x', 'y', 'v', 'steer', 'wheelDeg', 'thr', 'brk', 'gear', 'sig', 'dmg', 'fps', 'eng', 'mode', 'tgt', 'lim', 'lead', 'ctl', 'lane', 'laneChg', 'alert', 'conf', 'phase', 'act', 'ffb', 'rearDist', 'yawRate', 'aLat', 'aLon']
+const COLS = ['t', 'x', 'y', 'v', 'steer', 'wheelDeg', 'thr', 'brk', 'gear', 'sig', 'dmg', 'fps', 'eng', 'mode', 'tgt', 'lim', 'lead', 'ctl', 'lane', 'laneChg', 'alert', 'conf', 'phase', 'act', 'ffb', 'rearDist', 'yawRate', 'aLat', 'aLon', 'ai']
+// what the planner is doing, in one short string (maneuver, lane change and why, waiting, go-around, turn ahead, low confidence...)
+function aiNote(a) {
+  const p = []
+  if (a.activity && a.activity !== 'drive') p.push(a.activity)
+  if (a.phase && a.phase !== 'driving') p.push(`phase:${a.phase}`)
+  if (a.maneuver) p.push(`maneuver:${a.maneuver.kind} ${a.maneuver.step}/${a.maneuver.total}`)
+  if (a.lane?.changing) p.push(`lane ${a.lane.changing.dir}:${a.lane.changing.reason}:${a.lane.changing.phase}`)
+  if (a.lane) p.push(`lane${a.lane.index}/${a.lane.count}`)
+  if (a.waitingFor) p.push(`waiting:${a.waitingFor}`)
+  if (a.goAround) p.push('goAround')
+  if (a.creeping) p.push('creeping')
+  if (a.phantomBrake) p.push('phantomBrake')
+  if (a.emergencyVehicle) p.push(`ev:${a.emergencyVehicle}`)
+  if (a.nextTurn) p.push(`turn ${a.nextTurn.dir}@${r1(a.nextTurn.dist, 0)}`)
+  if (typeof a.confidence === 'number' && a.confidence < 0.8) p.push(`conf ${r1(a.confidence)}`)
+  if (a.alert?.kind) p.push(`alert:${a.alert.kind}`)
+  return p.length ? p.join(' | ') : null
+}
 function sample(m) {
   const now = Date.now() / 1000
   if (run.last && now - run.last < 0.095) return
@@ -79,7 +98,7 @@ function sample(m) {
   const row = [r1(now - run.t0, 1), r1(p[0], 1), r1(p[1], 1), r1(m.speed), r1(m.steering, 3), r1(m.steeringWheelDeg, 1), r1(m.throttle), r1(m.brake), m.gear ?? null, m.signal ?? null, r1(m.damage ?? ap.damage, 0), r1(m.fps, 0),
     ap.engaged ? 1 : 0, ap.mode ?? null, r1(ap.targetSpeed), r1(ap.speedLimit), r1(ap.leadGap, 1), ap.control ? `${ap.control.kind}@${r1(ap.control.dist, 0)}${ap.control.state ? ':' + ap.control.state : ''}` : null,
     ap.lane?.index ?? null, ap.lane?.changing ? `${ap.lane.changing.dir}:${ap.lane.changing.reason}:${ap.lane.changing.phase}` : null, ap.alert ? `${ap.alert.kind}:${ap.alert.level}` : null, r1(ap.confidence),
-    ap.phase ?? null, ap.activity ?? null, m.wheel?.status ?? null, m.safety?.rearDist ?? null, r1(yaw, 3), r1(aLat), r1(aLon)]
+    ap.phase ?? null, ap.activity ?? null, m.wheel?.status ?? null, m.safety?.rearDist ?? null, r1(yaw, 3), r1(aLat), r1(aLon), aiNote(ap)]
   run.rows.push(row)
 }
 function event(m) {
@@ -92,7 +111,7 @@ function event(m) {
 const C = Object.fromEntries(COLS.map((c, i) => [c, i]))
 function analyse(r) {
   const rows = r.rows
-  const m = { run: r.n, profile: r.profile, secs: r1(rows.length ? rows[rows.length - 1][0] : 0, 0), samples: rows.length, start: r.start, route: r.routes }
+  const m = { run: r.n, profile: r.profile + (r.highway ? '+highway' : ''), secs: r1(rows.length ? rows[rows.length - 1][0] : 0, 0), samples: rows.length, start: r.start, route: r.routes }
   const inc = [] // { t, kind, why }
   let dist = 0, engT = 0, vSum = 0, vN = 0, vMax = 0, hardBrakes = 0, maxALat = 0, maxDecel = 0, stuckT = 0, stuckSince = null
   const aLats = []
@@ -145,7 +164,11 @@ function analyse(r) {
     const dir = e.data?.dir ?? e.detail
     const win = rows.filter((x) => x[C.t] >= e.t - 2.2 && x[C.t] <= e.t)
     const sig = win.filter((x) => x[C.sig] === dir).length
-    if (!win.length || sig < win.length * 0.6) { lcNoSig++; inc.push({ t: e.t, kind: 'laneChangeNoSignal', why: `lane change ${dir} (${e.data?.reason ?? ''}), signal on for ${sig}/${win.length} samples before` }) }
+    const noSig = !win.length || sig < win.length * 0.6
+    if (noSig) lcNoSig++
+    // every lane change is an incident (the 6 s around it), with or without a signal, with the planner's note at that moment
+    const at = rows.find((x) => x[C.t] >= e.t) || rows[rows.length - 1]
+    inc.push({ t: e.t, kind: noSig ? 'laneChangeNoSignal' : 'laneChange', why: `${dir} (${e.data?.reason ?? ''}), signal on for ${sig}/${win.length} samples before; ${at?.[C.ai] ?? ''}`.trim() })
   }
   m.laneChanges = lc; m.laneChangesNoSignal = lcNoSig
   // signals on with no lane change or turn about to happen
@@ -165,34 +188,11 @@ function windows(r, inc) {
     if (last && i.t - last.to < 3) { last.to = Math.max(last.to, i.t + 6); last.why.push(`${i.kind}: ${i.why}`) }
     else merged.push({ from: Math.max(0, i.t - 6), to: i.t + 6, at: i.t, why: [`${i.kind}: ${i.why}`] })
   }
-  return merged.slice(0, 40).map((w) => ({ run: r.n, at: w.at, why: w.why, cols: COLS, rows: r.rows.filter((x) => x[0] >= w.from && x[0] <= w.to), events: r.events.filter((e) => e.t >= w.from && e.t <= w.to) }))
+  return merged.slice(0, 40).map((w) => ({ run: r.n, at: w.at, why: w.why, cols: COLS, rows: r.rows.filter((x) => x[0] >= w.from && x[0] <= w.to), events: r.events.filter((e) => e.t >= w.from && e.t <= w.to), shots: r.shots.filter((x) => x.t >= w.from - 3 && x.t <= w.to + 3).map((x) => x.rel) }))
 }
 
-// ---- upload (same token and repo as the black box) ------------------------------------------------------------------------------
-function uploadCfg() {
-  let token = (ENV.TESLA_GH_TOKEN || '').trim()
-  try { if (!token) token = readFileSync(join(HOME, 'github-token.txt'), 'utf8').trim() } catch {}
-  let cfg = {}
-  try { cfg = JSON.parse(readFileSync(join(HOME, 'blackbox-upload.json'), 'utf8')) } catch {}
-  return { token, repo: cfg.repo || 'MRRDO/tesla-ui-atv', branch: cfg.branch || '' }
-}
-const shas = new Map()
-async function upload(rel, buf) {
-  if (ENV.SOAK_NO_UPLOAD) return 'skipped (SOAK_NO_UPLOAD)'
-  const c = uploadCfg()
-  if (!c.token) return 'no GitHub token on this PC'
-  const path = `soak/${stamp}/${rel}`
-  try {
-    const body = { message: `soak ${stamp} ${rel}`, content: Buffer.from(buf).toString('base64') }
-    if (c.branch) body.branch = c.branch
-    if (shas.has(path)) body.sha = shas.get(path)
-    const r = await fetch(`https://api.github.com/repos/${c.repo}/contents/${path}`, { method: 'PUT', headers: { authorization: `Bearer ${c.token}`, accept: 'application/vnd.github+json', 'user-agent': 'tesla-soak' }, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) })
-    const j = await r.json().catch(() => ({}))
-    if (!r.ok) return `GitHub ${r.status}: ${String(j.message || '').slice(0, 80)}`
-    if (j.content?.sha) shas.set(path, j.content.sha)
-    return 'uploaded'
-  } catch (e) { return `not uploaded: ${e.message}`.slice(0, 120) }
-}
+// ---- upload (same token and repo as the black box; see ../lib.mjs) ----------------------------------------------------------------
+const upload = uploader(`soak/${stamp}`)
 
 // ---- the loop -----------------------------------------------------------------------------------------------------------------
 const all = { runs: [], incidents: [] }
@@ -225,10 +225,12 @@ async function waitForCar(maxSec = 600) {
   return false
 }
 
-function roadPoint() {
+function roadPoint(highway) {
   // a stretch of real road: both ends at least 3 m wide, heading along the link
   const nodes = new Map(map.nodes.map((n) => [n.id, n]))
-  const links = map.links.filter((l) => { const a = nodes.get(l.a), b = nodes.get(l.b); return a && b && a.radius >= 3 && b.radius >= 3 && Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1]) > 25 })
+  const minR = highway ? 8 : 3 // highway runs: multi-lane roads (wide nodes) only, when the level has any
+  let links = map.links.filter((l) => { const a = nodes.get(l.a), b = nodes.get(l.b); return a && b && a.radius >= minR && b.radius >= minR && Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1]) > 25 })
+  if (highway && links.length < 3) links = map.links.filter((l) => { const a = nodes.get(l.a), b = nodes.get(l.b); return a && b && a.radius >= 3 && b.radius >= 3 })
   for (let k = 0; k < 40; k++) {
     const l = pick(links.length ? links : map.links)
     const a = nodes.get(l.a), b = nodes.get(l.b)
@@ -242,34 +244,44 @@ function roadPoint() {
   }
   return null
 }
-function destination(from) {
+function destination(from, highway) {
   // a road node 1.5 to 4 km away (drive on past it: arrival 'Drive On', so nothing parks)
-  const ok = map.nodes.filter((n) => { const d = Math.hypot(n.pos[0] - from[0], n.pos[1] - from[1]); return n.radius >= 3 && d > 1500 && d < 4000 })
+  const ok = map.nodes.filter((n) => { const d = Math.hypot(n.pos[0] - from[0], n.pos[1] - from[1]); return n.radius >= (highway ? 8 : 3) && d > 1500 && d < 4000 })
   const n = ok.length ? pick(ok) : pick(map.nodes)
   return [n.pos[0], n.pos[1], n.pos[2]]
 }
 
 async function oneRun(n) {
   const profile = ['standard', 'chill', 'hurry', 'madmax'][(n - 1) % 4]
-  const pt = roadPoint()
+  const highway = n % 3 === 0 // every third run: multi-lane roads, to see what the planner does with lanes
+  const pt = roadPoint(highway)
   if (!pt) throw new Error('no road point')
   send({ t: 'autopilot', mode: 'off' }); await sleep(800)
   send({ t: 'gear', gear: 'P' }); await sleep(600)
   send({ t: 'teleport', x: pt.pos[0], y: pt.pos[1], z: pt.pos[2], hx: pt.h[0], hy: pt.h[1], repair: true }); await sleep(3500)
   if (st && st.dir[0] * pt.h[0] + st.dir[1] * pt.h[1] < 0) { send({ t: 'teleport', x: pt.pos[0], y: pt.pos[1], z: pt.pos[2], hx: pt.h[0], hy: pt.h[1], flip: true }); await sleep(3000) }
   send({ t: 'settings', nags: false, nagMode: 'off' })
-  run = { n, profile, t0: Date.now() / 1000, rows: [], events: [], start: pt.pos.map((x) => r1(x, 0)), routes: 0 }
-  const newRoute = () => { const to = destination(st.pos); send({ t: 'navigate', to, arrival: 'Drive On' }); run.routes++ }
+  run = { n, profile, highway, t0: Date.now() / 1000, rows: [], events: [], shots: [], dmg0: st?.damage ?? 0, lastShotDmg: st?.damage ?? 0, start: pt.pos.map((x) => r1(x, 0)), routes: 0 }
+  const newRoute = () => { const to = destination(st.pos, highway); send({ t: 'navigate', to, arrival: 'Drive On' }); run.routes++ }
   newRoute()
   send({ t: 'gear', gear: 'D' }); await sleep(400)
   send({ t: 'autopilot', mode: 'fsd', profile })
-  log(`run ${n} (${profile}): started at ${run.start}`)
+  log(`run ${n} (${profile}${highway ? ', highway' : ''}): started at ${run.start}`)
   const t0 = Date.now()
   let lastMove = Date.now(), lastPos = st?.pos, reRoute = Date.now()
   while (Date.now() - t0 < RUN_SEC * 1000 && !stopping() && Date.now() - T_START < MAX_SEC * 1000) {
     await sleep(500)
     if (!ws || !st) { log('lost the relay: waiting'); if (!(await waitForCar(300))) break; continue }
-    // FSD off (disengaged on its own or crashed): turn it on again, like a person would, after a short pause; count it (the events say why)
+    // a hit with damage: take a screenshot (small JPEG, up to 4 a run) and remember where it is
+    if ((st.damage ?? 0) - run.lastShotDmg > 1500 && run.shots.length < 4) {
+      run.lastShotDmg = st.damage ?? 0
+      const rel = `shots/run-${String(n).padStart(2, '0')}-t${Math.round(Date.now() / 1000 - run.t0)}.jpg`
+      const file = join(OUT, rel)
+      screenshot(file).then((ok) => { if (ok) { run.shots.push({ t: Date.now() / 1000 - run.t0, rel }); try { upload(rel, readFileSync(file)) } catch {} } })
+    }
+    // after a collision FSD stays off and the run ends (it used to switch itself on again and drive on, wrecked)
+    if (!st.autopilot?.engaged && (st.damage ?? 0) - run.dmg0 > 1500) { log('collision with damage: ending this run, no re-engage'); break }
+    // FSD off (disengaged on its own): turn it on again, like a person would, after a short pause; count it (the events say why)
     if (!st.autopilot?.engaged && Date.now() - t0 > 6000) {
       await sleep(2500)
       if (!st.autopilot?.engaged) { run.restarts = (run.restarts || 0) + 1; if (run.restarts > 25) break; newRoute(); send({ t: 'gear', gear: 'D' }); send({ t: 'autopilot', mode: 'fsd', profile }) }
