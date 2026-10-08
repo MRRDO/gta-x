@@ -98,3 +98,13 @@ check({led_mask(t / 100, {'brake': 0.8, 'speed': 10}) for t in range(0, 100)} ==
 cu = {'c_ab': {'name': 'x', 'frames': [[0x01, 200], [0x1F, 100]]}}
 check({led_mask(t / 100, {'signal': 'hazard', 'fx': {'hazard': 'c_ab'}, 'custom': cu}) for t in range(0, 100)} == {0x01, 0x1F}, 'a custom effect plays its frames')
 check(led_mask(0.1, {'test': 'x', 'test_frames': [[0x04, 500]], 'test_until': 5, 'test_start': 0}) == 0x04, 'a draft pattern can be tried before saving')
+
+# right after a wheel reset the wheel is listed but refuses reports: the helper must not give up for good
+class RefuseDev:
+    def write(self, b): raise OSError('not ready')
+    def close(self): pass
+L = WheelLeds(); L.logf = '/tmp/claude-0/leds-test.log'
+L.dev = RefuseDev(); L.path = 'x'; L.length = None; L.layout = None
+L._open = lambda: False
+L.set(0x0C, now=200.0)
+check(not L.dead and L.retry_at > 200.0, 'a wheel that refuses right after a reset is retried later, not given up on')

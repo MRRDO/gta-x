@@ -625,8 +625,14 @@ class WheelLeds:
             self.dev = None
             self.retry_at = now + 1
             if not self._open():
-                self.log('no interface accepted the light report (another program owns the wheel, e.g. G HUB / LGS, or a different layout)')
-                self.dead = True
+                # (this used to give up for good: right after a wheel reset the wheel is listed before it takes reports, so that one
+                # failed try left the lights dark until the helper was restarted. Now it forgets what it skipped and looks again soon.)
+                self.skip.clear()
+                self.retry_at = now + 6
+                self.next_try = 0.0
+                if self.show_logs < 300 and now - self.last_show_log > 20:
+                    self.last_show_log, self.show_logs = now, self.show_logs + 1
+                    self.log('no interface accepted the light report yet (the wheel may still be starting, or another program owns it): trying again soon')
 
     def close(self) -> None:
         try:
