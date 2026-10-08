@@ -20,7 +20,7 @@ import qrcode from 'qrcode-terminal'
 import { ACTIONS, COMMAND_TYPES, DIAL_MODES, LIGHT_EVENTS, type ActionName, type LightEvent, type WheelLights, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
-import { BlackBox, uploadToGitHub, uploadConfig } from './blackbox.ts'
+import { BlackBox, buildReport, uploadToGitHub, uploadConfig } from './blackbox.ts'
 import { screenshotTo } from './screenshot.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand, chat as assistantChat } from './assistant.ts'
@@ -57,15 +57,35 @@ async function markBlackBox(note = '') {
       void uploadToGitHub(file, undefined, undefined, file.split(/[\\/]/).pop()!.replace(/\.json$/, '') + '.wheel-helper.txt', tail)
     }
   } catch { /* optional */ }
-  try { if (up.ok && (await shot)) void uploadToGitHub(shotFile) } catch { /* optional */ }
+  try { if (up.ok && (await shot)) await uploadToGitHub(shotFile) } catch { /* optional */ }
+  await uploadReport(file) // the report becomes a GitHub issue (see .github/workflows/blackbox-issue.yml)
   broadcast({ t: 'event', kind: 'blackbox', detail: up.status, data: { file, uploaded: up.ok, upload: up.status } })
   return { file, up }
+}
+/** One markdown page for the black box, uploaded as blackbox/report-<stamp>.md (a workflow turns it into an issue and updates it when the note is added). */
+async function uploadReport(file: string) {
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf8'))
+    const text = buildReport(j, file)
+    const name = file.split(/[\\/]/).pop()!.replace(/^mark-/, 'report-').replace(/\.json$/, '.md')
+    writeFileSync(file.replace(/mark-([0-9TZ-]+)\.json$/, 'report-$1.md'), text)
+    const r = await uploadToGitHub(file, undefined, undefined, name, text)
+    log('black box report:', r.status)
+  } catch (e) { log('black box report failed:', (e as Error).message) }
+}
+/** Ctrl+B / a wheel button / the app: mark this moment and tell the apps (a short toast). */
+function tagBlackBox(label = '') {
+  const n = blackBox.tag(Date.now(), label)
+  log(`black box: moment ${n} marked`)
+  broadcast({ t: 'event', kind: 'blackboxTag', detail: `Moment ${n} marked`, data: { n } })
+  return n
 }
 async function noteBlackBox(file: string, note: string) {
   if (!/blackbox[\\/]mark-[0-9TZ-]+\.json$/.test(file)) return { ok: false, status: 'not a black box file' }
   blackBox.addNote(file, note)
   const up = await uploadToGitHub(file)
   log('black box note:', up.status)
+  if (up.ok) await uploadReport(file) // the issue's text gets the note
   broadcast({ t: 'event', kind: 'blackboxNote', detail: up.status, data: { file, uploaded: up.ok } })
   return { ok: true, status: up.status, uploaded: up.ok }
 }
@@ -331,6 +351,7 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
         sendGame({ t: 'buttonGuard' }) // the game may have its own binding on this button (ignition): the mod puts that back
         const act = action.startsWith('dial') ? dialAction(action) : action
         if (!act) return true
+        if (act === 'tagMoment') { tagBlackBox(); return true }
         if (MEDIA_ACTIONS.has(act)) broadcast({ t: 'media', action: act }) // volume etc. go to the iPad, not the game
         else if (!sendGame({ t: 'action', name: act })) broadcast({ t: 'event', kind: 'error', detail: 'game not connected' })
         return true
@@ -675,6 +696,13 @@ const handler = (req: IncomingMessage, res: ServerResponse) => {
     })
     return
   }
+  if (path === '/blackbox/tag') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only') }
+    const n = tagBlackBox()
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end(JSON.stringify({ ok: true, n }))
+  }
   if (path === '/blackbox/mark' || path === '/blackbox/note') {
     if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
     const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
@@ -855,6 +883,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (msg.t === 'settings' && typeof msg.assistant === 'boolean') setAssistantEnabled(msg.assistant) // the FSD Assistant (bridge/assistant.ts) lives here, the game needn't know
     if (msg.t === 'hello') { log(`app: ${msg.app ?? '?'} ${msg.version ?? ''}`); return }
     // the phone page's music buttons: skip, play/pause, volume go to the iPad app, like the wheel's media buttons do
+    if (msg.t === 'action' && msg.name === 'tagMoment') { tagBlackBox(); return }
+    if (msg.t === 'blackboxTag') { tagBlackBox(String(msg.label ?? '')); return }
     if (msg.t === 'blackboxMark') { void markBlackBox(String(msg.note ?? '')); return }
     if (msg.t === 'blackboxNote') { void noteBlackBox(String(msg.file ?? ''), String(msg.note ?? '')); return }
     if (msg.t === 'blackboxStatus') { const c = uploadConfig(); ws.send(JSON.stringify({ t: 'event', kind: 'blackboxStatus', detail: c.token ? 'upload on' : 'upload off', data: { upload: !!c.token, repo: c.repo, dir: c.dir } })); return }

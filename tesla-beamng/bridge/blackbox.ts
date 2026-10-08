@@ -9,7 +9,8 @@ const WINDOW_MS = 90_000 // 90 s: covers the 45 s before the hotkey and the 45 s
 const MIN_GAP_MS = 100
 const r = (v: unknown, d = 2) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d : null)
 
-type Sample = { at: number; t: number | null; fsd: boolean; mode: string; v: number | null; thr: number | null; brk: number | null; str: number | null; wheelDeg: number | null; gear: string | null; sig: string | null; lead: number | null; ctl: string | null; lane: number | null; fps: number | null; pos: number[] | null; target: number | null; ai: string | null }
+type Sample = { at: number; t: number | null; fsd: boolean; mode: string; v: number | null; thr: number | null; brk: number | null; str: number | null; wheelDeg: number | null; gear: string | null; sig: string | null; lead: number | null; ctl: string | null; lane: number | null; fps: number | null; pos: number[] | null; target: number | null; ai: string | null; dmg: number | null }
+type Tag = { at: number; n: number; sample: Sample | null; label: string }
 type Ev = { at: number; kind: string; detail: string | null; data?: unknown }
 
 // What the planner is doing, as one short string: activity/phase, lane change, waiting, go-around, turn ahead, confidence, alert.
@@ -34,6 +35,7 @@ function aiNote(a: any): string | null {
 export class BlackBox {
   samples: Sample[] = []
   events: Ev[] = []
+  tags: Tag[] = [] // moments marked with Ctrl+B since the last save: "it hit the curb here", "pulled back too far here"
   lastAt = 0
   dir: string
   constructor(dir = join(homedir(), '.tesla-beamng', 'blackbox')) {
@@ -49,7 +51,7 @@ export class BlackBox {
         at: now, t: r(msg.time), fsd: !!a.engaged, mode: a.mode ?? 'off', v: r(msg.speed), thr: r(msg.throttle), brk: r(msg.brake), str: r(msg.steering, 3),
         wheelDeg: r(msg.steeringWheelDeg, 1), gear: typeof msg.gear === 'string' ? msg.gear : null, sig: msg.signal ?? null, lead: r(a.leadGap, 1),
         ctl: a.control ? `${a.control.kind}@${r(a.control.dist, 0)}${a.control.state ? ':' + a.control.state : ''}` : null, lane: a.lane?.index ?? null, fps: r(msg.fps, 0),
-        pos: Array.isArray(msg.pos) ? msg.pos.map((x: number) => r(x, 1) as number) : null, target: r(a.targetSpeed), ai: aiNote(a),
+        pos: Array.isArray(msg.pos) ? msg.pos.map((x: number) => r(x, 1) as number) : null, target: r(a.targetSpeed), ai: aiNote(a), dmg: r(msg.damage, 0),
       })
       while (this.samples.length && now - this.samples[0].at > WINDOW_MS) this.samples.shift()
     } else if (msg?.t === 'event' && typeof msg.kind === 'string') {
@@ -58,11 +60,19 @@ export class BlackBox {
     }
   }
 
+  /** Mark this moment (Ctrl+B): goes into the next saved black box as a numbered moment with a snapshot of what the car was doing. */
+  tag(now = Date.now(), label = ''): number {
+    const n = (this.tags.at(-1)?.n ?? 0) + 1
+    this.tags.push({ at: now, n, sample: this.samples.at(-1) ?? null, label: label.slice(0, 120) })
+    return n
+  }
+
   /** Write the window to a file; returns its path. */
   mark(note = '', now = Date.now(), extra: Record<string, unknown> = {}): string {
     mkdirSync(this.dir, { recursive: true })
     const file = join(this.dir, `mark-${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`)
-    writeFileSync(file, JSON.stringify({ markedAt: new Date(now).toISOString(), note, seconds: WINDOW_MS / 1000, samples: this.samples, events: this.events, ...extra }))
+    writeFileSync(file, JSON.stringify({ markedAt: new Date(now).toISOString(), note, seconds: WINDOW_MS / 1000, samples: this.samples, events: this.events, tags: this.tags.filter((t) => now - t.at <= WINDOW_MS), ...extra }))
+    this.tags = []
     return file
   }
 
@@ -118,5 +128,71 @@ export async function uploadToGitHub(file: string, home = homedir(), fetchFn: ty
     return { ok: true, status: 'uploaded', url: j.content?.html_url }
   } catch (e) {
     return { ok: false, status: `not uploaded: ${(e as Error).message}`.slice(0, 160) }
+  }
+}
+
+
+// ---- the report: one page per black box (it becomes a GitHub issue, see .github/workflows/blackbox-issue.yml) ----------------------
+const hms = (ms: number) => `${(ms / 1000).toFixed(0)} s`
+const md = (x: unknown) => String(x ?? '').replace(/\|/g, '/').replace(/\r?\n/g, ' ').slice(0, 140)
+
+/** Markdown report for a saved black box (the parsed file): note, marked moments, damage, events. Never throws. */
+export function buildReport(j: any, fileName: string): string {
+  try {
+    const stamp = fileName.replace(/^.*mark-/, '').replace(/\.json$/, '')
+    const S: Sample[] = Array.isArray(j.samples) ? j.samples : []
+    const E: Ev[] = Array.isArray(j.events) ? j.events : []
+    const tags: Tag[] = Array.isArray(j.tags) ? j.tags : []
+    const t1 = S.length ? S[S.length - 1].at : Date.parse(j.markedAt) || Date.now()
+    const rel = (at: number) => `-${hms(Math.max(0, t1 - at))}`
+    const note = String(j.note ?? '').trim()
+    const fsdPct = S.length ? Math.round((100 * S.filter((x) => x.fsd).length) / S.length) : 0
+    const maxV = S.reduce((m, x) => Math.max(m, x.v ?? 0), 0)
+    const dmgs = S.map((x) => x.dmg).filter((x): x is number => typeof x === 'number')
+    const dmgNow = dmgs.length ? dmgs[dmgs.length - 1] : null
+    // damage jumps (more than 150 within 0.5 s)
+    const hits: { at: number; d: number; s: Sample }[] = []
+    for (let i = 1; i < S.length; i++) {
+      const a = S[i - 1].dmg, b = S[i].dmg
+      if (typeof a === 'number' && typeof b === 'number' && b - a > 150) hits.push({ at: S[i].at, d: b - a, s: S[i] })
+    }
+    // merge jumps within 1.5 s into one hit
+    const merged: typeof hits = []
+    for (const h of hits) { const m = merged.at(-1); if (m && h.at - m.at < 1500) m.d += h.d; else merged.push({ ...h }) }
+    const lines: string[] = []
+    lines.push(`# Black box ${stamp}${note ? ': ' + md(note).slice(0, 80) : ''}`, '')
+    lines.push(`**What I expected / what went wrong:** ${note || '_(no note written)_'}`, '')
+    lines.push(`- Map: ${md(j.level ?? '?')} | window ${j.seconds ?? 90} s | FSD on ${fsdPct}% of it | top speed ${(maxV * 2.237).toFixed(0)} mph | damage ${dmgs.length ? `${dmgs[0]} to ${dmgNow}` : 'not recorded'}${merged.length ? ` (${merged.length} hit${merged.length > 1 ? 's' : ''})` : ''}`)
+    const lastOff = [...E].reverse().find((e) => e.kind === 'disengage')
+    if (lastOff) lines.push(`- Last FSD off: ${rel(lastOff.at)} (${md(lastOff.detail)})`)
+    lines.push('')
+    if (tags.length) {
+      lines.push('## Marked moments (Ctrl+B)', '', '| # | when | speed mph | gear | FSD | damage in +-3 s | max steer | braking | planner |', '|---|---|---|---|---|---|---|---|---|')
+      for (const t of tags) {
+        const near = S.filter((x) => Math.abs(x.at - t.at) <= 3000)
+        const dmgNear = near.map((x) => x.dmg).filter((x): x is number => typeof x === 'number')
+        const dd = dmgNear.length ? Math.max(...dmgNear) - Math.min(...dmgNear) : null
+        const steer = near.reduce((m, x) => Math.max(m, Math.abs(x.str ?? 0)), 0)
+        const brk = near.reduce((m, x) => Math.max(m, x.brk ?? 0), 0)
+        const sm = t.sample
+        lines.push(`| ${t.n} | ${rel(t.at)} | ${sm?.v != null ? (sm.v * 2.237).toFixed(0) : '?'} | ${sm?.gear ?? '?'} | ${sm?.fsd ? 'on' : 'off'} | ${dd == null ? '?' : dd} | ${steer.toFixed(2)} | ${brk.toFixed(2)} | ${md(sm?.ai ?? sm?.ctl ?? '')} |`)
+      }
+      lines.push('')
+    }
+    if (merged.length) {
+      lines.push('## Damage', '', '| when | damage | speed mph | gear | FSD | position | planner |', '|---|---|---|---|---|---|---|')
+      for (const h of merged) lines.push(`| ${rel(h.at)} | +${Math.round(h.d)} | ${h.s.v != null ? (h.s.v * 2.237).toFixed(0) : '?'} | ${h.s.gear ?? '?'} | ${h.s.fsd ? 'on' : 'off'} | ${h.s.pos ? h.s.pos.slice(0, 2).join(', ') : '?'} | ${md(h.s.ai ?? '')} |`)
+      lines.push('')
+    }
+    const interesting = E.filter((e) => /disengage|error|notice|arrived|maneuver|parking|collision|crash|autoparkPlan|banish|aeb|swerve|laneChange/.test(e.kind)).slice(-40)
+    if (interesting.length) {
+      lines.push('## What the car said', '', '| when | event | detail |', '|---|---|---|')
+      for (const e of interesting) lines.push(`| ${rel(e.at)} | ${md(e.kind)} | ${md(e.detail)} |`)
+      lines.push('')
+    }
+    lines.push('## Files', '', `- blackbox/mark-${stamp}.json (all samples at 10 Hz, the path, the events), mark-${stamp}.jpg (screenshot when saved), mark-${stamp}.wheel-helper.txt`, '')
+    return lines.join('\n')
+  } catch (e) {
+    return `# Black box\n\nCould not build the report: ${(e as Error).message}`
   }
 }

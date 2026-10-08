@@ -30,3 +30,8 @@ The wheel helper log (G29 rim light results) is uploaded next to each black box 
 Another repo or folder: `%USERPROFILE%\.tesla-beamng\blackbox-upload.json` with `{"repo": "owner/name", "dir": "blackbox", "branch": "main"}`.
 
 If it says "not uploaded": no token file (step 2), the token expired, the repository access does not include the repo, or Contents is not Read and write. The message names which. The file is always saved on the PC either way. The upload is a plain HTTPS request from the relay to api.github.com; the token is never logged or sent anywhere else.
+
+## Marking moments (Ctrl+B) and the issue (2026-10-08)
+- **Ctrl+B** (only while BeamNG is the active window; also a wheel button: Settings > Wheel buttons > "Mark this moment") marks the moment: a short beep and a "Moment N marked" pill on the iPad. Mark each thing as it happens: the curb hit, the pull-back that went too far, the bad finish.
+- **Ctrl+Alt+B** still saves the whole last 90 s. The report lists the marked moments (speed, gear, FSD, damage within 3 s, steering, braking, what the planner was doing), every damage hit, and what the car said.
+- Uploaded to `blackbox/`: `mark-<stamp>.json` (samples at 10 Hz incl. damage, the path, events, marks), `.jpg` (screenshot), `.wheel-helper.txt`, and `report-<stamp>.md`. The workflow `.github/workflows/blackbox-issue.yml` turns the report into an issue (label `blackbox`); when you add the note later (the iPad card: say what you EXPECTED) the same issue is updated.

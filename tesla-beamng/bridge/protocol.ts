@@ -241,7 +241,7 @@ export type Debug = { t: 'debug'; ge: Record<string, unknown>; vehicle?: Record<
 export type ActionName =
   | 'toggleFSD' | 'toggleAutosteer' | 'toggleTACC' | 'toggleLKA' | 'disengage' | 'voiceNote' | 'nudge'
   | 'laneLeft' | 'laneRight' | 'profileNext' | 'profilePrev' | 'speedUp' | 'speedDown'
-  | 'followCloser' | 'followFarther' | 'confirm' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park'
+  | 'followCloser' | 'followFarther' | 'confirm' | 'autopark' | 'summonForward' | 'summonReverse' | 'summonStop' | 'park' | 'tagMoment'
   | 'dialUp' | 'dialDown' | 'dialClick' // the G29 red dial: turn = up/down, click cycles what it controls (DIAL_MODES)
   | 'volumeUp' | 'volumeDown' | 'mute' | 'playPause' | 'nextTrack' | 'prevTrack' | 'assistant' // media keys: the relay tells the app ({t:'media'}), not the game
 
@@ -277,6 +277,7 @@ export const ACTIONS: { name: ActionName; label: string }[] = [
   { name: 'summonForward', label: 'Summon forward' },
   { name: 'summonReverse', label: 'Summon reverse' },
   { name: 'summonStop', label: 'Stop summon' },
+  { name: 'tagMoment', label: 'Mark this moment (black box)' },
 ]
 
 /**
@@ -440,6 +441,7 @@ export type Command =
   | { t: 'companionHello'; name: string; buttons: number } // from the wheel companion
   | { t: 'requestMap' }
   /** The PC is about to restart the wheel. With `assist`, a car moving above 10 mph is held by FSD for `seconds` (default 8) until the wheel is back. */
+  | { t: 'blackboxTag'; label?: string } // mark this moment (Ctrl+B / a wheel button): the next saved black box lists it
   | { t: 'blackboxMark'; note?: string } // save the black box now (the iPad's Report button)
   | { t: 'blackboxNote'; file: string; note: string } // what went wrong, typed on the iPad after a black box
   | { t: 'blackboxStatus' }
@@ -460,7 +462,7 @@ export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'summonTo', 'banish', 'autopark', 'resetStrikes', 'voiceNote',
   'action', 'learnButton', 'setButton', 'requestButtonMap', 'setWheelLight', 'testWheelLight', 'requestWheelLights', 'wheelButton', 'companionHello', 'camera', 'hello',
-  'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop', 'pullOver', 'mediaKey', 'wheelReset', 'wheelRescan', 'blackboxMark', 'blackboxNote', 'blackboxStatus',
+  'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop', 'pullOver', 'mediaKey', 'wheelReset', 'wheelRescan', 'blackboxTag', 'blackboxMark', 'blackboxNote', 'blackboxStatus',
 ])
 
 export const MPH = 0.44704

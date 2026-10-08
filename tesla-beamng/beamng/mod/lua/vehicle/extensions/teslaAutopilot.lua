@@ -1440,7 +1440,7 @@ local function checkAccidental()
     if b > 0.04 then watch.lastB = now end
     if (rawValue('throttle') or 0) > 0.15 or watch.peakB > 0.45 or now - watch.t > 1.2 and b > 0.04 then watch = nil; return end
     -- let go for a moment after a short, light press -> it was an accident
-    if now - watch.lastB > 0.3 and watch.lastB - watch.t < 0.9 and watch.speed > 4 and now - lastReengage > 5 then
+    if now - watch.lastB > 0.3 and watch.lastB - watch.t < 0.9 and watch.speed > 4 and now - lastReengage > 20 then
       lastReengage = now
       geEvent('reengage', { mode = watch.mode, profile = watch.profile })
       watch = nil
@@ -1455,7 +1455,7 @@ local function checkAccidental()
   if watch.prev and abs(st - watch.prev) > 0.01 then watch.lastMove = now end
   watch.prev = st
   -- a bump is small (under ~110 deg of a 900 deg wheel) and the wheel ends up back where FSD had it
-  if age > 0.6 and watch.speed > REENGAGE_SPEED and watch.peak < ACCIDENTAL_PEAK and dev < 0.12 and now - watch.lastMove > 0.4 and now - lastReengage > 10 then
+  if age > 0.6 and watch.speed > REENGAGE_SPEED and watch.peak < ACCIDENTAL_PEAK and dev < 0.12 and now - watch.lastMove > 0.4 and now - lastReengage > 45 then -- (Quentin: it came back 4 times in 25 s while he steered away on purpose; one second chance per 45 s)
     lastReengage = now
     geEvent('reengage', { mode = watch.mode, profile = watch.profile })
     watch = nil
