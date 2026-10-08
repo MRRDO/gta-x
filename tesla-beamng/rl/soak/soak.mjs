@@ -260,6 +260,12 @@ async function oneRun(n) {
   send({ t: 'gear', gear: 'P' }); await sleep(600)
   send({ t: 'teleport', x: pt.pos[0], y: pt.pos[1], z: pt.pos[2], hx: pt.h[0], hy: pt.h[1], repair: true }); await sleep(3500)
   if (st && st.dir[0] * pt.h[0] + st.dir[1] * pt.h[1] < 0) { send({ t: 'teleport', x: pt.pos[0], y: pt.pos[1], z: pt.pos[2], hx: pt.h[0], hy: pt.h[1], flip: true }); await sleep(3000) }
+  // a bad start (it hit the soak runs 13, 17-19, 21, 26, 28: wrong direction, inside something, still moving, nowhere near the road point):
+  // skip this run instead of recording junk
+  if (!st || Math.hypot(st.pos[0] - pt.pos[0], st.pos[1] - pt.pos[1]) > 40 || (st.speed ?? 0) > 3 || (st.damage ?? 0) > 1500 || st.dir[0] * pt.h[0] + st.dir[1] * pt.h[1] < 0.2) {
+    log(`run ${n}: bad start (pos ${st?.pos?.map((x) => Math.round(x))}, speed ${st?.speed}, damage ${st?.damage}): skipping`)
+    return
+  }
   send({ t: 'settings', nags: false, nagMode: 'off' })
   run = { n, profile, highway, t0: Date.now() / 1000, rows: [], events: [], shots: [], dmg0: st?.damage ?? 0, lastShotDmg: st?.damage ?? 0, start: pt.pos.map((x) => r1(x, 0)), routes: 0 }
   const newRoute = () => { const to = destination(st.pos, highway); send({ t: 'navigate', to, arrival: 'Drive On' }); run.routes++ }
