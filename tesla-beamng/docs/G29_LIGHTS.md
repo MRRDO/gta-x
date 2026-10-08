@@ -21,3 +21,10 @@ Priority, highest first:
 | FSD on | a quick fill when it starts, then the first two lights solid |
 
 All other times dark.
+
+## Windows write format (changed 2026-10-08)
+Working Windows programs (forza-wheel-leds, the BeamNG rev-light helpers) write `00 F8 12 <mask> 00 00 00 00` with hidapi: the first byte is
+hidapi's report id (0x00, the wheel has no numbered reports), then the 7-byte command. The helper first sent `F8 12 ...` without it, which
+Windows rejects or misreads. It now tries (1) with the leading 00, (2) the same with a last byte 01, (3) the bare Linux layout, (4) a plain 2-byte one,
+and moves on to the wheel's other HID interfaces when one refuses everything. G HUB's own "rev lights" setting can take the lights: turn it off.
+Test without the game: `python bridge\wheel_helper.py --led-test` lights 1, 2, 3, 4, 5 then none, and prints which layout worked.

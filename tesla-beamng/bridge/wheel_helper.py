@@ -400,6 +400,8 @@ class WheelLeds:
         self.retry_at = 0.0
         self.next_try = 0.0
         self.dead = False
+        self.skip = set()  # interface paths that refused every report layout
+        self.errs = []
         self.logf = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wheel_helper.log')
 
     def log(self, msg: str) -> None:
@@ -445,10 +447,13 @@ class WheelLeds:
         # the joystick interface (usage page 1, usage 4) if the list says; the first one otherwise
         infos.sort(key=lambda d: 0 if (d.get('usage_page') == 1 and d.get('usage') in (4, 5)) else 1)
         for info in infos:
+            if info['path'] in self.skip:
+                continue
             try:
                 dev = hid.device()
                 dev.open_path(info['path'])
                 self.dev = dev
+                self.path = info['path']
                 self.log(f'opened {info.get("product_string")} pid {info.get("product_id"):#06x} usage {info.get("usage_page")}/{info.get("usage")}')
                 return True
             except Exception as e:
@@ -469,13 +474,24 @@ class WheelLeds:
             if not self._open():
                 self.retry_at = now + 5  # no wheel (or not yet): look again in a few seconds, not every frame
                 return
-        # the layout that worked once is the only one used again; first time: the Linux driver's layout, then a plain 2-byte one
-        layouts = (self.layout,) if self.layout is not None else (0, 1)
+        # the layout that worked once is the only one used again. First time: the ones working Windows programs use (hidapi wants a leading
+        # 0x00 report id for a device without numbered reports: 00 F8 12 mask 00 00 00 00, one variant with a last byte 01), then the bare
+        # Linux-driver report, then a plain 2-byte one
+        layouts = (self.layout,) if self.layout is not None else (0, 1, 2, 3)
         lengths = (self.length,) if self.length else self.LENGTHS
         for lay in layouts:
             for n in lengths:
-                head = bytes([0xF8, 0x12, mask & 0xFF]) if lay == 0 else bytes([0x12, mask & 0xFF])
+                if lay in (0, 1):
+                    head = bytes([0x00, 0xF8, 0x12, mask & 0xFF])
+                    if n < 8:
+                        continue
+                elif lay == 2:
+                    head = bytes([0xF8, 0x12, mask & 0xFF])
+                else:
+                    head = bytes([0x12, mask & 0xFF])
                 buf = head + bytes(max(0, n - len(head)))
+                if lay == 1:
+                    buf = buf[:7] + b'\x01' + buf[8:]
                 try:
                     if self.dev.write(buf) > 0:
                         if self.length is None:
@@ -483,11 +499,23 @@ class WheelLeds:
                             self.log(f'write accepted (layout {lay}, report length {n}), lights {mask:#04x}')
                         self.mask = mask
                         return
-                except Exception:
-                    pass
+                except Exception as e:
+                    if len(self.errs) < 6:
+                        self.errs.append(f'layout {lay} len {n}: {e}')
         if self.length is None:
-            self.log('the wheel did not accept the light report (a different report layout, or another program owns the wheel)')
-            self.dead = True
+            # this interface took none of them: try the wheel's other interfaces next, give up after all were tried
+            self.log(f'interface refused every layout ({"; ".join(self.errs[:3])}): trying the next one')
+            self.errs = []
+            try:
+                self.skip.add(self.path)
+                self.dev.close()
+            except Exception:
+                pass
+            self.dev = None
+            self.retry_at = now + 1
+            if not self._open():
+                self.log('no interface accepted the light report (another program owns the wheel, e.g. G HUB / LGS, or a different layout)')
+                self.dead = True
 
     def close(self) -> None:
         try:
@@ -594,9 +622,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--fake', action='store_true', help='no wheel: print what it would do')
     ap.add_argument('--fake-press', default='', help=argparse.SUPPRESS)
     ap.add_argument('--seconds', type=float, default=0, help='stop after this long (testing)')
+    ap.add_argument('--led-test', action='store_true', help='light the rim lights one after another, print the result, and exit')
     ap.add_argument('--no-leds', action='store_true', help='do not use the rim lights')
     ap.add_argument('--quiet', action='store_true')
     a = ap.parse_args(argv)
+    if a.led_test:
+        # no relay, no wheel input: just the lights, with the answer printed (for finding out why they stay dark)
+        L = WheelLeds()
+        for m in (0x01, 0x03, 0x07, 0x0F, 0x1F, 0x00):
+            L.set(m, now=time.monotonic() + 100)
+            print(f'lights {m:#04x}: layout {L.layout}, length {L.length}, dead {L.dead}')
+            time.sleep(1.2)
+        try:
+            print(open(L.logf).read()[-1500:])
+        except Exception:
+            pass
+        return 0
 
     if a.list:
         devs = SDLWheel.list_devices()
