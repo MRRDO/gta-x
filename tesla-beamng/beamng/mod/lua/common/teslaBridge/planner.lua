@@ -47,6 +47,7 @@ M.DEFAULT_SETTINGS = {
   setSpeed = nil,        -- TACC/Autosteer fixed set speed (m/s) when the driver picked one
   followDistance = nil,  -- 1..7 (TACC); nil = profile gap
   laneChanges = true,
+  allowDriveways = false, -- Banish / park-nearby may use a driveway only when switched on (a spot tapped on the map always works)
   nags = true,
   unresponsive = 'park',  -- no answer to the last nag: park nearby if there's a spot, else pull over
   trafficControl = 'auto', -- 'confirm': wait for the driver's go (accelerator tap / confirm button) after stopping at a sign or light
@@ -192,12 +193,39 @@ local function snapToSpotAxis(spot, ox, oy)
   return ox, oy
 end
 
+-- Is this spot a driveway (a lone space off the road, not part of a lot or a row along the street)? Lots have neighbours, street
+-- spots sit within the roadside band; a spot with fewer than two others within 15 m that is also well off the road is a driveway.
+-- Banish and the "park nearby" choices skip them unless Settings > Allow parking in driveways is on (tapping a spot on the map always works).
+function Planner:isDriveway(sp)
+  if type(sp) ~= 'table' then return false end
+  if sp.driveway ~= nil then return sp.driveway end
+  if #(self.parking or {}) < 8 then return false end -- too few spots in the level to tell a lot from a driveway
+  local n = 0
+  for _, o in ipairs(self.parking or {}) do
+    if o ~= sp and (o.x - sp.x) ^ 2 + (o.y - sp.y) ^ 2 < 15 * 15 then n = n + 1; if n >= 2 then break end end
+  end
+  local offRoad = true
+  if self.graph and n < 2 then
+    local e, _, ed = P.nearestEdge(self.graph, sp.x, sp.y, nil, nil, 30)
+    if e then
+      local na = self.graph.nodes[e.a]
+      offRoad = ed > ((na and na.r) or 4) + 3.5
+    end
+  end
+  sp.driveway = n < 2 and offRoad
+  return sp.driveway
+end
+
+function Planner:spotAllowed(sp)
+  return (self.settings and self.settings.allowDriveways) or not self:isDriveway(sp)
+end
+
 function Planner:pickSpot(dest, cars, radius)
   if self.chosenSpot and not spotOccupied(self.chosenSpot, cars, self.castRay) then return self.chosenSpot end
   local best, bestScore
   for _, sp in ipairs(self.parking) do
     local d = sqrt((sp.x - dest[1]) ^ 2 + (sp.y - dest[2]) ^ 2)
-    if d < (radius or 80) and not spotOccupied(sp, cars, self.castRay) then
+    if d < (radius or 80) and not spotOccupied(sp, cars, self.castRay) and self:spotAllowed(sp) then
       local score = d
       if not bestScore or score < bestScore then best, bestScore = sp, score end
     end
@@ -211,7 +239,7 @@ function Planner:freeSpotsNear(ego, cars, radius, n)
   local list = {}
   for i, sp in ipairs(self.parking or {}) do
     local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-    if d < (radius or 200) and not spotOccupied(sp, cars, self.castRay) then list[#list + 1] = { id = i, d = d } end
+    if d < (radius or 200) and self:spotAllowed(sp) and not spotOccupied(sp, cars, self.castRay) then list[#list + 1] = { id = i, d = d } end
   end
   table.sort(list, function(a, b) return a.d < b.d end)
   local out = {}
@@ -223,7 +251,7 @@ function Planner:nearestFreeSpot(ego, cars, radius)
   local best, bi, bd
   for i, sp in ipairs(self.parking or {}) do
     local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-    if d < (radius or 200) and not spotOccupied(sp, cars, self.castRay) and (not bd or d < bd) then best, bi, bd = sp, i, d end
+    if d < (radius or 200) and self:spotAllowed(sp) and not spotOccupied(sp, cars, self.castRay) and (not bd or d < bd) then best, bi, bd = sp, i, d end
   end
   return bi, best, bd
 end
@@ -802,9 +830,12 @@ function Planner:aheadBlocked(ego, dirSign)
   local half, wid = (ego.len or 4.6) * 0.5, (ego.wid or 1.9) * 0.5
   local z0 = ego.z or 0
   local reach = half + 1.1 -- (a bit more than the car's own length ahead: stop before touching, not on touching)
+  -- a ray every 0.15 m across the car's width (+ a margin): a pole is thin (the old 5 rays, 0.5 m apart, slipped between)
   for _, h in ipairs({ 0.5, 0.2 }) do
-    for _, off in ipairs({ 0, wid * 0.5, -wid * 0.5, wid * 0.95, -wid * 0.95 }) do
+    local off = -(wid + 0.1)
+    while off <= wid + 0.1 do
       if cast(ego.x - hy * off, ego.y + hx * off, z0 + h, hx, hy, 0, reach) then return true end
+      off = off + 0.15
     end
   end
   -- a step or drop under the nose
@@ -812,6 +843,29 @@ function Planner:aheadBlocked(ego, dirSign)
   local g1 = self:groundAt(cast, ego.x + hx * (half + 0.7), ego.y + hy * (half + 0.7), z0 + 1.5)
   if g0 and g1 and math.abs(g1 - g0) > 0.12 then return true end
   return false
+end
+
+-- Distance (m, from the bumper) to the nearest upright obstacle (pole, post, wall, car) straight ahead within maxD, across the car's width.
+-- Upright = a high and a low ray both hit at about the same distance (a ramp or kerb is hit by the low one only).
+function Planner:forwardClearDist(ego, maxD)
+  local cast = self.castRay
+  if not cast then return nil end
+  local hx, hy = ego.hx, ego.hy
+  local half, wid = (ego.len or 4.6) * 0.5, (ego.wid or 1.9) * 0.5
+  local z0 = ego.z or 0
+  local ox, oy = ego.x + hx * half, ego.y + hy * half
+  local best
+  local off = -(wid + 0.15)
+  while off <= wid + 0.15 do
+    local px, py = ox - hy * off, oy + hx * off
+    local hi = cast(px, py, z0 + 0.8, hx, hy, 0, maxD)
+    if hi then
+      local lo = cast(px, py, z0 + 0.35, hx, hy, 0, maxD)
+      if lo and math.abs(hi - lo) < 0.8 and (not best or lo < best) then best = lo end
+    end
+    off = off + 0.15
+  end
+  return best
 end
 
 -- Are all the legs of a maneuver clear of walls, curbs and cars?
@@ -830,18 +884,34 @@ function Planner:startManeuver(segs, after, kind)
 end
 
 -- Dumb Summon: straight forward/back up to 12 m at walking pace.
-function Planner:summon(dir, ego)
+function Planner:summon(dir, ego, len)
   if not dir then
     if self.activity == 'summon' then self.activity = 'drive'; self.mode = 'off'; self:emit('summon', { state = 'stopped' }) end
     return true
   end
   local sgn = dir == 'reverse' and -1 or 1
   local pts = {}
-  for d = 0, 12, 0.5 do pts[#pts + 1] = { x = ego.x + ego.hx * d * sgn, y = ego.y + ego.hy * d * sgn, z = ego.z or 0 } end
+  for d = 0, len or 12, 0.5 do pts[#pts + 1] = { x = ego.x + ego.hx * d * sgn, y = ego.y + ego.hy * d * sgn, z = ego.z or 0 } end
   self.mode = 'fsd'
   self:startManeuver({ { dir = sgn, pts = pts, maxSpeed = 1.0 } }, 'stop', 'summon')
   self.activity = 'summon'
   return true
+end
+
+-- Is the car still on the line it was driving (within maxDist metres, pointing within maxDeg of it)? Used to tell a bump of the wheel
+-- (it ended up where it was going) from a driver steering his own way (the accidental re-engage must not drag him back to the route).
+function Planner:onPath(ego, maxDist, maxDeg)
+  local path = self.path
+  if not path or not path.pts or #path.pts < 3 then return true end -- nothing to compare with: it is not a reason to refuse
+  local pr = P.project(path, ego.x, ego.y)
+  if not pr then return true end
+  if pr.dist > (maxDist or 1.6) then return false end
+  local i = min(#path.pts - 1, max(1, pr.i))
+  local tx, ty = path.pts[i + 1].x - path.pts[i].x, path.pts[i + 1].y - path.pts[i].y
+  local tl = sqrt(tx * tx + ty * ty)
+  if tl < 1e-6 then return true end
+  local dot = (tx * ego.hx + ty * ego.hy) / tl
+  return dot >= math.cos(math.rad(maxDeg or 20))
 end
 
 -- "I'm not feeling well": FSD takes over (engaging if it was off), hazards on, and it stops at the safer of
@@ -1141,7 +1211,7 @@ function Planner:autopark(ego, cars, want, retry)
   else
     for _, sp in ipairs(self.parking) do
       local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-      if d < 25 and not spotOccupied(sp, cars, self.castRay) and (not bd or d < bd) then best, bd = sp, d end
+      if d < 25 and self:spotAllowed(sp) and not spotOccupied(sp, cars, self.castRay) and (not bd or d < bd) then best, bd = sp, d end
     end
   end
   if not best then return false, 'no free parking spot nearby' end
@@ -1620,6 +1690,11 @@ function Planner:tick(snap)
   -- a solid thing dead ahead (wall, barrier, closed road: the soak crashed at 24 m/s into one, twice at the same spot): slow down
   -- in time to stop with room to spare; the static rays reach 60 m, the emergency brake only starts at about 20 m
   if fsd and ego.wallAhead and v > 5 and abs(ego.yawRate or 0) < 0.12 then cap(sqrt(2 * 3.0 * max(0, ego.wallAhead - 8))) end
+  -- nobody in the car (Banish / Summon): look for poles, posts and walls right ahead with a dense bundle of rays and stop short of them
+  if self.unattended and v > 0.3 and self.castRay then
+    local dObs = self:forwardClearDist(ego, 14)
+    if dObs then cap(max(0, sqrt(2 * 2.0 * max(0, dObs - 1.3)))) end
+  end
 
   -- drop finished bumps
   local keep = {}
@@ -1989,7 +2064,7 @@ function Planner:tick(snap)
           local d = sqrt(rx * rx + ry * ry)
           -- an emergency takes a spot only if it is quick and ahead (about 8 s away); otherwise the roadside is safer
           local reach = not self.emergency or (d < 130 and d / max(v, 5) < 8 and rx * ego.hx + ry * ego.hy > 0.2 * d)
-          if d < 500 and reach and not spotOccupied(cand, cars, self.castRay) and (not bd or d < bd) then sp, bd = cand, d end
+          if d < 500 and reach and self:spotAllowed(cand) and not spotOccupied(cand, cars, self.castRay) and (not bd or d < bd) then sp, bd = cand, d end
         end
         if sp then
           kind = 'park'

@@ -354,6 +354,8 @@ export type Command =
   | { t: 'settings'; quirks?: Partial<Quirks>; safety?: Partial<SafetySettings>; speedOffsetMph?: number | null; setSpeed?: number | null; followDistance?: number | null; laneChanges?: boolean; nags?: boolean; camera?: CameraSettings
       /** Auto Shift out of Park: press the brake in P and the car picks D or R (default off). */
       autoShift?: boolean
+      /** Banish / park-nearby may use a lone driveway space (default off; a spot tapped on the map always works). */
+      allowDriveways?: boolean
       /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'
       /**

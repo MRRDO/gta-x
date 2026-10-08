@@ -15,6 +15,7 @@ local M = {}
 
 local P = require('teslaBridge/pathing')
 local Pl = require('teslaBridge/planner')
+M._Bn = require('teslaBridge/banish') -- the Banish supervisor: backups for backups (a field: the 200 locals limit)
 local Sf = require('teslaBridge/safety')
 
 local logTag = 'teslaBridge'
@@ -852,7 +853,10 @@ local function syncVehicleMode(veh)
 end
 
 local function applyPlannerOut(veh, out)
-  for _, ev in ipairs(out.events or {}) do relayEvent(ev) end
+  for _, ev in ipairs(out.events or {}) do
+    relayEvent(ev)
+    if M._sup and M._sup.active then M._sup:onEvent(ev.kind, ev.reason, ev.detail, gameTime) end
+  end
   for _, cmd in ipairs(out.commands or {}) do cmd.fromPlanner = true; toVehicle(veh, 'command', cmd) end
   if out.route then send(out.route) end
   plannerStatus = out.status or plannerStatus
@@ -1329,6 +1333,18 @@ function M.onVehicleEvent(vid, json)
     -- the car decided that takeover was an accidental bump of the wheel
     if planner and veh and planner.mode == 'off' then
       local ego = egoSnapshot(veh)
+      -- only when it really was a bump: the car is still on the line FSD was driving and still points along it. If he steered somewhere
+      -- else (turned off, changed lanes, is driving his own way) FSD must not jump back in and pull him to its own route.
+      local still = true
+      if planner.path and planner.dest ~= nil or (planner.path and planner.path.pts) then
+        local okPath, onP = pcall(function() return planner:onPath(ego, 1.6, 20) end)
+        if okPath then still = onP end
+      end
+      if (ego.signal == 'left' or ego.signal == 'right') then still = false end -- he is signalling: he means it
+      if not still then
+        relayEvent({ kind = 'notice', detail = 'FSD stays off: you steered your own way' })
+        return
+      end
       local okE, err = planner:engage(ev.mode or 'fsd', ev.profile, ego, trafficList())
       if okE then
         relayEvent({ kind = 'reengaged', detail = 'accidental takeover' })
@@ -1622,6 +1638,103 @@ local function clearReturnPoint(x, y, cars)
   return nil, 'the place is blocked by parked cars'
 end
 
+-- Banish supervisor glue (see teslaBridge/banish.lua): what each step does in the game
+function M._banishGo(veh, ego, cars)
+  ensureVehicleExtension(veh)
+  if planner.mode == 'off' then
+    local okE = planner:engage('fsd', 'hurry', ego, cars)
+    if not okE then return false end
+  end
+  pcall(function() planner:confirm(gameTime) end) -- nobody is in the car to press the brake for Brake Confirm
+  send(planner:routeMessage()); planner.routeDirty = false
+  syncVehicleMode(veh)
+  if planner.mode ~= 'off' then
+    planner.unattended = true
+    toVehicle(veh, 'command', { t = 'unattended', on = true })
+  end
+  return planner.mode ~= 'off'
+end
+
+function M._supCallbacks()
+  return {
+    trySpot = function(id)
+      local veh = playerVehicle()
+      if not veh or not planner then return false end
+      local ego, cars = egoSnapshot(veh), trafficList()
+      if planner.mode ~= 'off' then planner.maneuver = nil; planner.activity = 'drive' end -- a failed try is still set up: drop it quietly
+      local ok = planner:parkAtSpot(id, ego, cars, { road = true })
+      if ok and M._banishGo(veh, ego, cars) then return true end
+      if ok then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil end
+      -- no road to follow (a garage, a lot with no mapped aisles) or no way there by road: park into it straight from here
+      local sp = planner.parking and planner.parking[id]
+      if sp and (sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2 < 45 * 45 then
+        ensureVehicleExtension(veh)
+        if planner:autopark(ego, cars, sp) then
+          pcall(function() planner:confirm(gameTime) end)
+          syncVehicleMode(veh)
+          planner.unattended = true
+          toVehicle(veh, 'command', { t = 'unattended', on = true })
+          return true
+        end
+      end
+      return false
+    end,
+    backUp = function()
+      local veh = playerVehicle()
+      if not veh or not planner or planner.mode ~= 'off' then return false end
+      local ego = egoSnapshot(veh)
+      local rays = sampleRays(ego)
+      if (rays.rear and rays.rear < 4) or planner:aheadBlocked(ego, -1) then return false end
+      ensureVehicleExtension(veh)
+      if not planner:summon('reverse', ego, 3) then return false end
+      planner.unattended = true
+      toVehicle(veh, 'command', { t = 'unattended', on = true })
+      syncVehicleMode(veh)
+      return true
+    end,
+    pullOver = function()
+      local veh = playerVehicle()
+      if not veh or not planner then return false end
+      local ego, cars = egoSnapshot(veh), trafficList()
+      if planner.mode == 'off' then
+        if not planner:engage('fsd', 'hurry', ego, cars) then return false end
+      end
+      if not planner:pullOverNow(ego) then
+        planner:disengage('error', 'pull over failed')
+        return false
+      end
+      planner.internalTrip = true
+      pcall(function() planner:confirm(gameTime) end)
+      send(planner:routeMessage()); planner.routeDirty = false
+      syncVehicleMode(veh)
+      planner.unattended = true
+      toVehicle(veh, 'command', { t = 'unattended', on = true })
+      return true
+    end,
+    safeStop = function()
+      local veh = playerVehicle()
+      if not veh then return end
+      toVehicle(veh, 'command', { t = 'gear', gear = 'P' })
+      toVehicle(veh, 'command', { t = 'signal', dir = 'hazard' })
+      if planner and planner.mode ~= 'off' then planner:disengage('error', 'banish: stopped safely') end
+      syncVehicleMode(veh)
+    end,
+    say = function(text) event('notice', text) end,
+  }
+end
+
+M._supTickT = 0
+function M.supTick()
+  local sup = M._sup
+  if not sup or not sup.active or realTime < M._supTickT then return end
+  M._supTickT = realTime + 0.5
+  local st = plannerStatus or {}
+  local why = planner and (planner.activity == 'maneuver' or planner.activity == 'summon' or st.waitingFor ~= nil or (st.leadGap ~= nil and st.leadGap < 10))
+  local ctl = planner and planner.status and planner.status.control
+  if ctl and ctl.kind and ctl.dist and ctl.dist < 60 then why = true end -- a light or sign ahead is a reason to stand
+  sup:tick(gameTime, { moving = math.abs(lastVehSt.speed or 0) > 0.4, reason = why and true or false })
+end
+
 handleCommand = function(msg)
   local t = msg.t
   if t == 'action' then return runAction(msg.name) end
@@ -1885,40 +1998,16 @@ handleCommand = function(msg)
     local ego, cars = egoSnapshot(veh), trafficList()
     ensureVehicleExtension(veh)
     if t == 'banish' then
-      -- the nearest few free spots in turn: one that does not work out (taken, no route, no way in) does not end it
-      local ok, err, how
-      local tried = planner:freeSpotsNear(ego, cars, 400, 6)
-      for _, id in ipairs(tried) do
-        ok, err, how = planner:parkAtSpot(id, ego, cars, { road = true })
-        if ok then break end
-      end
-      if not ok then
-        -- like the real car ("drive to the vicinity and park if possible, otherwise pull over"): no spot that works out -> pull over
-        local okE, errE = true, nil
-        if planner.mode == 'off' then okE, errE = planner:engage('fsd', 'hurry', ego, cars) end
-        if okE and planner:pullOverNow(ego) then
-          planner.internalTrip = true
-          banishedFrom = { ego.x, ego.y, ego.z or 0, level = levelName() }
-          event('notice', 'banish: no free spot that works, pulling over instead (' .. tostring(err or 'no spot within 400 m') .. ')')
-          pcall(function() planner:confirm(gameTime) end)
-          syncVehicleMode(veh)
-          planner.unattended = true
-          toVehicle(veh, 'command', { t = 'unattended', on = true })
-          relayEvent({ kind = 'banish', detail = 'pulling over' })
-          return
-        end
-        event('error', 'banish: ' .. tostring(errE or err or 'no free parking spot within 400 m')); return
-      end
+      -- the nearest free spots (driveways only when allowed), tried in turn by the supervisor: a spot that does not work out (taken, no way in,
+      -- stuck, hit on the way) leads to the next one, then a pull over at the edge of the road, then a stop in Park with the hazards on
       banishedFrom = { ego.x, ego.y, ego.z or 0, level = levelName() }
       if jsonWriteFile then try(jsonWriteFile, BANISH_FILE, { x = banishedFrom[1], y = banishedFrom[2], z = banishedFrom[3], level = banishedFrom.level }, true) end -- survives a mod reload / restart
-      if planner.mode == 'off' then
-        local okE, errE = planner:engage('fsd', 'hurry', ego, cars)
-        if not okE then planner.dest, planner.arrival, planner.chosenSpot = nil, nil, nil; event('error', 'banish: ' .. tostring(errE)); return end
-      end
-      pcall(function() planner:confirm(gameTime) end) -- nobody is in the car to press the brake for Brake Confirm
-      send(planner:routeMessage()); planner.routeDirty = false
-      relayEvent({ kind = 'banish', detail = 'parking by itself' })
+      M._sup = M._sup or M._Bn.new(M._supCallbacks())
+      M._sup:start(planner:freeSpotsNear(ego, cars, 400, 8), gameTime)
+      local did = M._sup:advance(gameTime)
+      relayEvent({ kind = 'banish', detail = did == 'spot' and 'parking by itself' or (did == 'pullover' and 'pulling over' or 'stopped') })
     else
+      if M._sup then M._sup:stop() end -- coming back: no more Banish supervision
       local to = msg.back and banishedFrom or (type(msg.to) == 'table' and { tonumber(msg.to[1]), tonumber(msg.to[2]), tonumber(msg.to[3]) or ego.z or 0 } or nil)
       if msg.back and not to then event('error', 'summon: nothing to come back to yet (use Banish first)'); return end
       if not to or not to[1] or not to[2] then event('error', 'summon: no place to come to'); return end
@@ -2435,6 +2524,7 @@ local function onUpdate(dtReal, dtSim)
   end
 
   pcall(camTick, veh)
+  if M._sup then pcall(M.supTick) end
 
   -- places can show up after the level has finished loading: look again every few seconds for a minute and resend the map when found
   local pz = M._poi

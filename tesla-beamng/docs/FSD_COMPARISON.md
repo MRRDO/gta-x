@@ -24,3 +24,6 @@ Sources are public release notes and owner reports (search results, not Tesla's 
 1. Blocked-road detour: when the map graph says a road is blocked by a stopped car for 20 s, route around it.
 2. Speed profile that adapts to traffic ("FSD determines the appropriate speed from profile, limit and surrounding traffic").
 3. Parking "vicinity" search: spiral outward from the destination instead of a fixed 400 m nearest-first list.
+
+## Banish with backups (2026-10-08)
+Banish used to stop in the lane when a try failed (the planner disengages on a stuck back-in, an off-course car, a hit, "no route"). Now `teslaBridge/banish.lua` supervises: next spot (up to 8 nearest free ones, driveways left out unless Settings > Allow Parking in Driveways), a short back-up before the next try after a stuck/hit, a direct autopark when there is no road (garage), then a pull over at the road edge, then Park + hazards where it stands. A watchdog treats 28 s without moving and without a reason (light, crossing, car ahead, a running maneuver) as a failure. Poles and posts: dense rays (every 0.15 m across the car) while nobody is in the car. Tests: `test_banish.lua`, `test_driveway.lua`.
