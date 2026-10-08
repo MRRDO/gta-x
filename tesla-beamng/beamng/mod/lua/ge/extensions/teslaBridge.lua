@@ -451,30 +451,91 @@ local function minimapInfo(lvl)
   end
 end
 
--- named places for the app's map (gas stations, garages, shops...): the level's "facilities", best effort (the shape varies by
--- game version and they may only exist a while after the level loaded), each with a position when it has one
+-- named places for the app's map (gas stations, garages, shops...). The game keeps them in several places that differ by version,
+-- so ask all of them and merge: (1) the big map's POI list (gameplay_rawPois), (2) the level's facilities, (3) point-of-interest
+-- objects in the scene. M._poiDiag says how many each gave (sent as a notice so a missing list can be diagnosed without the game log).
+function M._poiName(raw, fallback)
+  local nm = raw
+  if type(nm) ~= 'string' or nm == '' then nm = fallback end
+  if type(nm) ~= 'string' or nm == '' then return nil end
+  nm = nm:gsub('^"?(.-)"?$', '%1')
+  if nm:find('^[%w_]+%.[%w_%.]+$') and type(translateLanguage) == 'function' then
+    local ok, tr = pcall(translateLanguage, nm, nm)
+    if ok and type(tr) == 'string' and tr ~= '' then nm = tr end
+  end
+  return nm
+end
+
+function M._poiPos(t)
+  if type(t) ~= 'table' then return nil end
+  local p = t.pos or t.position or t.center or t.doorPos or (t.doors and t.doors[1] and type(t.doors[1]) == 'table' and t.doors[1].pos)
+  if p and p.x then return p.x, p.y, p.z end
+  if type(p) == 'table' and p[1] then return p[1], p[2], p[3] end
+end
+
 function M.collectPois(lvl)
-  local pois = {}
+  local pois, seen, diag = {}, {}, {}
+  local function add(name, x, y, z, kind, src)
+    if not name or not x or #pois >= 400 then return end
+    local key = name .. ':' .. math.floor(x / 5) .. ':' .. math.floor(y / 5)
+    if seen[key] then return end
+    seen[key] = true
+    pois[#pois + 1] = { name = name, pos = { num(x), num(y), num(z or 0) }, kind = tostring(kind or 'place') }
+    diag[src] = (diag[src] or 0) + 1
+  end
+  -- (1) the big map's list: each entry carries a bigmap marker with a position and a name
+  try(function()
+    local rp = gameplay_rawPois
+    local list = rp and rp.getRawPoiListByLevel and rp.getRawPoiListByLevel(lvl)
+    if type(list) ~= 'table' then diag.rawPois = 'none'; return end
+    for _, poi in pairs(list) do
+      if type(poi) == 'table' then
+        local mi = poi.markerInfo or {}
+        local bm = mi.bigmapMarker or mi.bigmap or {}
+        local x, y, z = M._poiPos(bm)
+        if not x then x, y, z = M._poiPos(poi) end
+        local nm = M._poiName(bm.name or bm.title or (poi.data and (poi.data.name or poi.data.title)) or poi.name or poi.title, poi.id)
+        add(nm, x, y, z, bm.icon or (poi.data and poi.data.type) or poi.type, 'rawPois')
+      end
+    end
+  end)
+  -- (2) the level's facilities
   try(function()
     local fac = freeroam_facilities and freeroam_facilities.getFacilities and freeroam_facilities.getFacilities(lvl)
-    if type(fac) ~= 'table' then return end
-    local function posOf(f)
-      local p = f.pos or f.position or f.center or f.doorPos or (f.doors and f.doors[1] and f.doors[1].pos)
-      if p and p.x then return p.x, p.y, p.z end
-      if type(p) == 'table' and p[1] then return p[1], p[2], p[3] end
-    end
+    if type(fac) ~= 'table' then diag.facilities = 'none'; return end
     for kind, list in pairs(fac) do
       if type(list) == 'table' then
         for _, f in pairs(list) do
-          if type(f) == 'table' and #pois < 400 then
-            local x, y, z = posOf(f)
-            local nm = f.name or f.label or f.id
-            if x and nm then pois[#pois + 1] = { name = tostring(nm):gsub('^"?(.-)"?$', '%1'), pos = { num(x), num(y), num(z or 0) }, kind = tostring(kind) } end
+          if type(f) == 'table' then
+            local x, y, z = M._poiPos(f)
+            if not x and type(f.doors) == 'table' then -- doors name a scene object: its position is the place
+              for _, d in pairs(f.doors) do
+                local on = type(d) == 'table' and (d[1] or d.obj or d.objectName) or d
+                local o = type(on) == 'string' and scenetree and scenetree.findObject(on)
+                if o and o.getPosition then local q = o:getPosition(); x, y, z = q.x, q.y, q.z; break end
+              end
+            end
+            add(M._poiName(f.name or f.label, f.id), x, y, z, kind, 'facilities')
           end
         end
       end
     end
   end)
+  -- (3) point-of-interest objects placed in the level
+  try(function()
+    local names = scenetree and scenetree.findClassObjects and scenetree.findClassObjects('BeamNGPointOfInterest')
+    if type(names) ~= 'table' then diag.scene = 'none'; return end
+    for _, nm in pairs(names) do
+      local o = scenetree.findObject(nm)
+      if o and o.getPosition then
+        local q = o:getPosition()
+        local title = try(function() return o.title end) or try(function() return o:getField('title', 0) end)
+        local typ = try(function() return o.type end) or try(function() return o:getField('type', 0) end)
+        add(M._poiName(title, nm), q.x, q.y, q.z, typ, 'scene')
+      end
+    end
+  end)
+  M._poiDiag = string.format('places: rawPois=%s facilities=%s scene=%s (%d total)', tostring(diag.rawPois or 0), tostring(diag.facilities or 0), tostring(diag.scene or 0), #pois)
   return pois
 end
 
@@ -519,7 +580,8 @@ local function buildMap()
     minimapInfo = minimapInfo(lvl),
     nodes = nodes, links = links, signals = sig, parking = park,
   }
-  logI(string.format('map %s: %d nodes, %d links, %d places', lvl, #nodes, #links, #pois))
+  mapMsg.poiDiag = M._poiDiag
+  logI(string.format('map %s: %d nodes, %d links, %d places [%s]', lvl, #nodes, #links, #pois, tostring(M._poiDiag)))
   return true
 end
 
@@ -2376,8 +2438,10 @@ local function onUpdate(dtReal, dtSim)
   if mapMsg and level and pz and #(mapMsg.pois or {}) == 0 and pz.tries < 12 and realTime >= pz.next then
     pz.tries, pz.next = pz.tries + 1, realTime + 5
     local found = M.collectPois(level)
+    if pz.tries == 12 and #found == 0 then send({ t = 'event', kind = 'notice', detail = 'No named places found on this map. ' .. tostring(M._poiDiag) }) end
     if #found > 0 then
       mapMsg.pois = found
+      mapMsg.poiDiag = M._poiDiag
       send(mapMsg)
       logI(string.format('map %s: %d places found after loading', level, #found))
     end
