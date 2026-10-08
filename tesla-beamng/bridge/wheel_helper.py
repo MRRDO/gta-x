@@ -521,7 +521,7 @@ class WheelLeds:
         now = time.monotonic() if now is None else now
         if mask == self.mask and now < self.next_try:
             return
-        self.next_try = now + 5
+        self.next_try = now + (0.25 if mask else 2.0)  # lit lights are written again 4 times a second: BeamNG or G HUB may write over them with their own state
         if self.dev is None:
             if now < self.retry_at:
                 return
