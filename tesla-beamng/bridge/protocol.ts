@@ -295,9 +295,9 @@ export type ButtonMap = {
  * Relay -> app and wheel helper: which effect each G29 light event shows (the app's Settings > Wheel lights). `test` is an effect the
  * helper plays for 5 s (testId changes for each test tap so the same effect can be replayed).
  */
-export const LIGHT_EVENTS = ['fsd', 'takeover', 'warning', 'brake', 'hazard', 'signal', 'emergency', 'searching', 'unattended', 'speed'] as const
+export const LIGHT_EVENTS = ['fsd', 'takeover', 'warning', 'brake', 'hazard', 'signal', 'emergency', 'green', 'searching', 'unattended', 'speed'] as const
 export type LightEvent = (typeof LIGHT_EVENTS)[number]
-export type WheelLights = { t: 'wheelLights'; map: Partial<Record<LightEvent, string>>; test: string | null; testId: number }
+export type WheelLights = { t: 'wheelLights'; map: Partial<Record<LightEvent, string>>; test: string | null; testId: number; helper: boolean }
 /** Relay -> app: a wheel button went down/up (for "press a button" UIs). */
 export type WheelButton = { t: 'wheelButton'; button: number; down: boolean }
 

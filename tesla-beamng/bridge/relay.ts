@@ -233,7 +233,7 @@ try {
 } catch { /* first run */ }
 let lightTest: string | null = null
 let lightTestId = 0
-function wheelLightsMsg(): WheelLights { return { t: 'wheelLights', map: lightMap, test: lightTest, testId: lightTestId } }
+function wheelLightsMsg(): WheelLights { return { t: 'wheelLights', map: lightMap, test: lightTest, testId: lightTestId, helper: companion !== null } }
 function handleWheelLights(ws: WebSocket, msg: any): boolean {
   switch (msg.t) {
     case 'requestWheelLights':
@@ -292,6 +292,7 @@ function handleButtons(ws: WebSocket, msg: any): boolean {
         }
       }
       broadcast(buttonMapMsg())
+      broadcast(wheelLightsMsg())
       return true
     case 'requestButtonMap':
       ws.send(JSON.stringify(buttonMapMsg()))
@@ -873,7 +874,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (!sendGame(msg)) ws.send(JSON.stringify({ t: 'event', kind: 'error', detail: 'game not connected' }))
   })
   ws.on('close', () => {
-    if (companion?.ws === ws) { companion = null; broadcast(buttonMapMsg()) }
+    if (companion?.ws === ws) { companion = null; broadcast(buttonMapMsg()); broadcast(wheelLightsMsg()) }
     clients.delete(ws)
     log(`app disconnected (${clients.size} left)`)
   })

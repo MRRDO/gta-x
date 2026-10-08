@@ -298,11 +298,16 @@ EFFECTS = {
     'breathe': lambda t: (1 << (1 + int(abs(((t * 0.5) % 1.0) * 2 - 1) * 5 + 0.0001) % 5)) - 1,
     'countdown': lambda t: (1 << (5 - int((t % 3.0) / 0.6) % 5)) - 1,
     'pulse': _fx_pulse,
+    'pair1': lambda t: _blink(t, 4, 0x01),                              # one pair only, flashing (find which one is green)
+    'pair2': lambda t: _blink(t, 4, 0x02),
+    'pair3': lambda t: _blink(t, 4, 0x04),
+    'pair4': lambda t: _blink(t, 4, 0x08),
+    'pair5': lambda t: _blink(t, 4, 0x10),
 }
 # what each event shows unless the app picks another effect
 DEFAULT_FX = {
     'fsd': 'solid2', 'takeover': 'urgent', 'warning': 'pulse', 'brake': 'urgent', 'hazard': 'sweepD', 'signal': 'sweep',
-    'emergency': 'alt', 'searching': 'scanner', 'unattended': 'scanner', 'speed': 'solid_all',
+    'emergency': 'alt', 'green': 'pair5', 'searching': 'scanner', 'unattended': 'scanner', 'speed': 'solid_all',
 }
 
 
@@ -336,6 +341,8 @@ def led_mask(t: float, s: dict) -> int:
             return _blink(t, 10, ALL)                       # about to touch
         n = max(1, min(5, int((4.0 - rear) / 0.8) + 1))     # 3.2 m: 1 light ... under 0.8 m: all 5
         return (1 << n) - 1
+    if s.get('green'):
+        return show('green')                               # the light turned green and we have not moved yet
     sig = s.get('signal')
     if sig == 'hazard':
         return show('hazard')
@@ -365,6 +372,7 @@ class LedState:
         self.d: dict = {}
         self._kind = None
         self._eng = False
+        self._red_wait = False
 
     def event(self, m: dict, now: float) -> None:
         """Relay events: looking for parking / spot found."""
@@ -412,6 +420,18 @@ class LedState:
         self.d['unattended'] = bool(ap.get('unattended'))
         self.d['emergency'] = bool(ap.get('pullingOver') or (ap.get('phase') == 'parking' and ap.get('pullOver')))
         self.d['speed_warn'] = bool(m.get('speedWarning'))
+        # a stop light turning green while we wait at it: flash until we move (or 25 s)
+        ctl = ap.get('control') or {}
+        red = ctl.get('kind') == 'signal' and (bool(ctl.get('red')) or ctl.get('state') == 'red')
+        if red and self.d['speed'] < 1.5:
+            self._red_wait = True
+        elif self._red_wait and ctl.get('kind') == 'signal' and ctl.get('state') == 'green' and self.d['speed'] < 1.5:
+            self._red_wait = False
+            self.d['green'], self.d['green_since'] = True, now
+        elif self.d['speed'] > 3.0 or not eng and ctl.get('kind') != 'signal':
+            self._red_wait = False
+        if self.d.get('green') and (self.d['speed'] > 1.8 or now - self.d.get('green_since', now) > 25):
+            self.d['green'] = False
 
 
 # ----------------------------------------------------------------------------- G29 rev lights
@@ -625,6 +645,7 @@ class Link:
                         tid = m.get('testId')
                         if m.get('test') and tid != self.ledstate.d.get('test_id'):
                             self.ledstate.d.update(test=m['test'], test_id=tid, test_start=time.monotonic(), test_until=time.monotonic() + 5)
+                            self.leds.log(f'test effect {m["test"]}')
                         elif not m.get('test'):
                             self.ledstate.d.update(test=None, test_id=tid)
                     elif m.get('t') == 'event' and self.leds and m.get('kind') in ('parkingSearch', 'arrived', 'disengage', 'cancelRoute'):
