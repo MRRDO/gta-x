@@ -1617,6 +1617,9 @@ function Planner:tick(snap)
   local waitingFor = nil
   local signal = nil
   local function cap(vv) maxSpeed = maxSpeed and min(maxSpeed, vv) or vv end
+  -- a solid thing dead ahead (wall, barrier, closed road: the soak crashed at 24 m/s into one, twice at the same spot): slow down
+  -- in time to stop with room to spare; the static rays reach 60 m, the emergency brake only starts at about 20 m
+  if fsd and ego.wallAhead and v > 5 and abs(ego.yawRate or 0) < 0.12 then cap(sqrt(2 * 3.0 * max(0, ego.wallAhead - 8))) end
 
   -- drop finished bumps
   local keep = {}

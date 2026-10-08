@@ -691,14 +691,15 @@ castRay = function(px, py, pz, dx, dy, dz, dist)
 end
 
 -- distances to static things around the car (walls, poles) and a bridge overhead
+-- (M._rays, not a local: the 200-local limit) the latest forward rays (safety tick, 20 Hz); the planner reads them for its wall-ahead speed cap
 local function sampleRays(ego)
   local z = (ego.z or 0) + 0.6
   local half = (ego.len or 4.6) * 0.5
   local rays = {
-    front = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z, ego.hx, ego.hy, 0, 30),
+    front = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z, ego.hx, ego.hy, 0, 60),
     -- a second ray 0.9 m higher: a real wall/pole/car is hit by both at about the same distance; a rising road or
     -- crest is hit by the low ray much sooner (that read as a wall dead ahead: phantom braking at 30 mph)
-    frontHi = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z + 0.9, ego.hx, ego.hy, 0, 30),
+    frontHi = castRay(ego.x + ego.hx * half, ego.y + ego.hy * half, z + 0.9, ego.hx, ego.hy, 0, 60),
     rear = castRay(ego.x - ego.hx * half, ego.y - ego.hy * half, z, -ego.hx, -ego.hy, 0, 15),
     left = castRay(ego.x, ego.y, z, -ego.hy, ego.hx, 0, 8),
     right = castRay(ego.x, ego.y, z, ego.hy, -ego.hx, 0, 8),
@@ -712,9 +713,9 @@ local function sampleRays(ego)
     local c, sn = math.cos(a), math.sin(a)
     local dx, dy = ego.hx * c - ego.hy * sn, ego.hy * c + ego.hx * sn
     local ox, oy = ego.x + ego.hx * half, ego.y + ego.hy * half
-    local lo = castRay(ox, oy, z, dx, dy, 0, 25)
+    local lo = castRay(ox, oy, z, dx, dy, 0, 45)
     if lo and math.abs(lo * sn) < wid + lo * 0.03 then
-      local hi = castRay(ox, oy, z + 0.9, dx, dy, 0, 25)
+      local hi = castRay(ox, oy, z + 0.9, dx, dy, 0, 45)
       if hi and math.abs(hi - lo) < 1.5 then
         local fwd, fwdHi = lo * c, hi * c
         if not rays.front or fwd < rays.front then rays.front = fwd end
@@ -817,6 +818,7 @@ local function planTick()
   if not veh then return end
   local ego = egoSnapshot(veh)
   do local mo = map and map.objects and map.objects[veh:getID()]; ego.damage = mo and tonumber(mo.damage) or nil end
+  do local r = M._rays; ego.wallAhead = (r and r.front and r.frontHi and math.abs(r.frontHi - r.front) < 1.5) and r.front or nil end
   local out = planner:tick({ t = gameTime, dt = 0.1, ego = ego, cars = trafficList(), weather = weather, overhead = overhead })
   applyPlannerOut(veh, out)
 end
@@ -829,6 +831,7 @@ local function safetyTick()
   local cars = trafficList()
   local lane = P.locate(graph, ego.x, ego.y, ego.hx, ego.hy, 20)
   local rays = sampleRays(ego)
+  M._rays = rays
   local so = safety:tick(gameTime, 0.05, { ego = ego, cars = cars }, { lane = lane, rays = rays, attention = attention })
   for _, ev in ipairs(so.events) do relayEvent(ev) end
   safetyStatus = { fcw = so.fcw or false, aeb = (so.aeb or 0) > 0, blindLeft = so.blindLeft or false, blindRight = so.blindRight or false,
