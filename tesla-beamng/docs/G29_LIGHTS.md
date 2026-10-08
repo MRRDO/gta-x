@@ -28,3 +28,9 @@ hidapi's report id (0x00, the wheel has no numbered reports), then the 7-byte co
 Windows rejects or misreads. It now tries (1) with the leading 00, (2) the same with a last byte 01, (3) the bare Linux layout, (4) a plain 2-byte one,
 and moves on to the wheel's other HID interfaces when one refuses everything. G HUB's own "rev lights" setting can take the lights: turn it off.
 Test without the game: `python bridge\wheel_helper.py --led-test` lights 1, 2, 3, 4, 5 then none, and prints which layout worked.
+
+## Choosing the effects (2026-10-08)
+The five bits are five mirrored pairs (OptiPlex test: no single left/right light). Settings > Wheel lights in the app picks an effect per event
+(FSD on, take over, warning, hard braking, hazards, signals, emergency vehicle, searching, Banish/Summon, speed) and has a Try button (plays 5 s).
+Choices are saved by the relay in `bridge/wheel-lights.json`. Defaults: FSD = amber pair solid, take over and hard braking = urgent flash
+(10 Hz, all lights), hazards = sweep 3, 4, 5. Effects are `EFFECTS` in `bridge/wheel_helper.py`; add one there and in `src/beamng/WheelLights.tsx`.

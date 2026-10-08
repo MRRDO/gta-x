@@ -273,25 +273,63 @@ def _steps(t: float, hz: float, steps: list[int]) -> int:
     return steps[int(t * hz * len(steps)) % len(steps)]
 
 
+# The five bits are five MIRRORED light pairs on the G29 (bit 0 = outermost pair; there is no single left/right light), so every effect
+# below is a function of time returning a 5-bit mask. The app (Settings > Wheel lights) picks one per event; the names and labels are
+# also listed in the app (src/beamng/WheelLights.tsx) and the relay (bridge/relay.ts: LIGHT_EVENTS).
+def _fx_pulse(t: float) -> int:
+    return _steps(t, 1.2, [0x04, 0x0E, ALL, 0x0E, 0x04, 0x00])
+
+
+EFFECTS = {
+    'off': lambda t: 0,
+    'solid2': lambda t: 0x03,                                         # the amber pair(s), solid
+    'solid_all': lambda t: ALL,
+    'urgent': lambda t: _blink(t, 10, ALL),                           # very rapid flash, "pay attention now"
+    'strobe': lambda t: _blink(t, 6, ALL),
+    'flash': lambda t: _blink(t, 2, ALL),
+    'alt': lambda t: _blink(t, 4, 0x03, 0x18),                        # first two / last two alternate
+    'swap': lambda t: _blink(t, 4, 0x11, 0x0E),                       # outer / middle swap
+    'double': lambda t: _steps(t, 1.6, [ALL, 0, ALL, 0, 0, 0, 0, 0]),  # double-flash burst
+    'sweepD': lambda t: _steps(t, 1.6, [0x04, 0x0C, 0x1C, 0x00]),      # sweep 3, 4, 5 and repeat
+    'sweep': lambda t: _steps(t, 1.5, [0x04, 0x06, 0x07, 0x00]),       # sweep 3, 2, 1
+    'chase_in': lambda t: _steps(t, 3, [0x11, 0x0A, 0x04, 0x0A]),      # outside in
+    'chase_out': lambda t: _steps(t, 3, [0x04, 0x0A, 0x11, 0x0A]),     # inside out
+    'scanner': lambda t: 1 << (int(t * 7) % 8 if int(t * 7) % 8 < 5 else 8 - int(t * 7) % 8),
+    'breathe': lambda t: (1 << (1 + int(abs(((t * 0.5) % 1.0) * 2 - 1) * 5 + 0.0001) % 5)) - 1,
+    'countdown': lambda t: (1 << (5 - int((t % 3.0) / 0.6) % 5)) - 1,
+    'pulse': _fx_pulse,
+}
+# what each event shows unless the app picks another effect
+DEFAULT_FX = {
+    'fsd': 'solid2', 'takeover': 'urgent', 'warning': 'pulse', 'brake': 'urgent', 'hazard': 'sweepD', 'signal': 'sweep',
+    'emergency': 'alt', 'searching': 'scanner', 'unattended': 'scanner', 'speed': 'solid_all',
+}
+
+
 def led_mask(t: float, s: dict) -> int:
-    """Which rim lights to show. `s` is what the car reports (see LedState.update). Highest priority first:
-    FSD warnings (pulse, faster the longer they are ignored, then flashing), emergency, braking (all flash), reverse parking
-    distance (lights fill up only when close), hazards, turn signals (a sweep to that side), Banish/Summon (scanner), speed warning,
-    FSD on (first two lights solid, with a short fill when it starts)."""
+    """Which rim lights to show. `s` is what the car reports (see LedState.update); s['fx'] = {event: effect} are the app's choices.
+    Highest priority first: a test effect from the app, FSD warnings (pulse, faster the longer they are ignored, then the take-over
+    effect), emergency, braking, reverse parking distance (lights fill up only when close), hazards, turn signals, spot found,
+    searching for parking, Banish/Summon, speed warning, FSD on (with a short fill when it starts)."""
+    fx = s.get('fx') or {}
+
+    def show(event: str, tt: float = t) -> int:
+        f = EFFECTS.get(fx.get(event)) or EFFECTS[DEFAULT_FX[event]]
+        return f(tt)
+
+    if s.get('test') and t < s.get('test_until', 0):
+        return (EFFECTS.get(s['test']) or EFFECTS['off'])(t - s.get('test_start', t))
     lvl = s.get('alert_level', 0)
     kind = s.get('alert_kind')
     if kind or lvl:
         age = max(0.0, t - s.get('alert_since', t))
-        if kind in ('crash', 'takeover') or lvl >= 3:
-            return _blink(t, 8, ALL)                       # "take over now": all lights flash fast
-        if lvl >= 2 or age > 12:
-            return _blink(t, 3.5, ALL)                      # ignored a while: all flash
-        # a pulse that speeds up the longer it is ignored (1.2 Hz, up to 4 Hz after 12 s)
-        return _steps(t, min(4.0, 1.2 + 0.25 * age), [0x04, 0x0E, ALL, 0x0E, 0x04, 0x00])
+        if kind in ('crash', 'takeover') or lvl >= 3 or lvl >= 2 or age > 12:
+            return show('takeover')                         # "take over now" / ignored a while
+        return _steps(t, min(4.0, 1.2 + 0.25 * age), [0x04, 0x0E, ALL, 0x0E, 0x04, 0x00]) if fx.get('warning', 'pulse') == 'pulse' else show('warning')
     if s.get('emergency'):
-        return _blink(t, 3, 0x15, 0x0A)                    # pulling over for you: alternating
+        return show('emergency')                           # pulling over for you
     if s.get('brake', 0) > 0.3 and s.get('speed', 0) > 1.5:
-        return _blink(t, 7, ALL)                            # braking: all flash rapidly
+        return show('brake')                               # hard braking
     rear = s.get('rear')
     if s.get('gear') == 'R' and rear is not None and rear < 4.0:
         if rear < 0.5:
@@ -300,27 +338,23 @@ def led_mask(t: float, s: dict) -> int:
         return (1 << n) - 1
     sig = s.get('signal')
     if sig == 'hazard':
-        return _blink(t, 1.6, 0x03)                         # first lights flash with the hazards
-    if sig == 'left':
-        return _steps(t, 1.5, [0x04, 0x06, 0x07, 0x00])
-    if sig == 'right':
-        return _steps(t, 1.5, [0x04, 0x0C, 0x1C, 0x00])
+        return show('hazard')
+    if sig in ('left', 'right'):
+        return show('signal')
     found = s.get('found_at')
     if found is not None and 0 <= t - found < 1.0:
         return _blink(t - found, 3, ALL)                    # a spot was found: three quick flashes
     if s.get('searching'):
-        pos = int(t * 5) % 8                                # looking for parking: a pair of lights sweeping back and forth
-        return 0x03 << (pos if pos < 4 else 7 - pos)
+        return show('searching')
     if s.get('unattended'):
-        pos = int(t * 7) % 8                                # Banish / Summon: a light sweeping back and forth
-        return 1 << (pos if pos < 5 else 8 - pos)
+        return show('unattended')
     if s.get('speed_warn'):
-        return _blink(t, 1.2, 0x18)                         # over the limit: the two amber lights
+        return _blink(t, 1.2, 0x18) if fx.get('speed') is None else show('speed')
     if s.get('engaged'):
         since = t - s.get('engaged_since', t - 99)
         if since < 0.6:
             return (1 << min(5, int(since / 0.12) + 1)) - 1  # a quick fill when FSD starts
-        return 0x03                                         # FSD on: first two lights solid
+        return show('fsd')
     return 0
 
 
@@ -566,6 +600,7 @@ class Link:
                 self.say('connected to the relay', self.url)
                 self.send({'t': 'companionHello', 'name': self.name, 'buttons': self.nbuttons})
                 self.claim()
+                self.send({'t': 'requestWheelLights'})
                 while not self.stopping:
                     try:
                         raw = self.ws.recv()
@@ -584,6 +619,14 @@ class Link:
                         # a new car (or the mod reloading) forgets the helper: claim the wheel again
                         if self.ffb and st != 'helper' and time.time() - self.last_claim > 2:
                             self.claim()
+                    elif m.get('t') == 'wheelLights' and self.leds:
+                        # the app's effect choices, and a test to play for 5 s
+                        self.ledstate.d['fx'] = m.get('map') or {}
+                        tid = m.get('testId')
+                        if m.get('test') and tid != self.ledstate.d.get('test_id'):
+                            self.ledstate.d.update(test=m['test'], test_id=tid, test_start=time.monotonic(), test_until=time.monotonic() + 5)
+                        elif not m.get('test'):
+                            self.ledstate.d.update(test=None, test_id=tid)
                     elif m.get('t') == 'event' and self.leds and m.get('kind') in ('parkingSearch', 'arrived', 'disengage', 'cancelRoute'):
                         self.ledstate.event(m, time.monotonic())
                         if m.get('kind') == 'disengage':

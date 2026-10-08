@@ -2,7 +2,7 @@
 """G29 rim light patterns (bridge/wheel_helper.py led_mask / LedState). python3 beamng/test/test_wheel_leds.py"""
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'bridge'))
-from wheel_helper import led_mask, LedState  # noqa: E402
+from wheel_helper import led_mask, LedState, EFFECTS  # noqa: E402
 
 ok = fail = 0
 def check(c, m):
@@ -15,9 +15,14 @@ check(led_mask(1, {}) == 0, 'idle: dark')
 check(led_mask(1, {'engaged': True, 'engaged_since': -50}) == 0x03, 'FSD on: first two solid')
 check(led_mask(0.05, {'engaged': True, 'engaged_since': 0}) == 0x01 and led_mask(0.3, {'engaged': True, 'engaged_since': 0}) == 0x07, 'FSD start: quick fill')
 hz = {led_mask(t / 100, {'signal': 'hazard'}) for t in range(0, 200)}
-check(hz == {0x03, 0x00}, 'hazards: first two flash')
+check(hz == {0x04, 0x0C, 0x1C, 0x00}, 'hazards: sweep 3, 4, 5 and repeat')
 check(len({led_mask(t / 100, {'signal': 'left'}) for t in range(0, 200)} & {0x04, 0x06, 0x07, 0x00}) == 4, 'left signal sweeps left')
-check({led_mask(t / 100, {'signal': 'right'}) for t in range(0, 200)} == {0x04, 0x0C, 0x1C, 0x00}, 'right signal sweeps right')
+check({led_mask(t / 100, {'signal': 'right'}) for t in range(0, 200)} == {0x04, 0x06, 0x07, 0x00}, 'right signal: the signal effect')
+check({led_mask(t / 100, {'signal': 'hazard', 'fx': {'hazard': 'urgent'}}) for t in range(0, 100)} == {0x1F, 0}, 'the app can pick another effect for hazards')
+check(led_mask(1, {'test': 'solid_all', 'test_until': 9, 'test_start': 0, 'engaged': True, 'engaged_since': -50}) == 0x1F and led_mask(10, {'test': 'solid_all', 'test_until': 9, 'test_start': 0}) == 0, 'a test effect from the app plays, then stops')
+for nm, f in EFFECTS.items():
+    ms = {f(t / 50) for t in range(0, 400)}
+    check(all(0 <= m <= 0x1F for m in ms), f'effect {nm}: masks stay within 5 lights')
 br = {led_mask(t / 100, {'brake': 0.8, 'speed': 10}) for t in range(0, 100)}
 check(br == {0x1F, 0}, 'braking: all flash')
 check(led_mask(1, {'brake': 0.8, 'speed': 0.2}) in (0, 0x1F) and led_mask(1, {'brake': 0.8, 'speed': 0.2, 'engaged': True, 'engaged_since': -9}) == 0x03, 'stopped with the brake held: not the braking flash')
@@ -37,7 +42,7 @@ check({led_mask(t / 100, {'alert_kind': 'takeover', 'alert_level': 3, 'alert_sin
 check(led_mask(1, {'alert_level': 1, 'alert_kind': 'attention', 'alert_since': 1, 'brake': 1, 'speed': 9}) != 0x1F or True, 'warnings outrank braking')
 check({led_mask(t / 100, {'unattended': True}) for t in range(0, 200)} <= {1, 2, 4, 8, 16}, 'banish: a single light sweeps')
 sw = {led_mask(t / 100, {'searching': True}) for t in range(0, 200)}
-check(sw <= {0x03, 0x06, 0x0C, 0x18} and len(sw) == 4, 'looking for parking: a pair of lights sweeps back and forth')
+check(sw <= {1, 2, 4, 8, 16} and len(sw) == 5, 'looking for parking: a light sweeps back and forth')
 check({led_mask(0.1 + t / 100, {'found_at': 0.0, 'searching': False}) for t in range(0, 80)} == {0x1F, 0}, 'spot found: flashes')
 st2 = LedState(); st2.event({'kind': 'parkingSearch', 'data': {'state': 'looking'}}, 1.0)
 check(st2.d['searching'], 'looking event starts the search effect')

@@ -291,6 +291,13 @@ export type ButtonMap = {
   /** the companion that reads the wheel's buttons (null: not running) */
   companion: { name: string; buttons: number } | null
 }
+/**
+ * Relay -> app and wheel helper: which effect each G29 light event shows (the app's Settings > Wheel lights). `test` is an effect the
+ * helper plays for 5 s (testId changes for each test tap so the same effect can be replayed).
+ */
+export const LIGHT_EVENTS = ['fsd', 'takeover', 'warning', 'brake', 'hazard', 'signal', 'emergency', 'searching', 'unattended', 'speed'] as const
+export type LightEvent = (typeof LIGHT_EVENTS)[number]
+export type WheelLights = { t: 'wheelLights'; map: Partial<Record<LightEvent, string>>; test: string | null; testId: number }
 /** Relay -> app: a wheel button went down/up (for "press a button" UIs). */
 export type WheelButton = { t: 'wheelButton'; button: number; down: boolean }
 
@@ -322,7 +329,7 @@ export type DialMode = (typeof DIAL_MODES)[number]
 /** Relay -> app: the dial's mode changed or it was turned (show a bubble: "Follow distance", etc.). */
 export type Dial = { t: 'dial'; mode: DialMode; dir?: 'up' | 'down' }
 
-export type GameMessage = Dial | Media | Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelButton | CameraFrame | ParkingSpots
+export type GameMessage = Dial | Media | Cameras | State | Traffic | MapInfo | Route | Minimap | Event | Bridge | Hello | Pong | Debug | ButtonMap | WheelLights | WheelButton | CameraFrame | ParkingSpots
 
 // ---------------------------------------------------------------------------
 // App -> game
@@ -424,6 +431,9 @@ export type Command =
   | { t: 'learnButton'; action: ActionName | null } // the next wheel button pressed gets this action (null cancels)
   | { t: 'setButton'; action: ActionName; button: number | null } // set / clear directly
   | { t: 'requestButtonMap' }
+  | { t: 'setWheelLight'; event: LightEvent; effect: string | null } // choose the effect an event shows on the wheel lights (null = default)
+  | { t: 'testWheelLight'; effect: string | null } // play an effect on the wheel lights for 5 s (null stops)
+  | { t: 'requestWheelLights' }
   | { t: 'hello'; app?: string; version?: string } // the app says hi on connect (logged by the relay)
   | { t: 'camera'; on?: boolean; view?: CamView } // show the backup camera for 15 s without shifting to R (a preview button); false hides it
   | { t: 'wheelButton'; button: number; down: boolean } // from the wheel companion
@@ -449,7 +459,7 @@ export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: bo
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'summonTo', 'banish', 'autopark', 'resetStrikes', 'voiceNote',
-  'action', 'learnButton', 'setButton', 'requestButtonMap', 'wheelButton', 'companionHello', 'camera', 'hello',
+  'action', 'learnButton', 'setButton', 'requestButtonMap', 'setWheelLight', 'testWheelLight', 'requestWheelLights', 'wheelButton', 'companionHello', 'camera', 'hello',
   'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop', 'pullOver', 'mediaKey', 'wheelReset', 'wheelRescan', 'blackboxMark', 'blackboxNote', 'blackboxStatus',
 ])
 

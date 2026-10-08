@@ -17,7 +17,7 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import qrcode from 'qrcode-terminal'
-import { ACTIONS, COMMAND_TYPES, DIAL_MODES, type ActionName, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
+import { ACTIONS, COMMAND_TYPES, DIAL_MODES, LIGHT_EVENTS, type ActionName, type LightEvent, type WheelLights, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
 import { BlackBox, uploadToGitHub, uploadConfig } from './blackbox.ts'
@@ -223,6 +223,38 @@ function assignButton(action: ActionName, button: number | null) {
   if (button == null) delete buttonMap[action]
   else buttonMap[action] = button
   saveButtons()
+}
+// G29 light effects chosen in the app (Settings > Wheel lights): saved, and sent to the app and the wheel helper
+const lightsFile = resolve(arg('lights-file') ?? join(here, 'wheel-lights.json'))
+let lightMap: Partial<Record<LightEvent, string>> = {}
+try {
+  const saved = JSON.parse(readFileSync(lightsFile, 'utf8'))
+  for (const [k, v] of Object.entries(saved)) if ((LIGHT_EVENTS as readonly string[]).includes(k) && typeof v === 'string' && /^[A-Za-z0-9_]{1,24}$/.test(v)) lightMap[k as LightEvent] = v
+} catch { /* first run */ }
+let lightTest: string | null = null
+let lightTestId = 0
+function wheelLightsMsg(): WheelLights { return { t: 'wheelLights', map: lightMap, test: lightTest, testId: lightTestId } }
+function handleWheelLights(ws: WebSocket, msg: any): boolean {
+  switch (msg.t) {
+    case 'requestWheelLights':
+      ws.send(JSON.stringify(wheelLightsMsg()))
+      return true
+    case 'setWheelLight': {
+      if (!(LIGHT_EVENTS as readonly string[]).includes(msg.event)) return true
+      if (typeof msg.effect === 'string' && /^[A-Za-z0-9_]{1,24}$/.test(msg.effect)) lightMap[msg.event as LightEvent] = msg.effect
+      else delete lightMap[msg.event as LightEvent]
+      try { writeFileSync(lightsFile, JSON.stringify(lightMap, null, 2)) } catch (e) { log('could not save wheel lights:', e) }
+      broadcast(wheelLightsMsg())
+      return true
+    }
+    case 'testWheelLight':
+      lightTest = typeof msg.effect === 'string' && /^[A-Za-z0-9_]{1,24}$/.test(msg.effect) ? msg.effect : null
+      lightTestId++
+      broadcast(wheelLightsMsg())
+      { const id = lightTestId; setTimeout(() => { if (lightTestId === id && lightTest) { lightTest = null; broadcast(wheelLightsMsg()) } }, 5200) } // the helper plays it for 5 s
+      return true
+  }
+  return false
 }
 /** Relay-side handling of button messages. Returns true when handled. */
 let dialIdx = 0
@@ -797,6 +829,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   if (lastRoute) ws.send(JSON.stringify(lastRoute))
   if (lastState) ws.send(JSON.stringify(lastState))
   ws.send(JSON.stringify(buttonMapMsg()))
+  ws.send(JSON.stringify(wheelLightsMsg()))
   ws.send(JSON.stringify(camerasMsg()))
   ws.on('message', (data) => {
     let msg: any
@@ -810,7 +843,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       return
     }
     stats.fromApp++
-    if (handleButtons(ws, msg)) return
+    if (handleButtons(ws, msg) || handleWheelLights(ws, msg)) return
     if (msg.t === 'settings' && typeof msg.assistant === 'boolean') setAssistantEnabled(msg.assistant) // the FSD Assistant (bridge/assistant.ts) lives here, the game needn't know
     if (msg.t === 'hello') { log(`app: ${msg.app ?? '?'} ${msg.version ?? ''}`); return }
     // the phone page's music buttons: skip, play/pause, volume go to the iPad app, like the wheel's media buttons do
