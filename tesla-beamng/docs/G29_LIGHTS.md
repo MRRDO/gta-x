@@ -34,3 +34,7 @@ The five bits are five mirrored pairs (OptiPlex test: no single left/right light
 (FSD on, take over, warning, hard braking, hazards, signals, emergency vehicle, searching, Banish/Summon, speed) and has a Try button (plays 5 s).
 Choices are saved by the relay in `bridge/wheel-lights.json`. Defaults: FSD = amber pair solid, take over and hard braking = urgent flash
 (10 Hz, all lights), hazards = sweep 3, 4, 5. Effects are `EFFECTS` in `bridge/wheel_helper.py`; add one there and in `src/beamng/WheelLights.tsx`.
+
+## Colours and the pattern editor (2026-10-08)
+Quentin's wheel, outside to centre: green, green, amber, amber, red, then mirrored (green, green, amber, amber, red | red, amber, amber, green, green). So bit 0 and 1 = green pairs, bits 2 and 3 = amber, bit 4 = red. Defaults follow that: FSD on = amber (0x0C), hard braking / take over = urgent flash of amber + red (0x1C, 10 Hz), hazards = sweep amber, amber, red, light turns green = green flash.
+Settings > Wheel lights has a wheel drawing that lights up and a pattern editor (frames of lights + milliseconds, looping). Patterns are saved by the relay (`wheel-lights.json`, key `custom`, ids `c_xxxxxx`) and the helper plays them (`frames_mask`). A dead handle (wheel power-cycled) is reopened by the helper; each change of what it shows is logged as `leds: show 0x..` in wheel_helper.log.

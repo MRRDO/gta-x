@@ -298,7 +298,8 @@ export type ButtonMap = {
  */
 export const LIGHT_EVENTS = ['fsd', 'takeover', 'warning', 'brake', 'hazard', 'signal', 'emergency', 'green', 'searching', 'unattended', 'speed'] as const
 export type LightEvent = (typeof LIGHT_EVENTS)[number]
-export type WheelLights = { t: 'wheelLights'; map: Partial<Record<LightEvent, string>>; test: string | null; testId: number; helper: boolean }
+export type LightFrames = [number, number][] // [lights mask 0..31 (bit 0 = outer pair, bit 4 = centre), milliseconds]
+export type WheelLights = { t: 'wheelLights'; map: Partial<Record<LightEvent, string>>; custom: Record<string, { name: string; frames: LightFrames }>; test: string | null; testFrames: LightFrames | null; testId: number; helper: boolean }
 /** Relay -> app: a wheel button went down/up (for "press a button" UIs). */
 export type WheelButton = { t: 'wheelButton'; button: number; down: boolean }
 
@@ -433,7 +434,9 @@ export type Command =
   | { t: 'setButton'; action: ActionName; button: number | null } // set / clear directly
   | { t: 'requestButtonMap' }
   | { t: 'setWheelLight'; event: LightEvent; effect: string | null } // choose the effect an event shows on the wheel lights (null = default)
-  | { t: 'testWheelLight'; effect: string | null } // play an effect on the wheel lights for 5 s (null stops)
+  | { t: 'testWheelLight'; effect: string | null; frames?: LightFrames } // (frames: a draft pattern to try before saving)
+  | { t: 'saveLightFx'; id: string; name: string; frames: LightFrames } // save a pattern from the editor (id c_xxxx)
+  | { t: 'deleteLightFx'; id: string } // play an effect on the wheel lights for 5 s (null stops)
   | { t: 'requestWheelLights' }
   | { t: 'hello'; app?: string; version?: string } // the app says hi on connect (logged by the relay)
   | { t: 'camera'; on?: boolean; view?: CamView } // show the backup camera for 15 s without shifting to R (a preview button); false hides it
@@ -461,7 +464,7 @@ export type SafetySettings = { fcw: 'early' | 'medium' | 'late' | 'off'; aeb: bo
 export const COMMAND_TYPES: ReadonlySet<Command['t']> = new Set([
   'gear', 'lights', 'signal', 'horn', 'door', 'autopilot', 'navigate', 'cancelRoute',
   'throttleOverride', 'wheel', 'settings', 'attention', 'nudge', 'summon', 'summonTo', 'banish', 'autopark', 'resetStrikes', 'voiceNote',
-  'action', 'learnButton', 'setButton', 'requestButtonMap', 'setWheelLight', 'testWheelLight', 'requestWheelLights', 'wheelButton', 'companionHello', 'camera', 'hello',
+  'action', 'learnButton', 'setButton', 'requestButtonMap', 'setWheelLight', 'testWheelLight', 'saveLightFx', 'deleteLightFx', 'requestWheelLights', 'wheelButton', 'companionHello', 'camera', 'hello',
   'requestMap', 'requestMinimap', 'debug', 'ping', 'teleport', 'traffic', 'reloadMod', 'requestParkingSpots', 'arrivalChoice', 'lightShow', 'pinLock', 'climate', 'confirm', 'buttonGuard', 'emergencyStop', 'pullOver', 'mediaKey', 'wheelReset', 'wheelRescan', 'blackboxTag', 'blackboxMark', 'blackboxNote', 'blackboxStatus',
 ])
 

@@ -282,15 +282,19 @@ def _fx_pulse(t: float) -> int:
 
 EFFECTS = {
     'off': lambda t: 0,
-    'solid2': lambda t: 0x03,                                         # the amber pair(s), solid
+    'solid2': lambda t: 0x0C,                                         # the amber lights, solid
+    'green_solid': lambda t: 0x03,
+    'red_solid': lambda t: 0x10,
     'solid_all': lambda t: ALL,
-    'urgent': lambda t: _blink(t, 10, ALL),                           # very rapid flash, "pay attention now"
+    'urgent': lambda t: _blink(t, 10, 0x1C),                          # amber + red, very rapid: "pay attention now"
     'strobe': lambda t: _blink(t, 6, ALL),
     'flash': lambda t: _blink(t, 2, ALL),
-    'alt': lambda t: _blink(t, 4, 0x03, 0x18),                        # first two / last two alternate
-    'swap': lambda t: _blink(t, 4, 0x11, 0x0E),                       # outer / middle swap
-    'double': lambda t: _steps(t, 1.6, [ALL, 0, ALL, 0, 0, 0, 0, 0]),  # double-flash burst
-    'sweepD': lambda t: _steps(t, 1.6, [0x04, 0x0C, 0x1C, 0x00]),      # sweep 3, 4, 5 and repeat
+    'green_flash': lambda t: _blink(t, 4, 0x03),
+    'amber_flash': lambda t: _blink(t, 3, 0x0C),
+    'alt': lambda t: _blink(t, 4, 0x03, 0x1C),                        # greens / amber + red alternate
+    'swap': lambda t: _blink(t, 4, 0x11, 0x0E),                       # outer + centre / middle swap
+    'double': lambda t: _steps(t, 1.6, [0x1C, 0, 0x1C, 0, 0, 0, 0, 0]),  # double-flash burst
+    'sweepD': lambda t: _steps(t, 1.6, [0x04, 0x0C, 0x1C, 0x00]),      # sweep 3, 4, 5 (amber, amber, red) and repeat
     'sweep': lambda t: _steps(t, 1.5, [0x04, 0x06, 0x07, 0x00]),       # sweep 3, 2, 1
     'chase_in': lambda t: _steps(t, 3, [0x11, 0x0A, 0x04, 0x0A]),      # outside in
     'chase_out': lambda t: _steps(t, 3, [0x04, 0x0A, 0x11, 0x0A]),     # inside out
@@ -298,16 +302,35 @@ EFFECTS = {
     'breathe': lambda t: (1 << (1 + int(abs(((t * 0.5) % 1.0) * 2 - 1) * 5 + 0.0001) % 5)) - 1,
     'countdown': lambda t: (1 << (5 - int((t % 3.0) / 0.6) % 5)) - 1,
     'pulse': _fx_pulse,
-    'pair1': lambda t: _blink(t, 4, 0x01),                              # one pair only, flashing (find which one is green)
+    'pair1': lambda t: _blink(t, 4, 0x01),                              # one pair only, flashing (1 = outer green ... 5 = centre red)
     'pair2': lambda t: _blink(t, 4, 0x02),
     'pair3': lambda t: _blink(t, 4, 0x04),
     'pair4': lambda t: _blink(t, 4, 0x08),
     'pair5': lambda t: _blink(t, 4, 0x10),
 }
+
+
+def frames_mask(frames, t: float) -> int:
+    """A custom effect from the app's pattern editor: frames = [[mask, ms], ...], looping."""
+    try:
+        total = sum(max(40, int(f[1])) for f in frames)
+        if total <= 0:
+            return 0
+        pos = (t * 1000.0) % total
+        for f in frames:
+            d = max(40, int(f[1]))
+            if pos < d:
+                return int(f[0]) & ALL
+            pos -= d
+    except Exception:
+        pass
+    return 0
+
+
 # what each event shows unless the app picks another effect
 DEFAULT_FX = {
     'fsd': 'solid2', 'takeover': 'urgent', 'warning': 'pulse', 'brake': 'urgent', 'hazard': 'sweepD', 'signal': 'sweep',
-    'emergency': 'alt', 'green': 'pair5', 'searching': 'scanner', 'unattended': 'scanner', 'speed': 'solid_all',
+    'emergency': 'alt', 'green': 'green_flash', 'searching': 'scanner', 'unattended': 'scanner', 'speed': 'amber_flash',
 }
 
 
@@ -318,12 +341,23 @@ def led_mask(t: float, s: dict) -> int:
     searching for parking, Banish/Summon, speed warning, FSD on (with a short fill when it starts)."""
     fx = s.get('fx') or {}
 
+    custom = s.get('custom') or {}
+
+    def run(name, tt: float):
+        if isinstance(name, str) and name in custom:
+            return frames_mask((custom[name] or {}).get('frames') or [], tt)
+        f = EFFECTS.get(name)
+        return f(tt) if f else None
+
     def show(event: str, tt: float = t) -> int:
-        f = EFFECTS.get(fx.get(event)) or EFFECTS[DEFAULT_FX[event]]
-        return f(tt)
+        m = run(fx.get(event), tt)
+        return m if m is not None else EFFECTS[DEFAULT_FX[event]](tt)
 
     if s.get('test') and t < s.get('test_until', 0):
-        return (EFFECTS.get(s['test']) or EFFECTS['off'])(t - s.get('test_start', t))
+        if s.get('test_frames'):
+            return frames_mask(s['test_frames'], t - s.get('test_start', t))
+        m = run(s['test'], t - s.get('test_start', t))
+        return m if m is not None else 0
     lvl = s.get('alert_level', 0)
     kind = s.get('alert_kind')
     if kind or lvl:
@@ -356,7 +390,7 @@ def led_mask(t: float, s: dict) -> int:
     if s.get('unattended'):
         return show('unattended')
     if s.get('speed_warn'):
-        return _blink(t, 1.2, 0x18) if fx.get('speed') is None else show('speed')
+        return show('speed')
     if s.get('engaged'):
         since = t - s.get('engaged_since', t - 99)
         if since < 0.6:
@@ -455,6 +489,9 @@ class WheelLeds:
         self.next_try = 0.0
         self.dead = False
         self.skip = set()  # interface paths that refused every report layout
+        self.fails = 0
+        self.last_show_log = 0.0
+        self.show_logs = 0
         self.errs = []
         self.logf = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'wheel_helper.log')
 
@@ -551,11 +588,31 @@ class WheelLeds:
                         if self.length is None:
                             self.length, self.layout = n, lay
                             self.log(f'write accepted (layout {lay}, report length {n}), lights {mask:#04x}')
+                        elif mask != self.mask and now - self.last_show_log > 1.0 and self.show_logs < 300:
+                            self.last_show_log, self.show_logs = now, self.show_logs + 1
+                            self.log(f'show {mask:#04x}')  # what the helper asked the wheel to show (to compare with what Quentin saw)
                         self.mask = mask
+                        self.fails = 0
                         return
                 except Exception as e:
                     if len(self.errs) < 6:
                         self.errs.append(f'layout {lay} len {n}: {e}')
+        if self.length is not None:
+            # it worked before and now it does not: the wheel was unplugged / power-cycled (the wheel reset) and this handle is dead.
+            # Close it and open the wheel afresh a moment later (the lights used to stay dark until the helper was restarted).
+            self.fails += 1
+            if self.fails <= 3:
+                self.log(f'write failed ({"; ".join(self.errs[-2:]) or "no bytes written"}): reopening the wheel')
+            try:
+                self.dev.close()
+            except Exception:
+                pass
+            self.dev = None
+            self.mask = -1
+            self.retry_at = now + 1.0
+            self.next_try = 0.0
+            self.errs = []
+            return
         if self.length is None:
             # this interface took none of them: try the wheel's other interfaces next, give up after all were tried
             self.log(f'interface refused every layout ({"; ".join(self.errs[:3])}): trying the next one')
@@ -642,9 +699,10 @@ class Link:
                     elif m.get('t') == 'wheelLights' and self.leds:
                         # the app's effect choices, and a test to play for 5 s
                         self.ledstate.d['fx'] = m.get('map') or {}
+                        self.ledstate.d['custom'] = m.get('custom') or {}
                         tid = m.get('testId')
                         if m.get('test') and tid != self.ledstate.d.get('test_id'):
-                            self.ledstate.d.update(test=m['test'], test_id=tid, test_start=time.monotonic(), test_until=time.monotonic() + 5)
+                            self.ledstate.d.update(test=m['test'], test_frames=m.get('testFrames'), test_id=tid, test_start=time.monotonic(), test_until=time.monotonic() + 5)
                             self.leds.log(f'test effect {m["test"]}')
                         elif not m.get('test'):
                             self.ledstate.d.update(test=None, test_id=tid)

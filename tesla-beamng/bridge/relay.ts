@@ -254,13 +254,35 @@ function assignButton(action: ActionName, button: number | null) {
 // G29 light effects chosen in the app (Settings > Wheel lights): saved, and sent to the app and the wheel helper
 const lightsFile = resolve(arg('lights-file') ?? join(here, 'wheel-lights.json'))
 let lightMap: Partial<Record<LightEvent, string>> = {}
+let lightCustom: Record<string, { name: string; frames: [number, number][] }> = {} // the pattern editor's effects: frames of [lights mask 0..31, milliseconds]
+const EFFECT_ID = /^[A-Za-z0-9_]{1,24}$/
+function cleanFrames(f: unknown): [number, number][] | null {
+  if (!Array.isArray(f) || f.length < 1 || f.length > 40) return null
+  const out: [number, number][] = []
+  for (const x of f) {
+    if (!Array.isArray(x)) return null
+    const m = Number(x[0]), ms = Number(x[1])
+    if (!Number.isFinite(m) || !Number.isFinite(ms)) return null
+    out.push([Math.max(0, Math.min(31, Math.round(m))), Math.max(40, Math.min(3000, Math.round(ms)))])
+  }
+  return out
+}
 try {
   const saved = JSON.parse(readFileSync(lightsFile, 'utf8'))
-  for (const [k, v] of Object.entries(saved)) if ((LIGHT_EVENTS as readonly string[]).includes(k) && typeof v === 'string' && /^[A-Za-z0-9_]{1,24}$/.test(v)) lightMap[k as LightEvent] = v
+  const mp = saved && typeof saved.map === 'object' && saved.map ? saved.map : saved // (the first version saved the map alone)
+  for (const [k, v] of Object.entries(mp)) if ((LIGHT_EVENTS as readonly string[]).includes(k) && typeof v === 'string' && EFFECT_ID.test(v)) lightMap[k as LightEvent] = v
+  for (const [id, c] of Object.entries((saved?.custom ?? {}) as Record<string, any>)) {
+    const fr = cleanFrames(c?.frames)
+    if (/^c_[a-z0-9]{1,12}$/.test(id) && fr) lightCustom[id] = { name: String(c?.name ?? 'Pattern').slice(0, 24), frames: fr }
+  }
 } catch { /* first run */ }
 let lightTest: string | null = null
+let lightTestFrames: [number, number][] | null = null
 let lightTestId = 0
-function wheelLightsMsg(): WheelLights { return { t: 'wheelLights', map: lightMap, test: lightTest, testId: lightTestId, helper: companion !== null } }
+function wheelLightsMsg(): WheelLights { return { t: 'wheelLights', map: lightMap, custom: lightCustom, test: lightTest, testFrames: lightTestFrames, testId: lightTestId, helper: companion !== null } }
+function saveLights() {
+  try { writeFileSync(lightsFile, JSON.stringify({ map: lightMap, custom: lightCustom }, null, 2)) } catch (e) { log('could not save wheel lights:', e) }
+}
 function handleWheelLights(ws: WebSocket, msg: any): boolean {
   switch (msg.t) {
     case 'requestWheelLights':
@@ -268,18 +290,37 @@ function handleWheelLights(ws: WebSocket, msg: any): boolean {
       return true
     case 'setWheelLight': {
       if (!(LIGHT_EVENTS as readonly string[]).includes(msg.event)) return true
-      if (typeof msg.effect === 'string' && /^[A-Za-z0-9_]{1,24}$/.test(msg.effect)) lightMap[msg.event as LightEvent] = msg.effect
+      if (typeof msg.effect === 'string' && EFFECT_ID.test(msg.effect)) lightMap[msg.event as LightEvent] = msg.effect
       else delete lightMap[msg.event as LightEvent]
-      try { writeFileSync(lightsFile, JSON.stringify(lightMap, null, 2)) } catch (e) { log('could not save wheel lights:', e) }
+      saveLights()
       broadcast(wheelLightsMsg())
       return true
     }
-    case 'testWheelLight':
-      lightTest = typeof msg.effect === 'string' && /^[A-Za-z0-9_]{1,24}$/.test(msg.effect) ? msg.effect : null
+    case 'saveLightFx': {
+      const fr = cleanFrames(msg.frames)
+      if (!fr || typeof msg.id !== 'string' || !/^c_[a-z0-9]{1,12}$/.test(msg.id)) return true
+      lightCustom[msg.id] = { name: String(msg.name ?? 'Pattern').slice(0, 24) || 'Pattern', frames: fr }
+      saveLights()
+      broadcast(wheelLightsMsg())
+      return true
+    }
+    case 'deleteLightFx': {
+      if (typeof msg.id !== 'string' || !lightCustom[msg.id]) return true
+      delete lightCustom[msg.id]
+      for (const k of Object.keys(lightMap) as LightEvent[]) if (lightMap[k] === msg.id) delete lightMap[k]
+      saveLights()
+      broadcast(wheelLightsMsg())
+      return true
+    }
+    case 'testWheelLight': {
+      const fr = msg.frames ? cleanFrames(msg.frames) : null
+      lightTestFrames = fr
+      lightTest = fr ? 'draft' : typeof msg.effect === 'string' && EFFECT_ID.test(msg.effect) ? msg.effect : null
       lightTestId++
       broadcast(wheelLightsMsg())
-      { const id = lightTestId; setTimeout(() => { if (lightTestId === id && lightTest) { lightTest = null; broadcast(wheelLightsMsg()) } }, 5200) } // the helper plays it for 5 s
+      { const id = lightTestId; setTimeout(() => { if (lightTestId === id && lightTest) { lightTest = null; lightTestFrames = null; broadcast(wheelLightsMsg()) } }, 5200) } // the helper plays it for 5 s
       return true
+    }
   }
   return false
 }
