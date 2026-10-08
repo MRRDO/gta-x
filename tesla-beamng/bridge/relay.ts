@@ -21,6 +21,7 @@ import { ACTIONS, COMMAND_TYPES, DIAL_MODES, LIGHT_EVENTS, type ActionName, type
 import { beamngModsDirs } from './beamngPaths.ts'
 import { record as recordDrive } from './recorder.ts'
 import { BlackBox, uploadToGitHub, uploadConfig } from './blackbox.ts'
+import { screenshotTo } from './screenshot.ts'
 import { handleBrowse } from './browse.ts'
 import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand, chat as assistantChat } from './assistant.ts'
 import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
@@ -39,8 +40,13 @@ function arg(name: string, fallback?: string): string | undefined {
 const blackBox = new BlackBox()
 /** Save the black box, upload it if a token is set up, and tell every app (the iPad asks "what went wrong?"). */
 async function markBlackBox(note = '') {
-  const file = blackBox.mark(note.slice(0, 500))
+  // the level, and the path the planner was following (thinned), so a swerve can be checked against where it meant to go
+  const rp = (lastRoute as any)?.points
+  const route = Array.isArray(rp) ? rp.filter((_: unknown, i: number) => i % Math.max(1, Math.ceil(rp.length / 150)) === 0).map((p: number[]) => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10]) : null
+  const file = blackBox.mark(note.slice(0, 500), Date.now(), { level: lastMap?.level ?? null, route })
   log('black box saved:', file)
+  const shotFile = file.replace(/\.json$/, '.jpg')
+  const shot = screenshotTo(shotFile) // what was on screen when you pressed it, taken while the upload runs
   const up = await uploadToGitHub(file)
   log('black box upload:', up.status)
   // the wheel helper's log (G29 rim lights: "leds:" lines, what the wheel accepted) goes along, so it can be checked without asking for files
@@ -51,6 +57,7 @@ async function markBlackBox(note = '') {
       void uploadToGitHub(file, undefined, undefined, file.split(/[\\/]/).pop()!.replace(/\.json$/, '') + '.wheel-helper.txt', tail)
     }
   } catch { /* optional */ }
+  try { if (up.ok && (await shot)) void uploadToGitHub(shotFile) } catch { /* optional */ }
   broadcast({ t: 'event', kind: 'blackbox', detail: up.status, data: { file, uploaded: up.ok, upload: up.status } })
   return { file, up }
 }

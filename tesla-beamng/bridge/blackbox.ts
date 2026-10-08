@@ -59,10 +59,10 @@ export class BlackBox {
   }
 
   /** Write the window to a file; returns its path. */
-  mark(note = '', now = Date.now()): string {
+  mark(note = '', now = Date.now(), extra: Record<string, unknown> = {}): string {
     mkdirSync(this.dir, { recursive: true })
     const file = join(this.dir, `mark-${new Date(now).toISOString().replace(/[:.]/g, '-')}.json`)
-    writeFileSync(file, JSON.stringify({ markedAt: new Date(now).toISOString(), note, seconds: WINDOW_MS / 1000, samples: this.samples, events: this.events }))
+    writeFileSync(file, JSON.stringify({ markedAt: new Date(now).toISOString(), note, seconds: WINDOW_MS / 1000, samples: this.samples, events: this.events, ...extra }))
     return file
   }
 

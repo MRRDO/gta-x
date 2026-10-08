@@ -2640,6 +2640,19 @@ function Planner:tickManeuver(ego, cars, out)
     self:disengage('error', mv.kind .. ' off course')
     return
   end
+  -- wrong gear (a Banish back-in sat in D for 4 s with the brake held and was called stuck): ask for the right one again, and don't
+  -- start the "stuck" clock until the gear is right
+  do
+    local wantG = seg.dir < 0 and 'R' or 'D'
+    local g = ego.gear
+    if g and g ~= wantG and not (wantG == 'D' and g:sub(1, 1) == 'M') and not moving then
+      if self.t - (mv.gearAsk or -9) > 0.7 then
+        mv.gearAsk = self.t
+        out.commands[#out.commands + 1] = { t = 'gear', gear = wantG }
+      end
+      mv.segT, mv.chkT, mv.chkPos = self.t, nil, nil
+    end
+  end
   -- stuck: told to move but not moving (a curb or wall under the nose, wheels spinning): stop instead of pushing on
   mv.segT = mv.segT or self.t
   if self.t - (mv.chkT or self.t) >= 2.0 then
@@ -2649,7 +2662,7 @@ function Planner:tickManeuver(ego, cars, out)
       local spot = self.spot
       self.maneuver, self.kturn = nil, nil
       self.activity = 'drive'
-      if spot and (self.apRetries or 0) < 3 and mv.kind == 'autopark' then
+      if spot and (self.apRetries or 0) < 3 and (mv.kind == 'autopark' or mv.kind == 'backIn') then
         -- learn the obstacle (just ahead of the nose, or behind the tail) and plan again around it
         self.apRetries = (self.apRetries or 0) + 1
         self.apBlocked = self.apBlocked or {}
@@ -2768,7 +2781,9 @@ function Planner:tickManeuver(ego, cars, out)
           -- Crooked or off the stall's middle (a car is about 1.9 m in a 2.5 m stall: 0.3 m each side): pull forward and back in again
           -- (up to 4 times, each only when it made things clearly better) instead of leaving it over the lines
           local badness = err and (err.headingDeg / 4 + abs(err.lat) / 0.3 + abs(err.lon) / 0.9) or 0
-          local worthIt = err and (err.headingDeg > 4 or abs(err.lat) > 0.3 or abs(err.lon) > 0.9)
+          -- (Quentin: a 7 degree error was "fixed" by pulling out of the stall and parking worse; a car about 1.9 m wide in a 2.5 m stall
+          -- is still inside the lines at 8 degrees, so leave small errors alone)
+          local worthIt = err and (err.headingDeg > 9 or abs(err.lat) > 0.4 or abs(err.lon) > 1.2)
           -- a second try only when the first one made it clearly better; otherwise this is as straight as the car gets
           if worthIt and (self.apFixBad or 1e9) - badness < 0.15 and (self.apFix or 0) > 0 then worthIt = false end
           self.apFixBad = badness
