@@ -117,6 +117,9 @@ export type AutopilotState = {
   /** drive | maneuver (backing out, 3-point turn, back-in parking) | summon */
   activity?: 'drive' | 'maneuver' | 'summon'
   setSpeed?: number | null // m/s, TACC / Autosteer
+  /** Lidar debug view (Service Mode): the points the lidar sees, car frame [forward m, left m, 1 solid | 0 low]. */
+  lidar?: [number, number, number][]
+  lidarRear?: boolean
   lane?: { index: number; count: number; changing?: { dir: 'left' | 'right'; reason: 'route' | 'pass' | 'merge' | 'return' | 'driver' | 'moveOver' | 'madMax' | 'evasion'; phase: 'signal' | 'moving' } }
   creeping?: boolean // "Creeping for visibility"
   waitingFor?: 'gap' | 'crossTraffic' | 'emergencyVehicle' | 'pedestrian' | null
@@ -212,6 +215,7 @@ export type EventKind =
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
   | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver|driveThru}; answer with {t:'arrivalChoice'}
   | 'arrivalChoice'    // the choice was applied
+  | 'greenLight'       // hand driving: stopped at a red, it just turned green (the app plays the chime)
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
   | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
   | 'confirmGo'        // trafficControl 'confirm': stopped at a stop sign / green light, waiting for the driver's go. data {what: 'stopSign' | 'light'}
@@ -359,6 +363,9 @@ export type Command =
       /** Light Countdown: seconds to the next change of the light ahead, shown on the screen and/or the wheel lights (default off in the game; the app sends its choice). */
       /** Perpendicular stalls: 'auto' pulls in nose first when the stall is deep enough and backs in otherwise, or always one way. */
       parkStyle?: 'auto' | 'pullIn' | 'backIn'
+      /** Virtual lidar (FSD only; default on) and its debug points in the state (Service Mode). */
+      lidar?: boolean
+      lidarDebug?: boolean
       signalCountdown?: 'off' | 'screen' | 'wheel' | 'both'
       /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'

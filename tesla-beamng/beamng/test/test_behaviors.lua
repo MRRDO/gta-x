@@ -1727,5 +1727,65 @@ scenario('bestSpot', function()
   -- every spot behind the pin's side is free: the pin is at x=667, the car comes from x=0
 end)
 
+-- virtual lidar: a pole in the lane is steered around, a wall across the road is stopped for, a curb is not a reason to stop
+local function boxCast(boxes)
+  return function(x, y, z, dx, dy, dz, dist)
+    local best
+    for _, b in ipairs(boxes) do
+      local tmin, tmax = 0, dist
+      for _, ax in ipairs({ { x, dx, b[1], b[3] }, { y, dy, b[2], b[4] } }) do
+        local o, d, lo, hi = ax[1], ax[2], ax[3], ax[4]
+        if math.abs(d) < 1e-9 then
+          if o < lo or o > hi then tmin, tmax = 1, 0 end
+        else
+          local t1, t2 = (lo - o) / d, (hi - o) / d
+          if t1 > t2 then t1, t2 = t2, t1 end
+          tmin, tmax = math.max(tmin, t1), math.min(tmax, t2)
+        end
+      end
+      if tmin <= tmax and (not best or tmin < best) then best = tmin end
+    end
+    return best
+  end
+end
+
+scenario('lidarPole', function()
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 } })
+  local px = 300
+  w.planner.castRay = boxCast({ { px - 0.15, LANE1 - 0.15, px + 0.15, LANE1 + 0.15 } })
+  w.planner:setRoute({ 600, LANE1, 0 }, nil, 'Street')
+  check(w:engage('fsd', 'standard'), 'engage')
+  local nearest = 1e9
+  w:run(60, function(ww)
+    local e = ww.ego
+    if math.abs(e.x - px) < 4 then nearest = math.min(nearest, math.abs(e.y - LANE1)) end
+    return e.x > px + 20
+  end)
+  check(w.ego.x > px + 15, string.format('got past the pole (x %.0f)', w.ego.x))
+  check(nearest > 1.0, string.format('steered around the pole (%.2f m to the side)', nearest))
+end)
+
+scenario('lidarWall', function()
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 } })
+  local wx = 250
+  w.planner.castRay = boxCast({ { wx, -20, wx + 1, 20 } })
+  w.planner:setRoute({ 600, LANE1, 0 }, nil, 'Street')
+  check(w:engage('fsd', 'standard'), 'engage')
+  local maxX = 0
+  w:run(60, function(ww) maxX = math.max(maxX, ww.ego.x + 2.3); return false end)
+  check(maxX < wx - 0.8, string.format('stops short of a wall across the road (nose %.1f of %d)', maxX, wx))
+end)
+
+scenario('lidarCurbNotAWall', function()
+  -- a low-only hit (curb height) on the line must never stop the car
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 } })
+  local real = boxCast({ { 300, LANE1 - 0.6, 301, LANE1 + 0.6 } })
+  w.planner.castRay = function(x, y, z, dx, dy, dz, d) if z - (0) > 0.3 then return nil end return real(x, y, z, dx, dy, dz, d) end
+  w.planner:setRoute({ 600, LANE1, 0 }, nil, 'Street')
+  check(w:engage('fsd', 'standard'), 'engage')
+  w:run(80, function(ww) return ww.ego.x > 330 end)
+  check(w.ego.x > 330, string.format('drove past a curb-height bump (x %.0f)', w.ego.x))
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

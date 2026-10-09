@@ -22,6 +22,7 @@ local Nag = require('teslaBridge/nag')
 local Brain = require('teslaBridge/brain')
 local Judge = require('teslaBridge/judge')
 local Policy = require('teslaBridge/policy')
+local Lidar = require('teslaBridge/lidar')
 
 local M = {}
 
@@ -967,6 +968,112 @@ function Planner:forwardClearDist(ego, maxD)
     off = off + 0.15
   end
   return best
+end
+
+-- Virtual lidar (FSD only): a fan of rays at the nose, read along the line we are about to drive.
+--   a wall / pole / barrier on the line: nudge around it when 1.4 m or less of sideways room clears it, otherwise brake to stop short
+--   (and after a few seconds back off and re-plan, then ask the driver); other cars are skipped (the car-following code owns those)
+--   a curb on the line at speed: a small sideways nudge, never a stop, and none near the end of the route / parking / pulling over
+function Planner:lidarAssist(ego, pr, sCar, v, cap, fsd)
+  local path = self.path
+  if not fsd or self.settings.lidar == false or not self.castRay or not path then self.lidarOut = nil; return end
+  local Ld = self.lidar
+  if not Ld then
+    Ld = Lidar.new(function(x, y, z, dx, dy, dz, d) return self.castRay(x, y, z, dx, dy, dz, d) end)
+    self.lidar = Ld
+  end
+  local range = clamp(v * 3.5 + 14, 18, 40)
+  if self.t - (self.lidarT or -9) >= 0.09 then
+    self.lidarT = self.t
+    Ld:scan(ego, 1, range, self.t)
+  end
+  local half, wid = (ego.len or 4.6) * 0.5, (ego.wid or 1.9) * 0.5
+  local S = path.s
+  -- the line we will drive (the lane shift included), from the car forward
+  local poly = { { x = ego.x, y = ego.y } }
+  for i = pr.i, #path.pts do
+    if S[i] - sCar > range then break end
+    local a, b = path.pts[max(1, i - 1)], path.pts[min(#path.pts, i + 1)]
+    local tx, ty = b.x - a.x, b.y - a.y
+    local tl = sqrt(tx * tx + ty * ty)
+    if tl > 1e-6 and S[i] > sCar + 0.3 then
+      local sh = self:shiftAt(S[i], i)
+      poly[#poly + 1] = { x = path.pts[i].x - ty / tl * sh, y = path.pts[i].y + tx / tl * sh }
+    end
+  end
+  if #poly < 2 then return end
+  -- other cars are not walls (they are handled by following / passing); anything within a car's reach of one is skipped
+  local cars = self.lastCars or {}
+  local function isCar(p)
+    for _, c in ipairs(cars) do
+      local r = max(c.l or 4.6, c.w or 1.9) * 0.5 + 1.2
+      if (c.x - p.x) ^ 2 + (c.y - p.y) ^ 2 < r * r then return true end
+    end
+    return false
+  end
+  local halfW = wid + 0.25 + min(0.2, v * 0.015)
+  local s, lat = Ld:alongHit(poly, halfW, nil, isCar)
+  local out = { gap = nil, nudge = nil, curb = nil }
+  self.lidarOut = out
+  local _, w = self:laneAt(pr.i)
+  local maxShift = clamp(((w or 3.4) - wid * 2) * 0.5 + 0.5, 0.6, 1.4)
+  if s then
+    local gap = s - half
+    out.gap = gap
+    if gap < max(14, v * 2.2 + 8) then
+      local hasNudge = false
+      for _, b in ipairs(self.bumps) do if b.kind == 'lidar' and b.s1 > sCar then hasNudge = true end end
+      if not hasNudge then
+        local sh = Ld:clearShift(poly, wid + 0.2, s + 4, maxShift, isCar)
+        if sh and gap > 3.5 and v > 1.5 then
+          self.bumps[#self.bumps + 1] = { s0 = sCar + max(1, gap - 5), s1 = sCar + s + 6, off = sh * 1.2, ramp = max(5, min(gap * 0.5, v * 0.8)), kind = 'lidar' }
+          out.nudge = sh
+          self:emit('notice', { detail = string.format('lidar: something solid %.0f m ahead, steering %.1f m %s around it', gap, abs(sh), sh > 0 and 'left' or 'right') })
+          hasNudge = true
+        end
+      end
+      if hasNudge then
+        cap(max(4, min(v, sqrt(2 * 3.5 * max(0, gap - 1.5)) + 3)))
+        self.lidarBlockedT = nil
+      else
+        cap(sqrt(2 * 4.0 * max(0, gap - 2.4)))
+        out.blocked = true
+        self.lidarBlockedT = self.lidarBlockedT or self.t
+      end
+    else
+      self.lidarBlockedT = nil
+    end
+  else
+    self.lidarBlockedT = nil
+    -- a curb on the line: a small nudge away from it (never a stop; not when arriving, parking or pulling over)
+    local calm = v > 6 and not self.pullingOver and not self.maneuver and (not self.dest or (path.s[#path.s] - sCar) > 45)
+    if calm then
+      local hasCurb = false
+      for _, b in ipairs(self.bumps) do if b.kind == 'lidarCurb' and b.s1 > sCar then hasCurb = true end end
+      if not hasCurb then
+        local cs, clat = Ld:alongHit(poly, wid + 0.05, { low = true }, isCar)
+        if cs and cs - half > 2 and cs - half < 12 then
+          local sh = clamp(-(clat or 0) / abs(clat or 1) * 0.35, -0.35, 0.35) -- away from the curb's side
+          if clat and abs(clat) > 0.01 then
+            self.bumps[#self.bumps + 1] = { s0 = sCar + cs - 3, s1 = sCar + cs + 6, off = sh, ramp = 6, kind = 'lidarCurb' }
+            out.curb = sh
+          end
+        end
+      end
+    end
+  end
+  -- blocked for good: back off and look again, then hand it to the driver
+  if self.lidarBlockedT and v < 0.5 then
+    local waited = self.t - self.lidarBlockedT
+    if waited > 4 and (not self.lidarRecT or self.t - self.lidarRecT > 10) then
+      self.lidarRecT = self.t
+      self:emit('notice', { detail = 'lidar: the way ahead is blocked' })
+      self.lidarTryRecover = true
+    end
+    if waited > 25 then self.status.lowConfidence = true; self.conf = min(self.conf or 1, 0.3) end
+  else
+    if not self.lidarBlockedT then self.lidarRecT = nil end
+  end
 end
 
 -- Are all the legs of a maneuver clear of walls, curbs and cars?
@@ -2309,6 +2416,14 @@ function Planner:tick(snap)
   if self.settings.followDistance then gap = 0.8 + (clamp(self.settings.followDistance, 1, 7) - 1) * 0.35 end
   if wary then gap = gap * 1.4 end
   if lead and lead.cutIn and (self.profile == 'sloth' or self.profile == 'chill' or self.profile == 'standard') then gap = gap * 1.25 end -- let it in
+  -- virtual lidar (FSD only)
+  self.lastCars = cars
+  self:lidarAssist(ego, pr, sCar, v, cap, fsd)
+  if fsd and self.settings.lidarDebug and self.lidar then st.lidar = self.lidar:debugPoints() end
+  if self.lidarTryRecover then
+    self.lidarTryRecover = nil
+    if self:recoverStuck(ego, cars, out, 'wall ahead', 1) then return self:finish(out) end
+  end
   -- stuck while it should be moving (against a curb or wall, wheels spinning): stop instead of pushing on
   do
     local wantsMove = (maxSpeed or 0) > 2 and not hold and not hazard and not lead and not wary and not self.maneuver
@@ -3082,15 +3197,25 @@ function Planner:tickManeuver(ego, cars, out)
     mv.dwell = 0
   end
   mv.lastT = self.t
+  -- parking assist: the lidar looks in the direction of travel (the tail when reversing) and eases the car down as it closes in
+  local segMax = seg.maxSpeed or 1.5
+  if self.settings.lidar ~= false and self.castRay and (ego.v or 0) < 3 then
+    local Ld = self.lidar or Lidar.new(function(x, y, z, dx, dy, dz, d) return self.castRay(x, y, z, dx, dy, dz, d) end)
+    self.lidar = Ld
+    Ld:scan(ego, seg.dir < 0 and -1 or 1, 6, self.t)
+    local f = Ld:straightAhead((ego.wid or 1.9) * 0.5 + 0.1)
+    if f then segMax = min(segMax, max(0.35, 0.35 + 0.5 * (f - (ego.len or 4.6) * 0.5 - 0.8))) end
+    if self.settings.lidarDebug then self.status = self.status or {}; self.status.lidar = Ld:debugPoints(); self.status.lidarRear = seg.dir < 0 or nil end
+  end
   local flat, vcap = {}, {}
   for i, p in ipairs(seg.pts) do
     flat[#flat + 1] = p.x; flat[#flat + 1] = p.y; flat[#flat + 1] = p.z or 0
-    vcap[i] = seg.maxSpeed or 1.5
+    vcap[i] = segMax
   end
   vcap[#vcap] = 0
   self.seq = self.seq + 1
   out.plan = {
-    seq = self.seq, pts = flat, vcap = vcap, dir = seg.dir, maxSpeed = blocked and 0 or seg.maxSpeed,
+    seq = self.seq, pts = flat, vcap = vcap, dir = seg.dir, maxSpeed = blocked and 0 or segMax,
     hold = blocked, openEnded = false, gapTime = 2, throttleMax = 0.45, signal = false, mode = self.mode,
     maneuver = mv.kind,
   }

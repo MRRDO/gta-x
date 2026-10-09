@@ -1106,6 +1106,30 @@ local function driveAidsTick(veh)
     end
     if realTime >= tLearnSave then tLearnSave = realTime + 60; saveLearn() end
   end
+  -- green-light chime for hand driving (FSD has its own): stopped behind a red, tell the app the moment it turns green
+  if (not planner or planner.mode == 'off') and ego.v < 0.6 then
+    local conv = planner and planner:signalDirConvention() or nil
+    local best, bd
+    for _, sg in ipairs(signals) do
+      if sg.kind == 'signal' and sg.get and sg.dirx then
+        local dx, dy = sg.x - ego.x, sg.y - ego.y
+        local along = dx * ego.hx + dy * ego.hy
+        if along > 2 and along < 40 and math.abs(-dx * ego.hy + dy * ego.hx) < 14 then
+          local dot = ego.hx * sg.dirx + ego.hy * sg.diry
+          local facing = conv and (conv * dot > 0.6) or (math.abs(dot) > 0.6)
+          if facing and (not bd or along < bd) then best, bd = sg, along end
+        end
+      end
+    end
+    local st = best and best.get() or nil
+    if st == 'red' then drive.sawRed = realTime
+    elseif st == 'green' and drive.sawRed and realTime - drive.sawRed < 120 then
+      drive.sawRed = nil
+      relayEvent({ kind = 'greenLight', detail = 'green' })
+    end
+  elseif ego.v >= 0.6 then
+    drive.sawRed = nil
+  end
   -- PIN to Drive: no gear but Park until unlocked (never yanked while moving)
   if pinLocked and lastVehSt.gear and lastVehSt.gear ~= 'P' and (lastVehSt.speed or 0) < 1 then
     toVehicle(veh, 'command', { t = 'gear', gear = 'P' })
@@ -1318,6 +1342,7 @@ function M.onVehicleState(vid, json)
     nextTurn = ps.nextTurn and { dir = ps.nextTurn.dir, dist = num(ps.nextTurn.dist, 0), road = ps.nextTurn.road } or nil,
     remaining = ps.remaining and num(ps.remaining, 0) or nil,
     lane = ps.lane,
+    lidar = ps.lidar, lidarRear = ps.lidarRear, -- the debug view's points (only when Service Mode asks for them)
     creeping = ps.creeping or false,
     waitingFor = ps.waitingFor,
     goAround = ps.goAround or false,
