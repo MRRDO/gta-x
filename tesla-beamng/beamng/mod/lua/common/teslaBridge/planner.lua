@@ -2310,6 +2310,17 @@ function Planner:tick(snap)
         tostring(self.nag.reason or 'attention'), tostring(self.nag.active or '?'), kind == 'park' and 'parking' or 'pulling over') })
     end
     cap(self.emergency and 9 or 11) -- ~20-25 mph
+    -- a pull-over / park that cannot be completed (wrecked car, boxed in, spot never reached): do not drive at it forever. After 20 s
+    -- standing still, or 90 s in all, it ends here: P, a strike, FSD off (the hazards the pull-over keeps are then handled by the same
+    -- path as a normal one). This is what "forcing it to think it parked" did by hand after a crash.
+    local un = self.unresponsive
+    if un and ((t - un.t > 20 and v < 0.5 and t - (un.moveT or un.t) > 20) or t - un.t > 90) then
+      out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
+      self:emit('notice', { detail = 'could not finish ' .. tostring(un.kind) .. ': stopping here' })
+      self:finishUnresponsive(out)
+      return self:finish(out)
+    end
+    if un and v >= 0.5 then un.moveT = t end
   elseif self.unresponsive then
     -- the driver answered: back to the original trip
     local sv = self.unresponsive.saved

@@ -1225,6 +1225,7 @@ local function computeAlert(vid, st, ps, nag)
     if not crash.active and dmg - h[1].d > 9000 then
       crash.active = { t = realTime, base = h[1].d + 1 }
       relayEvent({ kind = 'collision', detail = string.format('damage +%.0f', dmg - h[1].d) })
+      M._crashT = realTime
       local veh = vehicleById(vid)
       if planner and planner.mode ~= 'off' then
         planner:disengage('error', 'collision')
@@ -1405,6 +1406,10 @@ function M.onVehicleEvent(vid, json)
     end
   elseif ev.kind == 'reengage' then
     -- the car decided that takeover was an accidental bump of the wheel
+    if M._crashT and realTime - M._crashT < 120 then
+      relayEvent({ kind = 'notice', detail = 'FSD stays off after a crash: switch it on yourself' }) -- (a wrecked car re-engaged, tried to park and never could: the hazards stayed on)
+      return
+    end
     if planner and veh and planner.mode == 'off' then
       local ego = egoSnapshot(veh)
       -- only when it really was a bump: the car is still on the line FSD was driving and still points along it. If he steered somewhere
