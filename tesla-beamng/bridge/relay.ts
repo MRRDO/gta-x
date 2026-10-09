@@ -1,0 +1,1087 @@
+// BeamNG <-> iPad relay.
+//   game:  TCP client to the mod on 127.0.0.1:8766 (newline-delimited JSON), reconnects every 2 s
+//   app:   WebSocket + HTTP on 0.0.0.0:8765 (test page at /, minimap at /minimap.png)
+//
+//   npm run bridge [-- --port 8765 --game-port 8766 --app ../dist --no-auth --feedback-dir ./notes]
+
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
+import { localTls, setupPage, type Tls } from './localtls.ts'
+import { connect, type Socket } from 'node:net'
+import { homedir, hostname, networkInterfaces } from 'node:os'
+import { readFileSync, existsSync, writeFileSync, statSync, mkdirSync, readdirSync } from 'node:fs'
+import { join, dirname, extname, normalize, resolve, basename } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { WebSocketServer, WebSocket } from 'ws'
+import qrcode from 'qrcode-terminal'
+import { ACTIONS, COMMAND_TYPES, DIAL_MODES, LIGHT_EVENTS, type ActionName, type LightEvent, type WheelLights, type ButtonMap, type CameraFrame, type MapInfo, type Minimap } from './protocol.ts'
+import { beamngModsDirs } from './beamngPaths.ts'
+import { record as recordDrive } from './recorder.ts'
+import { BlackBox, buildReport, uploadToGitHub, uploadConfig } from './blackbox.ts'
+import { screenshotTo } from './screenshot.ts'
+import { handleBrowse } from './browse.ts'
+import { adviseStuck, assistantStatus, setAssistantEnabled, parseCommand, chat as assistantChat } from './assistant.ts'
+import { audioStatus, chooseOutputs, testTone, loadConfig, setVolume as setDeviceVolume, duck, writeEq, readEq } from './audio.ts'
+import { pcPlayerAvailable, play as pcPlay, control as pcControl, status as pcStatus, showWindow as pcWindow } from './pcplayer.ts'
+import { transcribe, sttAvailable } from './stt.ts'
+
+const here = dirname(fileURLToPath(import.meta.url))
+
+function arg(name: string, fallback?: string): string | undefined {
+  const i = process.argv.indexOf(`--${name}`)
+  if (i < 0) return fallback
+  const v = process.argv[i + 1]
+  return v && !v.startsWith('--') ? v : 'true'
+}
+
+const blackBox = new BlackBox()
+/** Save the black box, upload it if a token is set up, and tell every app (the iPad asks "what went wrong?"). */
+async function markBlackBox(note = '') {
+  // the level, and the path the planner was following (thinned), so a swerve can be checked against where it meant to go
+  const rp = (lastRoute as any)?.points
+  const route = Array.isArray(rp) ? rp.filter((_: unknown, i: number) => i % Math.max(1, Math.ceil(rp.length / 150)) === 0).map((p: number[]) => [Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10]) : null
+  const file = blackBox.mark(note.slice(0, 500), Date.now(), { level: lastMap?.level ?? null, route })
+  log('black box saved:', file)
+  const shotFile = file.replace(/\.json$/, '.jpg')
+  const shot = screenshotTo(shotFile) // what was on screen when you pressed it, taken while the upload runs
+  const up = await uploadToGitHub(file)
+  log('black box upload:', up.status)
+  // the wheel helper's log (G29 rim lights: "leds:" lines, what the wheel accepted) goes along, so it can be checked without asking for files
+  try {
+    const wl = join(dirname(fileURLToPath(import.meta.url)), 'wheel_helper.log')
+    if (up.ok && existsSync(wl)) {
+      const tail = readFileSync(wl, 'utf8').split(/\r?\n/).slice(-200).join('\n')
+      void uploadToGitHub(file, undefined, undefined, file.split(/[\\/]/).pop()!.replace(/\.json$/, '') + '.wheel-helper.txt', tail)
+    }
+  } catch { /* optional */ }
+  try { if (up.ok && (await shot)) await uploadToGitHub(shotFile) } catch { /* optional */ }
+  await uploadReport(file) // the report becomes a GitHub issue (see .github/workflows/blackbox-issue.yml)
+  broadcast({ t: 'event', kind: 'blackbox', detail: up.status, data: { file, uploaded: up.ok, upload: up.status } })
+  return { file, up }
+}
+/** One markdown page for the black box, uploaded as blackbox/report-<stamp>.md (a workflow turns it into an issue and updates it when the note is added). */
+async function uploadReport(file: string) {
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf8'))
+    const text = buildReport(j, file)
+    const name = file.split(/[\\/]/).pop()!.replace(/^mark-/, 'report-').replace(/\.json$/, '.md')
+    writeFileSync(file.replace(/mark-([0-9TZ-]+)\.json$/, 'report-$1.md'), text)
+    const r = await uploadToGitHub(file, undefined, undefined, name, text)
+    log('black box report:', r.status)
+  } catch (e) { log('black box report failed:', (e as Error).message) }
+}
+/** Ctrl+B / a wheel button / the app: mark this moment and tell the apps (a short toast). */
+function tagBlackBox(label = '') {
+  const n = blackBox.tag(Date.now(), label)
+  log(`black box: moment ${n} marked`)
+  broadcast({ t: 'event', kind: 'blackboxTag', detail: `Moment ${n} marked`, data: { n } })
+  return n
+}
+async function noteBlackBox(file: string, note: string) {
+  if (!/blackbox[\\/]mark-[0-9TZ-]+\.json$/.test(file)) return { ok: false, status: 'not a black box file' }
+  blackBox.addNote(file, note)
+  const up = await uploadToGitHub(file)
+  log('black box note:', up.status)
+  if (up.ok) await uploadReport(file) // the issue's text gets the note
+  broadcast({ t: 'event', kind: 'blackboxNote', detail: up.status, data: { file, uploaded: up.ok } })
+  return { ok: true, status: up.status, uploaded: up.ok }
+}
+const RECORD = !(process.argv.includes('--no-record') || process.env.TESLA_RECORD === '0') // on by default now: every drive (yours, or the game's own AI at the wheel) becomes training data for the imitation policy // driving log for the AI (docs/AI_COMPUTE_PLAN.md)
+const PORT = Number(arg('port', process.env.BRIDGE_PORT ?? '8765'))
+const GAME_HOST = arg('game-host', '127.0.0.1')!
+const GAME_PORT = Number(arg('game-port', '8766'))
+const APP_DIR = arg('app')
+// --lan-token: also ask for the token on the home Wi-Fi (off by default: the tunnel always needs it)
+const LAN_TOKEN = arg('lan-token') === 'true'
+const NO_AUTH = arg('no-auth') === 'true'
+const QUIET = arg('quiet') === 'true'
+// --tunnel: a Cloudflare quick tunnel gives the relay an https address, so the live (https)
+// app can connect with wss:// and the iPad's mic + camera work. Needs cloudflared installed.
+const TUNNEL = arg('tunnel') === 'true'
+const APP_URL = (arg('app-url') ?? 'https://tesla-ui-atv.tesla-ui-atv.workers.dev').replace(/\/+$/, '')
+if (TUNNEL && NO_AUTH) {
+  console.error('--tunnel puts the relay on the internet: it always needs the token (drop --no-auth)')
+  process.exit(1)
+}
+
+// A pairing token so nobody else on the Wi-Fi (or the internet, with --tunnel) can drive
+// the car. Kept across restarts. 16 hex chars; older short tokens are upgraded.
+const tokenFile = join(here, '.token')
+let TOKEN = existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : ''
+if (TOKEN.length < 16) {
+  TOKEN = randomBytes(8).toString('hex')
+  writeFileSync(tokenFile, TOKEN + '\n')
+}
+
+// ---------------------------------------------------------------------------
+// game connection
+// ---------------------------------------------------------------------------
+
+let game: Socket | null = null
+let gameConnected = false
+let gameVersion: string | undefined
+let lineBuf = ''
+let lastMap: MapInfo | null = null
+let lastMapKey = ''
+let lastMinimap: { key: string; mime: string; data: Buffer; msg: Minimap } | null = null
+let minimapRequestedFor = ''
+let lastRoute: unknown = null
+let lastState: unknown = null
+const stats = { state: 0, traffic: 0, fromApp: 0, since: Date.now() }
+const recentEvents: unknown[] = []
+const feedbackDir = resolve(arg('feedback-dir') ?? join(here, 'feedback')) // voice notes land here
+
+// A voice note from the wheel button / app: save the audio plus what the car was doing.
+function saveVoiceNote(msg: any): string {
+  mkdirSync(feedbackDir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const ext = /webm/.test(msg.mime) ? 'webm' : /mp4|m4a|aac/.test(msg.mime) ? 'm4a' : /wav/.test(msg.mime) ? 'wav' : /ogg/.test(msg.mime) ? 'ogg' : 'bin'
+  const base = `note-${stamp}`
+  writeFileSync(join(feedbackDir, `${base}.${ext}`), Buffer.from(String(msg.audio ?? ''), 'base64'))
+  const s = lastState as any
+  const context = {
+    savedAt: new Date().toISOString(), durationSec: msg.durationSec ?? null, text: msg.text ?? null, audio: `${base}.${ext}`,
+    level: lastMap?.level ?? null,
+    car: s ? { vehicle: s.vehicle, pos: s.pos, speed: s.speed, gear: s.gear, autopilot: s.autopilot, safety: s.safety } : null,
+    recentEvents: recentEvents.slice(-30),
+  }
+  writeFileSync(join(feedbackDir, `${base}.json`), JSON.stringify(context, null, 2))
+  return base
+}
+
+// ---------------------------------------------------------------------------
+// backup camera: the game renders small PNGs into its user folder while in R and tells us
+// where; we read them (same PC) and stream them to the app. If we can't find the files,
+// we ask the game to send the image data inline instead.
+// ---------------------------------------------------------------------------
+
+const CAM_VIEWS = ['rear', 'front', 'left', 'right'] as const
+type CamViewName = (typeof CAM_VIEWS)[number]
+const camViewOf = (v: unknown): CamViewName => (CAM_VIEWS as readonly string[]).includes(String(v)) ? (v as CamViewName) : 'rear'
+const lastCams = new Map<CamViewName, { data: Buffer; mime: string; seq: number }>()
+let camMisses = 0
+let camInlineAsked = false
+const userFolders = () => [arg('beamng-user'), ...beamngModsDirs().map((d) => dirname(d))].filter(Boolean) as string[]
+
+/** PNG or JPEG, fully written (the game may still be writing it). */
+function imageKind(b: Buffer): 'image/png' | 'image/jpeg' | null {
+  if (b.length > 24 && b.readUInt32BE(0) === 0x89504e47 && b.subarray(b.length - 12).includes('IEND')) return 'image/png'
+  if (b.length > 4 && b[0] === 0xff && b[1] === 0xd8 && b[b.length - 2] === 0xff && b[b.length - 1] === 0xd9) return 'image/jpeg'
+  return null
+}
+let camFormatAsked = false
+
+async function onCamFrame(msg: any) {
+  const view = camViewOf(msg.view)
+  if (msg.off) {
+    lastCams.delete(view)
+    broadcast({ t: 'camera', view, off: true } satisfies CameraFrame)
+    return
+  }
+  let data: Buffer | null = null
+  if (msg.data) data = Buffer.from(msg.data, 'base64')
+  else {
+    const paths = [msg.path, ...userFolders().map((u) => join(u, String(msg.rel ?? '')))].filter(Boolean) as string[]
+    for (const p of paths) {
+      try {
+        // a leftover frame from an earlier session doesn't count as live
+        if (Date.now() - (await stat(p)).mtimeMs > 3000) continue
+        data = await readFile(p)
+        break
+      } catch { /* next */ }
+    }
+  }
+  const mime = data && imageKind(data)
+  if (!data || !mime) {
+    // not there (or still being written): after a few misses, have the game send the bytes;
+    // if that doesn't work either, maybe this game can't write JPEG: ask for PNG
+    camMisses++
+    if (camMisses >= 3 && !camInlineAsked) {
+      camInlineAsked = true
+      log('backup camera: frames not readable from disk, asking the game to send them inline')
+      sendGame({ t: 'camera', inline: true })
+    } else if (camMisses >= 8 && !camFormatAsked) {
+      camFormatAsked = true
+      log('backup camera: still no frames, asking the game for PNG')
+      sendGame({ t: 'camera', format: 'png' })
+    }
+    return
+  }
+  camMisses = 0
+  lastCams.set(view, { data, mime, seq: msg.seq ?? 0 })
+  if (msg.width && (msg.width !== camInfo.width || msg.height !== camInfo.height || (msg.fps && msg.fps !== camInfo.fps))) {
+    camInfo = { width: msg.width, height: msg.height, fps: msg.fps ?? camInfo.fps }
+    broadcast(camerasMsg())
+  }
+  for (const c of camClients.get(view) ?? []) if (c.readyState === WebSocket.OPEN && c.bufferedAmount < 1_000_000) c.send(data, { binary: true })
+  broadcast({
+    t: 'camera', view, seq: msg.seq, mime, data: data.toString('base64'),
+    width: msg.width, height: msg.height, mirrored: msg.mirrored !== false,
+  } satisfies CameraFrame, true)
+}
+
+// ---------------------------------------------------------------------------
+// wheel buttons: the companion (wheel_helper.py) reports presses, the app's settings
+// map them to actions, and a press sends the action to the game. Saved across restarts.
+// ---------------------------------------------------------------------------
+
+const buttonsFile = resolve(arg('buttons-file') ?? join(here, 'buttons.json'))
+const ACTION_NAMES = new Set<string>(ACTIONS.map((a) => a.name))
+let buttonMap: Partial<Record<ActionName, number>> = {}
+try {
+  const saved = JSON.parse(readFileSync(buttonsFile, 'utf8'))
+  for (const [k, v] of Object.entries(saved)) if (ACTION_NAMES.has(k) && Number.isInteger(v)) buttonMap[k as ActionName] = v as number
+} catch { /* first run */ }
+let learning: ActionName | null = null
+let companion: { ws: WebSocket; name: string; buttons: number } | null = null
+
+function buttonMapMsg(): ButtonMap {
+  return { t: 'buttonMap', map: buttonMap, learning, companion: companion ? { name: companion.name, buttons: companion.buttons } : null }
+}
+function saveButtons() {
+  try { writeFileSync(buttonsFile, JSON.stringify(buttonMap, null, 2)) } catch (e) { log('could not save buttons:', e) }
+}
+function assignButton(action: ActionName, button: number | null) {
+  // one action per button: a button taken by another action moves here
+  if (button != null) for (const k of Object.keys(buttonMap) as ActionName[]) if (buttonMap[k] === button) delete buttonMap[k]
+  if (button == null) delete buttonMap[action]
+  else buttonMap[action] = button
+  saveButtons()
+}
+// G29 light effects chosen in the app (Settings > Wheel lights): saved, and sent to the app and the wheel helper
+const lightsFile = resolve(arg('lights-file') ?? join(here, 'wheel-lights.json'))
+let lightMap: Partial<Record<LightEvent, string>> = {}
+let lightCustom: Record<string, { name: string; frames: [number, number][] }> = {} // the pattern editor's effects: frames of [lights mask 0..31, milliseconds]
+const EFFECT_ID = /^[A-Za-z0-9_]{1,24}$/
+function cleanFrames(f: unknown): [number, number][] | null {
+  if (!Array.isArray(f) || f.length < 1 || f.length > 40) return null
+  const out: [number, number][] = []
+  for (const x of f) {
+    if (!Array.isArray(x)) return null
+    const m = Number(x[0]), ms = Number(x[1])
+    if (!Number.isFinite(m) || !Number.isFinite(ms)) return null
+    out.push([Math.max(0, Math.min(31, Math.round(m))), Math.max(40, Math.min(3000, Math.round(ms)))])
+  }
+  return out
+}
+try {
+  const saved = JSON.parse(readFileSync(lightsFile, 'utf8'))
+  const mp = saved && typeof saved.map === 'object' && saved.map ? saved.map : saved // (the first version saved the map alone)
+  for (const [k, v] of Object.entries(mp)) if ((LIGHT_EVENTS as readonly string[]).includes(k) && typeof v === 'string' && EFFECT_ID.test(v)) lightMap[k as LightEvent] = v
+  for (const [id, c] of Object.entries((saved?.custom ?? {}) as Record<string, any>)) {
+    const fr = cleanFrames(c?.frames)
+    if (/^c_[a-z0-9]{1,12}$/.test(id) && fr) lightCustom[id] = { name: String(c?.name ?? 'Pattern').slice(0, 24), frames: fr }
+  }
+} catch { /* first run */ }
+let lightTest: string | null = null
+let lightTestFrames: [number, number][] | null = null
+let lightTestId = 0
+function wheelLightsMsg(): WheelLights { return { t: 'wheelLights', map: lightMap, custom: lightCustom, test: lightTest, testFrames: lightTestFrames, testId: lightTestId, helper: companion !== null } }
+function saveLights() {
+  try { writeFileSync(lightsFile, JSON.stringify({ map: lightMap, custom: lightCustom }, null, 2)) } catch (e) { log('could not save wheel lights:', e) }
+}
+function handleWheelLights(ws: WebSocket, msg: any): boolean {
+  switch (msg.t) {
+    case 'requestWheelLights':
+      ws.send(JSON.stringify(wheelLightsMsg()))
+      return true
+    case 'resetWheelLights': {
+      // stuck lights (hazards left on after a crash, a test that never ended, a dead wheel handle): clear the test, hazards off in the game, helper reopens the wheel
+      lightTest = null; lightTestFrames = null; lightTestId++
+      const sent = sendGame({ t: 'resetLights' })
+      broadcast({ t: 'event', kind: sent ? 'notice' : 'error', detail: sent ? 'Reset lights sent to the game' : 'Reset lights: the game is not connected' })
+      broadcast({ t: 'resetLights' })
+      broadcast(wheelLightsMsg())
+      return true
+    }
+    case 'setWheelLight': {
+      if (!(LIGHT_EVENTS as readonly string[]).includes(msg.event)) return true
+      if (typeof msg.effect === 'string' && EFFECT_ID.test(msg.effect)) lightMap[msg.event as LightEvent] = msg.effect
+      else delete lightMap[msg.event as LightEvent]
+      saveLights()
+      broadcast(wheelLightsMsg())
+      return true
+    }
+    case 'saveLightFx': {
+      const fr = cleanFrames(msg.frames)
+      if (!fr || typeof msg.id !== 'string' || !/^c_[a-z0-9]{1,12}$/.test(msg.id)) return true
+      lightCustom[msg.id] = { name: String(msg.name ?? 'Pattern').slice(0, 24) || 'Pattern', frames: fr }
+      saveLights()
+      broadcast(wheelLightsMsg())
+      return true
+    }
+    case 'deleteLightFx': {
+      if (typeof msg.id !== 'string' || !lightCustom[msg.id]) return true
+      delete lightCustom[msg.id]
+      for (const k of Object.keys(lightMap) as LightEvent[]) if (lightMap[k] === msg.id) delete lightMap[k]
+      saveLights()
+      broadcast(wheelLightsMsg())
+      return true
+    }
+    case 'testWheelLight': {
+      const fr = msg.frames ? cleanFrames(msg.frames) : null
+      lightTestFrames = fr
+      lightTest = fr ? 'draft' : typeof msg.effect === 'string' && EFFECT_ID.test(msg.effect) ? msg.effect : null
+      lightTestId++
+      broadcast(wheelLightsMsg())
+      { const id = lightTestId; setTimeout(() => { if (lightTestId === id && lightTest) { lightTest = null; lightTestFrames = null; broadcast(wheelLightsMsg()) } }, 5200) } // the helper plays it for 5 s
+      return true
+    }
+  }
+  return false
+}
+/** Relay-side handling of button messages. Returns true when handled. */
+let dialIdx = 0
+const DIAL_ACTIONS: Record<string, [ActionName, ActionName]> = {
+  volume: ['volumeUp', 'volumeDown'], distance: ['followFarther', 'followCloser'],
+  speed: ['speedUp', 'speedDown'], profile: ['profileNext', 'profilePrev'],
+}
+/** The dial's turn/click become the action of its current mode. Returns the action to run, or null. */
+function dialAction(name: string): ActionName | null {
+  if (name === 'dialClick') {
+    dialIdx = (dialIdx + 1) % DIAL_MODES.length
+    broadcast({ t: 'dial', mode: DIAL_MODES[dialIdx] })
+    return null
+  }
+  const mode = DIAL_MODES[dialIdx]
+  const dir = name === 'dialUp' ? 'up' : 'down'
+  broadcast({ t: 'dial', mode, dir })
+  return DIAL_ACTIONS[mode][dir === 'up' ? 0 : 1]
+}
+const MEDIA_ACTIONS = new Set<string>(['volumeUp', 'volumeDown', 'mute', 'playPause', 'nextTrack', 'prevTrack', 'assistant'])
+
+function handleButtons(ws: WebSocket, msg: any): boolean {
+  switch (msg.t) {
+    case 'companionHello':
+      companion = { ws, name: String(msg.name ?? 'wheel'), buttons: Number(msg.buttons) || 0 }
+      log(`wheel companion: ${companion.name}, ${companion.buttons} buttons`)
+      // Logitech G29 / G920 / G923 in PC mode: the red dial is buttons 21 (clockwise), 22 (counter-clockwise) and 23 (press).
+      // Map them on first sight so the dial works without going through Settings (relearn there if yours differ).
+      if (/g29|g920|g923|driving force/i.test(companion.name) && companion.buttons >= 24) {
+        // the paddles are the turn signals (left paddle = button 5, right = button 4): with FSD they ask for that turn
+        const defaults: [ActionName, number][] = [['dialUp', 21], ['dialDown', 22], ['dialClick', 23], ['laneLeft', 5], ['laneRight', 4]]
+        for (const [a, b] of defaults) {
+          const taken = (Object.keys(buttonMap) as ActionName[]).some((k) => buttonMap[k] === b)
+          if (buttonMap[a] === undefined && !taken) assignButton(a, b)
+        }
+      }
+      broadcast(buttonMapMsg())
+      broadcast(wheelLightsMsg())
+      return true
+    case 'requestButtonMap':
+      ws.send(JSON.stringify(buttonMapMsg()))
+      return true
+    case 'learnButton':
+      learning = msg.action && ACTION_NAMES.has(msg.action) ? msg.action : null
+      broadcast(buttonMapMsg())
+      return true
+    case 'setButton':
+      if (!ACTION_NAMES.has(msg.action)) return true
+      assignButton(msg.action, Number.isInteger(msg.button) ? msg.button : null)
+      broadcast(buttonMapMsg())
+      return true
+    case 'wheelButton': {
+      const button = Number(msg.button)
+      if (!Number.isInteger(button)) return true
+      broadcast({ t: 'wheelButton', button, down: !!msg.down }, true)
+      if (!msg.down) return true
+      if (learning) {
+        assignButton(learning, button)
+        log(`button ${button} -> ${learning}`)
+        learning = null
+        broadcast(buttonMapMsg())
+        return true
+      }
+      const action = (Object.keys(buttonMap) as ActionName[]).find((k) => buttonMap[k] === button)
+      log(`wheel button ${button} pressed: ${action ? `mapped to ${action}, game ${gameConnected ? 'connected' : 'NOT connected'}` : `nothing mapped (map: ${JSON.stringify(buttonMap)})`}`)
+      if (action) {
+        sendGame({ t: 'buttonGuard' }) // the game may have its own binding on this button (ignition): the mod puts that back
+        const act = action.startsWith('dial') ? dialAction(action) : action
+        if (!act) return true
+        if (act === 'tagMoment') { tagBlackBox(); return true }
+        if (MEDIA_ACTIONS.has(act)) broadcast({ t: 'media', action: act }) // volume etc. go to the iPad, not the game
+        else if (!sendGame({ t: 'action', name: act })) broadcast({ t: 'event', kind: 'error', detail: 'game not connected' })
+        return true
+      }
+      return true
+    }
+  }
+  return false
+}
+
+function log(...a: unknown[]) {
+  if (!QUIET) console.log(new Date().toISOString().slice(11, 19), ...a)
+}
+
+function connectGame() {
+  const sock = connect({ host: GAME_HOST, port: GAME_PORT })
+  sock.setNoDelay(true)
+  sock.setEncoding('utf8')
+  sock.on('connect', () => {
+    game = sock
+    gameConnected = true
+    lineBuf = ''
+    log(`game connected (${GAME_HOST}:${GAME_PORT})`)
+    broadcast({ t: 'bridge', game: 'connected' })
+    sendGame({ t: 'requestMap' })
+  })
+  sock.on('data', (chunk: string) => {
+    lineBuf += chunk
+    let nl: number
+    while ((nl = lineBuf.indexOf('\n')) >= 0) {
+      const line = lineBuf.slice(0, nl)
+      lineBuf = lineBuf.slice(nl + 1)
+      if (line.trim()) onGameLine(line)
+    }
+  })
+  const retry = () => {
+    if (game === sock) {
+      game = null
+      if (gameConnected) {
+        gameConnected = false
+        log('game disconnected')
+        broadcast({ t: 'bridge', game: 'disconnected' })
+      }
+    }
+    setTimeout(connectGame, 2000)
+  }
+  sock.on('error', () => {}) // "close" follows
+  sock.on('close', retry)
+}
+
+function sendGame(msg: unknown): boolean {
+  if (!game || !gameConnected) return false
+  game.write(JSON.stringify(msg) + '\n')
+  return true
+}
+
+// Lua can't tell an empty array from an empty object, and uses false where we want null.
+function asArray<T>(v: unknown): T[] {
+  if (Array.isArray(v)) return v as T[]
+  if (v && typeof v === 'object') return Object.values(v as Record<string, T>)
+  return []
+}
+const nullable = (v: unknown) => (v === false || v === undefined ? null : v)
+
+function normalize_(msg: any): any {
+  switch (msg.t) {
+    case 'state': {
+      msg.signal = nullable(msg.signal)
+      msg.battery = nullable(msg.battery)
+      msg.fuel = nullable(msg.fuel)
+      if (!msg.doors || Array.isArray(msg.doors)) msg.doors = {}
+      const a = msg.autopilot ?? {}
+      for (const k of ['speedLimit', 'leadGap', 'control', 'nextTurn', 'remaining', 'lastDisengage']) a[k] = nullable(a[k])
+      msg.autopilot = a
+      return msg
+    }
+    case 'traffic':
+      msg.cars = asArray(msg.cars)
+      return msg
+    case 'map':
+      msg.nodes = asArray(msg.nodes)
+      msg.links = asArray(msg.links).map((l: any) => ({ ...l, speedLimit: l.speedLimit ?? null }))
+      msg.signals = asArray(msg.signals)
+      msg.parking = asArray(msg.parking)
+      return msg
+    case 'route':
+      msg.points = asArray(msg.points)
+      return msg
+    case 'parkingSpots':
+      msg.spots = asArray(msg.spots)
+      return msg
+    default:
+      return msg
+  }
+}
+
+function onGameLine(line: string) {
+  let msg: any
+  try {
+    msg = JSON.parse(line)
+  } catch {
+    log('bad line from game:', line.slice(0, 120))
+    return
+  }
+  msg = normalize_(msg)
+  recordDrive(msg, RECORD)
+  blackBox.push(msg)
+  switch (msg.t) {
+    case 'hello':
+      gameVersion = msg.version
+      log(`BeamNG ${msg.version}, protocol ${msg.protocol}`)
+      broadcast({ t: 'bridge', game: 'connected', version: gameVersion })
+      return
+    case 'state':
+      stats.state++
+      lastState = msg
+      broadcast(msg, true)
+      return
+    case 'traffic':
+      stats.traffic++
+      broadcast(msg, true)
+      return
+    case 'map': {
+      const key = createHash('sha1').update(line).digest('hex')
+      if (lastMinimap && lastMinimap.key === msg.level) msg.minimap = lastMinimap.msg.url
+      const changed = key !== lastMapKey
+      lastMap = msg
+      lastMapKey = key
+      if (changed) {
+        log(`map ${msg.level}: ${msg.nodes.length} nodes, ${msg.links.length} links, ${msg.signals.length} signals, ${msg.parking.length} parking`)
+        broadcast(msg)
+      }
+      if (msg.minimapInfo && minimapRequestedFor !== msg.level && lastMinimap?.key !== msg.level) {
+        minimapRequestedFor = msg.level
+        sendGame({ t: 'requestMinimap' })
+      }
+      return
+    }
+    case 'minimap': {
+      const data = Buffer.from(msg.data ?? '', 'base64')
+      const url = `/minimap.png?level=${encodeURIComponent(msg.level)}`
+      const out: Minimap = { t: 'minimap', url, offset: msg.offset, size: msg.size }
+      lastMinimap = { key: msg.level, mime: msg.mime ?? 'image/png', data, msg: out }
+      if (lastMap && lastMap.level === msg.level) lastMap.minimap = url
+      log(`minimap ${msg.level}: ${(data.length / 1024).toFixed(0)} KB`)
+      broadcast(out)
+      return
+    }
+    case 'camFrame':
+      void onCamFrame(msg)
+      return
+    case 'route':
+      lastRoute = msg
+      broadcast(msg)
+      return
+    case 'event':
+      // back to the menu / level change: a new app must not get the old world's state or route
+      // The app throws its map away on levelUnloaded, so forget it here too: reloading the SAME level sends an identical map, which
+      // used to be treated as "unchanged" and never reached the app (the map sometimes did not load).
+      if (msg.kind === 'levelUnloaded') { lastState = null; lastRoute = null; lastMap = null; lastMapKey = ''; minimapRequestedFor = '' }
+      log('event', msg.kind, msg.detail ?? '')
+      if (msg.kind === 'stuck' && (msg.data?.level ?? 0) >= 2) {
+        // FSD stopped and can't say why: ask the local model (if any) for advice, shown in the app
+        void adviseStuck(msg.data).then((a) => { if (a) { log('assistant:', a.action, a.why); broadcast({ t: 'event', kind: 'advice', detail: `${a.action}: ${a.why}` }) } })
+      }
+      recentEvents.push({ ...msg, at: new Date().toISOString() })
+      if (recentEvents.length > 100) recentEvents.shift()
+      broadcast(msg)
+      return
+    default:
+      broadcast(msg)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// app side
+// ---------------------------------------------------------------------------
+
+const clients = new Set<WebSocket>()
+
+function broadcast(msg: unknown, droppable = false) {
+  const s = JSON.stringify(msg)
+  for (const ws of clients) {
+    if (ws.readyState !== WebSocket.OPEN) continue
+    if (droppable && ws.bufferedAmount > 1_000_000) continue // slow client: skip a frame
+    ws.send(s)
+  }
+}
+
+// Requests from this PC skip the token. A tunnel (cloudflared) also connects from 127.0.0.1,
+// so anything carrying proxy headers counts as remote and needs the token.
+const PROXY_HEADERS = ['x-forwarded-for', 'forwarded', 'cf-connecting-ip', 'cf-ray', 'x-real-ip']
+function isLoopback(req: IncomingMessage) {
+  const a = req.socket.remoteAddress ?? ''
+  if (!(a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1')) return false
+  return !PROXY_HEADERS.some((h) => req.headers[h] != null)
+}
+
+// wrong tokens: after 10 in a minute from one address, that address is shut out for 5 minutes
+const authFails = new Map<string, { n: number; since: number; blockedUntil: number }>()
+function clientAddress(req: IncomingMessage) {
+  const h = req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for']
+  return (Array.isArray(h) ? h[0] : h)?.split(',')[0].trim() || req.socket.remoteAddress || '?'
+}
+function tokenOk(given: string | null) {
+  if (!given) return false
+  const a = Buffer.from(given), b = Buffer.from(TOKEN)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+function proxied(req: IncomingMessage) {
+  return PROXY_HEADERS.some((h) => req.headers[h] != null)
+}
+/** A device on the home network talking to us directly (not through the tunnel). */
+function onLan(req: IncomingMessage) {
+  if (proxied(req)) return false
+  const a = (req.socket.remoteAddress ?? '').replace(/^::ffff:/, '')
+  return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(a) || /^(fc|fd|fe80)/i.test(a)
+}
+function cookieToken(req: IncomingMessage) {
+  const m = /(?:^|;\s*)tb_token=([0-9a-f]+)/.exec(String(req.headers.cookie ?? ''))
+  return m ? m[1] : null
+}
+function authorized(req: IncomingMessage) {
+  if (NO_AUTH || isLoopback(req)) return true
+  if (!LAN_TOKEN && onLan(req)) return true
+  if (tokenOk(cookieToken(req))) return true
+  const who = clientAddress(req)
+  const now = Date.now()
+  const f = authFails.get(who)
+  if (f && now < f.blockedUntil) return false
+  const url = new URL(req.url ?? '/', 'http://x')
+  if (tokenOk(url.searchParams.get('token'))) return true
+  const rec = f && now - f.since < 60_000 ? f : { n: 0, since: now, blockedUntil: 0 }
+  rec.n++
+  if (rec.n >= 10) { rec.blockedUntil = now + 5 * 60_000; log(`blocked ${who} for 5 min (wrong tokens)`) }
+  authFails.set(who, rec)
+  return false
+}
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
+  '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml',
+  '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.wasm': 'application/wasm',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.glb': 'model/gltf-binary',
+}
+
+function serveFile(res: ServerResponse, file: string) {
+  res.writeHead(200, { 'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream', 'cache-control': 'no-cache' })
+  res.end(readFileSync(file))
+}
+
+/**
+ * Quentin doesn't want the grey "Waiting for BeamNG..." / "Load into a world..." line under the
+ * boot logo: hide it when we serve the app (the logo stays; --boot-status keeps the line).
+ * Matches by text so it survives app rebuilds; only touches short text-only elements.
+ */
+const BOOT_STATUS_HIDE = `<script>(()=>{const re=/^(waiting for beamng|load into a world|start beamng)/i;
+const hide=(el)=>{if(el&&el.childElementCount===0&&re.test((el.textContent||'').trim()))el.style.display='none'};
+const scan=(n)=>{if(n.nodeType!==1)return;hide(n);n.querySelectorAll&&n.querySelectorAll('div,p,span,small').forEach(hide)};
+new MutationObserver((ms)=>ms.forEach((m)=>{m.addedNodes.forEach(scan);if(m.type==='characterData'||m.type==='childList')hide(m.target.nodeType===1?m.target:m.target.parentElement)}))
+.observe(document.documentElement,{childList:true,subtree:true,characterData:true});})()</script>`
+
+function serveIndex(res: ServerResponse, file: string) {
+  let html = readFileSync(file, 'utf8')
+  if (!arg('boot-status')) html = html.includes('</head>') ? html.replace('</head>', BOOT_STATUS_HIDE + '</head>') : BOOT_STATUS_HIDE + html
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' })
+  res.end(html)
+}
+
+/** The app's BeamNG build (dist-beamng) to serve at /: --app, $TESLA_APP_DIR, or next to this project. */
+function appRoot(): string | null {
+  const c = [APP_DIR, process.env.TESLA_APP_DIR, join(here, '..', '..', 'tesla-ui-atv', 'dist-beamng'),
+    join(homedir(), 'tesla-ui-atv', 'dist-beamng')].filter(Boolean) as string[]
+  for (const d of c) if (existsSync(join(d, 'index.html'))) return resolve(d)
+  return null
+}
+
+const handler = (req: IncomingMessage, res: ServerResponse) => {
+  const url = new URL(req.url ?? '/', 'http://x')
+  const path = url.pathname
+  // a link with ?token= (the tunnel QR) leaves a cookie, so the app's own WebSocket gets in too
+  const qt = url.searchParams.get('token')
+  if (qt && tokenOk(qt)) {
+    const secure = req.headers['x-forwarded-proto'] === 'https' || proxied(req)
+    res.setHeader('set-cookie', `tb_token=${TOKEN}; Path=/; Max-Age=2592000; SameSite=Lax${secure ? '; Secure' : ''}; HttpOnly`)
+  }
+  if (path === '/test' || path === '/test.html') return serveFile(res, join(here, 'test.html'))
+  if (path === '/' && !appRoot()) return serveFile(res, join(here, 'test.html'))
+  if (path === '/health') {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    const local = isLoopback(req)
+    return res.end(JSON.stringify({ assistant: assistantStatus(), game: gameConnected, version: gameVersion, clients: clients.size, level: lastMap?.level ?? null,
+      tunnel: local ? tunnelUrl : undefined, appLink: local && tunnelUrl ? appPairingLink(APP_URL, tunnelUrl, TOKEN) : undefined }))
+  }
+  if (path === '/stt' || path === '/assistant/parse' || path === '/assistant/chat' || path === '/assistant/status') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (path === '/assistant/status') return json(200, { llm: assistantStatus(), speech: sttAvailable() })
+    if (req.method !== 'POST') return json(405, { error: 'POST only' })
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (c: Buffer) => { size += c.length; if (size <= 7 * 1024 * 1024) chunks.push(c) })
+    req.on('end', async () => {
+      try {
+        if (size > 7 * 1024 * 1024) return json(413, { error: 'too large' })
+        const body = Buffer.concat(chunks)
+        if (path === '/stt') {
+          const ct = String(req.headers['content-type'] ?? '')
+          const ext = /webm/.test(ct) ? 'webm' : /ogg/.test(ct) ? 'ogg' : /wav/.test(ct) ? 'wav' : 'm4a'
+          return json(200, { text: await transcribe(body, ext) })
+        }
+        const b = JSON.parse(body.toString('utf8') || '{}')
+        const text = String(b.text ?? '')
+        if (path === '/assistant/chat') return json(200, { text: text ? await assistantChat(text, Array.isArray(b.history) ? b.history.slice(-6).filter((t: any) => t && typeof t.text === 'string' && (t.role === 'driver' || t.role === 'car')) : []) : null })
+        const history = Array.isArray(b.history) ? b.history.slice(-6).filter((t: any) => t && typeof t.text === 'string' && (t.role === 'driver' || t.role === 'car')) : []
+        return json(200, { intent: text ? await parseCommand(text, history, b.context && typeof b.context === 'object' ? b.context : {}) : null })
+      } catch (e: any) {
+        return json(e?.status ?? 500, { error: e?.message ?? 'failed' })
+      }
+    })
+    return
+  }
+  if (path === '/app-settings') {
+    // The app's own settings (profiles, toggles, map choices...) kept here too, so every address the app is opened from (:8765, :8770,
+    // https, the tunnel: each is its own storage in the browser) shows the same settings, and they survive clearing the iPad.
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const f = join(homedir(), '.tesla-beamng', 'app-settings.json')
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (req.method === 'GET') { try { return json(200, JSON.parse(readFileSync(f, 'utf8'))) } catch { return json(200, { savedAt: 0, items: {} }) } }
+    const chunks: Buffer[] = []; let size = 0
+    req.on('data', (c: Buffer) => { size += c.length; if (size < 2 * 1024 * 1024) chunks.push(c) })
+    req.on('end', () => {
+      try {
+        if (size >= 2 * 1024 * 1024) return json(413, { error: 'too large' })
+        const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        const items: Record<string, string> = {}
+        for (const [k, v] of Object.entries(b.items ?? {})) if (/^tesla-/.test(k) && !/xai|token|key/i.test(k) && typeof v === 'string') items[k] = v
+        mkdirSync(join(homedir(), '.tesla-beamng'), { recursive: true })
+        writeFileSync(f, JSON.stringify({ savedAt: Date.now(), items }))
+        json(200, { ok: true, keys: Object.keys(items).length })
+      } catch (e) { json(400, { error: (e as Error).message }) }
+    })
+    return
+  }
+  if (path === '/blackbox/tag') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    if (req.method !== 'POST') { res.writeHead(405); return res.end('POST only') }
+    const n = tagBlackBox()
+    res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    return res.end(JSON.stringify({ ok: true, n }))
+  }
+  if (path === '/blackbox/mark' || path === '/blackbox/note') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (req.method !== 'POST') return json(405, { error: 'POST only' })
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => { if (chunks.length < 20) chunks.push(c) })
+    req.on('end', () => {
+      try {
+        const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        if (path === '/blackbox/mark') {
+          void markBlackBox(String(b.note ?? '')).then(({ file, up }) => json(200, { ok: true, file, upload: up.status, uploaded: up.ok }))
+          return
+        }
+        void noteBlackBox(String(b.file ?? ''), String(b.note ?? '')).then((r) => json(r.ok ? 200 : 400, { ok: r.ok, upload: r.status, uploaded: (r as { uploaded?: boolean }).uploaded }))
+        return
+      } catch (e) { json(400, { error: (e as Error).message }) }
+    })
+    return
+  }
+  if (path === '/audio' || path.startsWith('/audio/') || path.startsWith('/pc/')) {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)) }
+    if (req.method === 'GET') {
+      if (path === '/audio') { void audioStatus().then((r) => json(200, { ...r, player: pcPlayerAvailable() })); return }
+      if (path === '/audio/eq') return json(200, readEq())
+      if (path === '/pc/status') { void pcStatus(here).then((r) => json(200, r), (e) => json(502, { error: (e as Error).message })); return }
+      return json(404, { error: 'no such page' })
+    }
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => { if (chunks.length < 50) chunks.push(c) })
+    req.on('end', async () => {
+      try {
+        const b = JSON.parse(Buffer.concat(chunks).toString() || '{}')
+        const cfg = loadConfig()
+        const devName = async (id: string | null) => (id ? (await audioStatus()).devices.find((d) => d.id === id)?.name : undefined)
+        if (path === '/audio/test') { await testTone(String(b.id)); return json(200, { ok: true }) }
+        if (path === '/audio/volume') {
+          const id = b.target === 'game' ? cfg.game : cfg.music
+          if (!id) return json(409, { error: 'pick that output first' })
+          await setDeviceVolume(id, Number(b.value)); return json(200, { ok: true })
+        }
+        if (path === '/audio/duck') { await duck(!!b.on); return json(200, { ok: true }) }
+        if (path === '/audio/eq') {
+          const name = await devName(cfg.music)
+          if (!name) return json(409, { error: 'pick the music output first' })
+          writeEq(Array.isArray(b.bands) ? b.bands.slice(0, 10) : [], name); return json(200, { ok: true })
+        }
+        if (path === '/pc/play') { await pcPlay(String(b.id), here, await devName(cfg.music)); return json(200, { ok: true }) }
+        if (path === '/pc/window') { await pcWindow(!!b.show, here); return json(200, { ok: true }) }
+        if (path === '/pc/control') { await pcControl(b.action, b.value, here); return json(200, { ok: true }) }
+        if (path !== '/audio') return json(404, { error: 'no such page' })
+        json(200, { ok: true, ...(await chooseOutputs({ game: b.game, music: b.music })) })
+      } catch (e) { json(400, { error: (e as Error).message }) }
+    })
+    return
+  }
+  if (path === '/browse') {
+    if (!authorized(req)) { res.writeHead(401); return res.end('token required') }
+    void handleBrowse(req, res, url.searchParams.get('u'))
+    return
+  }
+  // private: voice notes (with where the car was) and the backup camera need the token off this PC
+  if ((path === '/feedback' || path.startsWith('/feedback/') || path.startsWith('/camera') || path.startsWith('/cam/')) && !authorized(req)) {
+    res.writeHead(401)
+    return res.end('token required')
+  }
+  if (path === '/feedback') {
+    const list = existsSync(feedbackDir) ? readdirSync(feedbackDir).filter((f) => f.endsWith('.json')).sort().reverse() : []
+    res.writeHead(200, { 'content-type': 'application/json' })
+    return res.end(JSON.stringify(list.map((f) => JSON.parse(readFileSync(join(feedbackDir, f), 'utf8')))))
+  }
+  if (path.startsWith('/feedback/')) {
+    const f = normalize(join(feedbackDir, decodeURIComponent(path.slice(10))))
+    if (!f.startsWith(feedbackDir) || !existsSync(f)) { res.writeHead(404); return res.end() }
+    return serveFile(res, f)
+  }
+  const camPath = /^\/cam\/(rear|front|left|right)\.(jpg|png)$/.exec(path)
+  if (path === '/camera.png' || camPath) {
+    const cors = { 'access-control-allow-origin': '*', 'cache-control': 'no-store' }
+    const lastCam = lastCams.get(camPath ? (camPath[1] as CamViewName) : 'rear')
+    if (!lastCam) { res.writeHead(404, cors); return res.end('camera off') }
+    res.writeHead(200, { ...cors, 'content-type': lastCam.mime })
+    return res.end(lastCam.data)
+  }
+  if (path === '/minimap.png') {
+    if (!lastMinimap) { res.writeHead(404); return res.end('no minimap yet') }
+    res.writeHead(200, { 'content-type': lastMinimap.mime, 'cache-control': 'no-cache' })
+    return res.end(lastMinimap.data)
+  }
+  if (path === '/ca.crt' && tls) { res.writeHead(200, { 'content-type': 'application/x-x509-ca-cert', 'content-disposition': 'attachment; filename="tesla-bridge-ca.crt"' }); return res.end(tls.ca) }
+  if (path === '/https-setup' && tls) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(setupPage(String(req.headers.host ?? '').replace(/:\d+$/, ''), HTTPS_PORT)) }
+  // The app (its dist-beamng build) at / with an SPA fallback (also at /app/ for old links). Same origin
+  // as the relay, so it can use ws:// on the Wi-Fi, or wss:// through the tunnel.
+  const root = appRoot()
+  if (root && (req.method === 'GET' || req.method === 'HEAD')) {
+    const rel = decodeURIComponent(path.startsWith('/app/') || path === '/app' ? path.slice(4) || '/' : path)
+    let file = normalize(join(root, rel))
+    if (!file.startsWith(root)) { res.writeHead(403); return res.end() }
+    if (!existsSync(file) || statSync(file).isDirectory()) {
+      if (extname(rel)) { res.writeHead(404); return res.end('not found') } // a missing asset, not a page
+      file = join(root, 'index.html') // SPA fallback
+    }
+    if (basename(file) === 'index.html') return serveIndex(res, file)
+    return serveFile(res, file)
+  }
+  res.writeHead(404)
+  res.end('not found')
+}
+const server = createServer(handler)
+
+// --no-https turns off the home-Wi-Fi https (port 8443, a certificate the iPad trusts once: see bridge/localtls.ts)
+const HTTPS_PORT = Number(arg('https-port') ?? 8443)
+let tls: Tls | null = null
+let httpsServer: ReturnType<typeof createHttpsServer> | null = null
+function startHttps(names: string[]) {
+  if (arg('no-https') === 'true' || process.env.TESLA_HTTPS === '0') return
+  try {
+    tls = localTls(join(here, '.tls'), ['localhost', '127.0.0.1', hostname(), `${hostname().toLowerCase()}.local`, ...names])
+    httpsServer = createHttpsServer({ key: tls.key, cert: tls.cert }, handler)
+    httpsServer.on('upgrade', onUpgrade)
+    httpsServer.on('error', (e) => console.log(`  https: could not start on ${HTTPS_PORT} (${(e as Error).message})`))
+    httpsServer.listen(HTTPS_PORT, '0.0.0.0')
+  } catch (e) {
+    console.log(`  https: off (${(e as Error).message})`)
+  }
+}
+
+const wss = new WebSocketServer({ noServer: true, maxPayload: 24 << 20 }) // voice notes can be a few MB
+
+const onUpgrade = (req: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer) => {
+  if (!authorized(req)) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+    socket.destroy()
+    return
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+}
+server.on('upgrade', onUpgrade)
+
+const camClients = new Map<CamViewName, Set<WebSocket>>(CAM_VIEWS.map((v) => [v, new Set<WebSocket>()]))
+let camInfo = { width: 320, height: 180, fps: 5 }
+const camerasMsg = () => ({ t: 'cameras', cams: CAM_VIEWS.map((id) => ({ id, ...camInfo })) })
+
+wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+  // ws://host/cam/<rear|front|left|right>: one binary image per message
+  const camWsPath = new URL(req.url ?? '/', 'http://x').pathname
+  if (camWsPath.startsWith('/cam/')) {
+    const view = camViewOf(camWsPath.slice(5))
+    camClients.get(view)!.add(ws)
+    const last = lastCams.get(view)
+    if (last) ws.send(last.data, { binary: true })
+    ws.on('close', () => camClients.get(view)!.delete(ws))
+    return
+  }
+  clients.add(ws)
+  log(`app connected from ${req.socket.remoteAddress} (${clients.size} total)`)
+  ws.send(JSON.stringify({ t: 'bridge', game: gameConnected ? 'connected' : 'disconnected', version: gameVersion }))
+  if (lastMap) ws.send(JSON.stringify(lastMap))
+  if (lastMinimap && lastMap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))
+  if (lastRoute) ws.send(JSON.stringify(lastRoute))
+  if (lastState) ws.send(JSON.stringify(lastState))
+  ws.send(JSON.stringify(buttonMapMsg()))
+  ws.send(JSON.stringify(wheelLightsMsg()))
+  ws.send(JSON.stringify(camerasMsg()))
+  ws.on('message', (data) => {
+    let msg: any
+    try {
+      msg = JSON.parse(String(data))
+    } catch {
+      return
+    }
+    if (!msg || typeof msg.t !== 'string' || !COMMAND_TYPES.has(msg.t)) {
+      ws.send(JSON.stringify({ t: 'event', kind: 'error', detail: `unknown command ${msg?.t}` }))
+      return
+    }
+    stats.fromApp++
+    if (handleButtons(ws, msg) || handleWheelLights(ws, msg)) return
+    if (msg.t === 'settings' && typeof msg.assistant === 'boolean') setAssistantEnabled(msg.assistant) // the FSD Assistant (bridge/assistant.ts) lives here, the game needn't know
+    if (msg.t === 'hello') { log(`app: ${msg.app ?? '?'} ${msg.version ?? ''}`); return }
+    // the phone page's music buttons: skip, play/pause, volume go to the iPad app, like the wheel's media buttons do
+    if (msg.t === 'action' && msg.name === 'tagMoment') { tagBlackBox(); return }
+    if (msg.t === 'blackboxTag') { tagBlackBox(String(msg.label ?? '')); return }
+    if (msg.t === 'blackboxMark') { void markBlackBox(String(msg.note ?? '')); return }
+    if (msg.t === 'blackboxNote') { void noteBlackBox(String(msg.file ?? ''), String(msg.note ?? '')); return }
+    if (msg.t === 'blackboxStatus') { const c = uploadConfig(); ws.send(JSON.stringify({ t: 'event', kind: 'blackboxStatus', detail: c.token ? 'upload on' : 'upload off', data: { upload: !!c.token, repo: c.repo, dir: c.dir } })); return }
+    if (msg.t === 'mediaKey') { if (MEDIA_ACTIONS.has(String(msg.action))) broadcast({ t: 'media', action: msg.action }); return }
+    if (msg.t === 'requestMap' && lastMap) {
+      ws.send(JSON.stringify(lastMap))
+      if (lastMinimap && lastMinimap.key === lastMap.level) ws.send(JSON.stringify(lastMinimap.msg))
+      return
+    }
+    if (msg.t === 'voiceNote') {
+      try {
+        const name = saveVoiceNote(msg)
+        log('voice note saved:', name)
+        broadcast({ t: 'event', kind: 'voiceNoteSaved', detail: name })
+      } catch (e) {
+        ws.send(JSON.stringify({ t: 'event', kind: 'error', detail: `voice note not saved: ${e}` }))
+      }
+      return
+    }
+    if (msg.t === 'ping' && !gameConnected) {
+      ws.send(JSON.stringify({ t: 'pong', time: Date.now() / 1000 })) // keep-alive while the game is closed
+      return
+    }
+    if (!sendGame(msg)) ws.send(JSON.stringify({ t: 'event', kind: 'error', detail: 'game not connected' }))
+  })
+  ws.on('close', () => {
+    if (companion?.ws === ws) { companion = null; broadcast(buttonMapMsg()); broadcast(wheelLightsMsg()) }
+    clients.delete(ws)
+    log(`app disconnected (${clients.size} left)`)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// start
+// ---------------------------------------------------------------------------
+
+function lanAddresses(): string[] {
+  const out: string[] = []
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) if (a.family === 'IPv4' && !a.internal) out.push(a.address)
+  }
+  // likely home-LAN addresses first
+  return out.sort((a, b) => Number(!a.startsWith('192.168.')) - Number(!b.startsWith('192.168.')))
+}
+
+server.listen(PORT, '0.0.0.0', () => {
+  const ips = lanAddresses()
+  const ip = ips[0] ?? 'localhost'
+  startHttps(ips)
+  const q = NO_AUTH ? '' : `?token=${TOKEN}`
+  console.log('')
+  console.log('  Tesla UI <-> BeamNG bridge')
+  console.log(`  test page (this PC):  http://localhost:${PORT}/`)
+  for (const a of ips) console.log(`  test page (iPad):     http://${a}:${PORT}/${q}`)
+  console.log(`  app WebSocket:        ws://${ip}:${PORT}/${q}`)
+  const app = appRoot()
+  if (app) console.log(`  Tesla UI app:         http://${ip}:${PORT}/   (from ${app})`)
+  else console.log('  Tesla UI app:         not found (build it: npm run build:beamng in tesla-ui-atv, or pass --app <dist-beamng>)')
+  console.log(`  test page:            http://${ip}:${PORT}/test`)
+  if (tls) {
+    console.log(`  secure (camera/mic):  https://${ip}:${HTTPS_PORT}/   one-time iPad setup: http://${ip}:${PORT}/https-setup`)
+  }
+  if (!NO_AUTH) console.log(`  pairing token:        ${TOKEN}`)
+  console.log(`  waiting for BeamNG on ${GAME_HOST}:${GAME_PORT} ...`)
+  console.log('')
+  if (!QUIET && !TUNNEL) qrcode.generate(`http://${ip}:${PORT}/${q}`, { small: true })
+  connectGame()
+  if (TUNNEL) startTunnel()
+})
+
+// ---------------------------------------------------------------------------
+// Cloudflare quick tunnel (--tunnel): https://<random>.trycloudflare.com -> this relay.
+// The address changes every start, so scan the new QR code each time.
+// ---------------------------------------------------------------------------
+
+let tunnelUrl: string | null = null
+let tunnelProc: ChildProcess | null = null
+let tunnelRestarts = 0
+
+function findCloudflared(): string | null {
+  const own = arg('cloudflared')
+  if (own) return own
+  const names = process.platform === 'win32' ? ['cloudflared.exe'] : ['cloudflared']
+  const dirs = [...(process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':'),
+    'C:\\Program Files (x86)\\cloudflared', 'C:\\Program Files\\cloudflared',
+    join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'WinGet', 'Links')]
+  for (const d of dirs) for (const n of names) if (d && existsSync(join(d, n))) return join(d, n)
+  return null
+}
+
+/** The live app's address with the tunnel's wss URL (the app's bridgeUrl() reads ?bridge=). */
+function appPairingLink(appUrl: string, tunnel: string, token: string) {
+  // the relay serves the app's BeamNG build itself: open it through the tunnel (same origin; the
+  // ?token leaves a cookie for its WebSocket). Otherwise the live app with ?bridge=wss://...
+  if (appRoot() && !arg('app-url')) return `${tunnel}/?token=${token}`
+  const wss = tunnel.replace(/^https:/, 'wss:') + '/?token=' + token
+  return `${appUrl}/?bridge=${encodeURIComponent(wss)}`
+}
+
+function startTunnel() {
+  const exe = findCloudflared()
+  if (!exe) {
+    console.log('  --tunnel: cloudflared not found. Install it (winget install Cloudflare.cloudflared) or pass --cloudflared <path>.')
+    console.log('  using the Wi-Fi address instead (no iPad mic/camera in Safari over plain http):')
+    const ip = lanAddresses()[0] ?? 'localhost'
+    if (!QUIET) qrcode.generate(`http://${ip}:${PORT}/?token=${TOKEN}`, { small: true })
+    return
+  }
+  tunnelProc = spawn(exe, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${PORT}`], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const onData = (d: Buffer) => {
+    const m = String(d).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+    if (m && m[0] !== tunnelUrl) {
+      tunnelUrl = m[0]
+      const link = appPairingLink(APP_URL, tunnelUrl, TOKEN)
+      console.log('')
+      console.log(`  tunnel (https):       ${tunnelUrl}`)
+      console.log(`  test page (anywhere): ${tunnelUrl}/?token=${TOKEN}`)
+      console.log(`  app on the iPad:      ${link}`)
+      console.log('  scan this on the iPad (a new code every start):')
+      qrcode.generate(link, { small: true })
+    }
+  }
+  tunnelProc.stdout?.on('data', onData)
+  tunnelProc.stderr?.on('data', onData)
+  tunnelProc.on('exit', (code) => {
+    tunnelProc = null
+    tunnelUrl = null
+    if (shuttingDown) return
+    const wait = Math.min(30, 2 ** tunnelRestarts++) * 1000
+    log(`tunnel stopped (${code}); restarting in ${wait / 1000} s`)
+    setTimeout(startTunnel, wait)
+  })
+}
+
+let shuttingDown = false
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => { shuttingDown = true; tunnelProc?.kill(); process.exit(0) })
+}
+process.on('exit', () => tunnelProc?.kill())
+
+setInterval(() => {
+  const secs = (Date.now() - stats.since) / 1000
+  if (gameConnected && stats.state > 0 && !QUIET) {
+    process.stdout.write(`\r  state ${(stats.state / secs).toFixed(1)} Hz, traffic ${(stats.traffic / secs).toFixed(1)} Hz, apps ${clients.size}   `)
+  }
+  stats.state = 0
+  stats.traffic = 0
+  stats.fromApp = 0
+  stats.since = Date.now()
+}, 5000)

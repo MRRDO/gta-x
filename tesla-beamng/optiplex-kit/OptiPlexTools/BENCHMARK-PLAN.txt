@@ -1,0 +1,66 @@
+BENCHMARK PLAN: what to test, in what order, and how to read it
+================================================================
+Goal: answer three questions with numbers, not guesses.
+  1. Which graphics chip should BeamNG use (the Radeon R5 340X, or the processor's graphics)?
+  2. Which settings give a smooth game on this PC (and is it "good enough" with FSD + cameras on)?
+  3. Does the PC stay cool and stable for a long drive, or does it throttle?
+
+Rules for every game test (so the runs can be compared)
+  - Same map, same car, same start spot and route, same time of day/weather, same traffic count.
+  - Close everything else (Chrome, updaters). Plug in power. Wired network.
+  - Let the game run 10 minutes first so shaders and caches are warm.
+  - Change ONE thing between runs. Use -Label so every run has a clear name.
+  - Run:  START-HERE.cmd  ->  1   or from a terminal:  scripts\Benchmark.ps1 <options>
+  - See what is done / left at any time:  Benchmark.ps1 -Matrix      See results:  Benchmark.ps1 -Compare
+
+THE LADDER (Matrix IDs)
+A  Machine (no game)
+   A1  Idle baseline: Benchmark.ps1            facts, CPU single-thread, RAM speed, disk speed, advice
+   A2  Heat check:    Benchmark.ps1 -Soak 5    stresses every CPU thread; flags clock drops (throttling) and heat
+B  Graphics chip + settings (game running, Car Mode running, no traffic, drive a loop)
+   B1  Low 1280x720, processor graphics   -SetGpu Integrated, restart game, -SampleFps 300 -Label "iGPU low 720p"
+   B2  Low 1280x720, Radeon card          -SetGpu Discrete,   restart game, -SampleFps 300 -Label "dGPU low 720p"
+   B3  Medium 1600x900 on the winner      -SampleFps 300 -Label "best med 900p"
+   B4  The laptop's settings (menu 5)     -SampleFps 300 -Label "laptop settings"
+   The monitor stays on the motherboard port the whole time. The report prints "GPU 3D use per adapter":
+   the busy adapter is the one BeamNG really used. If the wrong one is busy, the GPU preference did not stick.
+C  Traffic
+   C1  10 cars     C2  20 cars        (traffic is mostly CPU cost)
+D  FSD cost
+   D1  FSD on along the route     D2  FSD off, same route and traffic
+   FSD should cost almost nothing; a drop of more than about 3 fps is worth telling Claude.
+E  iPad cameras
+   E1  rear + front camera on in the app (the frame governor may lower camera rate by itself; that is fine)
+F  Soak
+   F1  30-minute drive: -SampleFps 1800 -Label "soak 30". Look for fps drifting down over time (heat) or RAM
+       running out (the report shows the lowest free RAM).
+G  By hand (no script)
+   G1  Load time: stopwatch from clicking the level to being able to drive.
+   G2  Wheel: G29 turns with FSD, centres after FSD turns off (ffb.status on the test page).
+   G3  iPad: open the Cloudflare link, add to Home Screen, check camera view and that the screen stays on 10 minutes.
+   G4  Sound/lag: any audio crackle or input lag while driving?
+
+HOW TO READ THE NUMBERS
+  avg      average frames per second.        low1  average of the worst 1 percent (this is what "stutter" feels like).
+  GOOD       avg 45+ and low1 30+      -> keep these settings.
+  OK         avg 30-45 and low1 20+     -> playable; lower one setting (shadows, then draw distance, then resolution).
+  TOO SLOW   avg under 30               -> lower settings; if Low 720p is still under 30 on BOTH chips, buy a card
+                                           (low-profile RX 6400 or GTX 1650; check case and power supply first).
+  cpuAvg / cpuMax     CPU use. If cpuMax stays near 100 while the GPU is not busy, traffic/physics is the limit, not the GPU.
+  GPU 3D use          If the busy GPU is near 100 percent, the GPU is the limit: lower resolution/shadows.
+  perfMin             processor speed as a percent. Much lower than perfAvg under load = heat throttling.
+  tempMax             over about 90 C = fix cooling (dust, re-paste, fan) before anything else.
+  ramFreeMinMB        under about 800 MB free = not enough RAM for this setup (add a matching second stick).
+
+DECISION TABLE (after B1-B4)
+  Radeon clearly faster (higher avg AND low1)  -> keep -SetGpu Discrete.
+  About equal                                   -> use the processor graphics (cooler, quieter), keep the card as a spare.
+  Both under 30 at Low 720p                     -> buy a card; run B1/B2 again after.
+  Fast but stuttery (low1 far below avg)        -> check C1/C2 (traffic), SSD, RAM channels, background apps.
+
+WHAT TO SEND CLAUDE
+  The newest files in reports\ (benchmark-*.json, fps-*.json, soak-*.json) or just the output of -Compare.
+  Claude then picks the settings and tells you what to change.
+
+NOT MEASURED YET (ideas for later): per-frame times from the game itself (the bridge only reports FPS about
+20 times a second), FSD planner time per tick, and the overnight scenario runs.
