@@ -103,12 +103,12 @@ end
 -- came along), r (half width) }, lastDir = direction of the previous leg (nil at the start).
 -- Returns the next segment, or nil when the car faces the other way (turn finished).
 -- Overhang (reference point to bumper) taken as ~2.3 m.
-function M.kTurnNext(ego, road, rmin, lastDir)
+function M.kTurnNext(ego, road, rmin, lastDir, margin0)
   rmin = rmin or 6
   local k = 1 / rmin
   local rx, ry = norm(road.dx, road.dy)
   local function lat(x, y) return (x - road.cx) * -ry + (y - road.cy) * rx end
-  local over, margin = 2.3, 0.6
+  local over, margin = 2.3, margin0 or 0.6
   local psi0 = atan2(ego.hy, ego.hx)
   local goal = atan2(-ry, -rx) -- facing back the way we came
   local function err(ps)

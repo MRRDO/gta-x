@@ -291,7 +291,8 @@ function handleWheelLights(ws: WebSocket, msg: any): boolean {
     case 'resetWheelLights': {
       // stuck lights (hazards left on after a crash, a test that never ended, a dead wheel handle): clear the test, hazards off in the game, helper reopens the wheel
       lightTest = null; lightTestFrames = null; lightTestId++
-      sendGame({ t: 'signal', dir: null })
+      const sent = sendGame({ t: 'resetLights' })
+      broadcast({ t: 'event', kind: sent ? 'notice' : 'error', detail: sent ? 'Reset lights sent to the game' : 'Reset lights: the game is not connected' })
       broadcast({ t: 'resetLights' })
       broadcast(wheelLightsMsg())
       return true

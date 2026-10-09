@@ -316,8 +316,8 @@ function Planner:turnAroundTick(ego, cars, sCar, v, stopS)
     if loc and not loc.ow and loc.r < 9 then
       local latRight = P.laneCenter(loc.r, false, loc.lane) - loc.lat
       local road = { cx = ego.x - loc.dy * latRight, cy = ego.y + loc.dx * latRight, dx = loc.dx, dy = loc.dy, r = loc.r }
-      local seg = Mv.kTurnNext(ego, road, 6, nil)
-      if seg and self:segsClear({ seg }, ego, cars) then
+      local seg, clearK = self:kTurnLeg(ego, road, nil, cars)
+      if seg and clearK then
         self.kturn = { road = road, lastDir = seg.dir }
         self.turnAround, self.noUturnUntil = nil, self.t + 90 -- one turn, then on to the destination (no second one right away)
         self:emit('uturn', { state = 'turning' })
@@ -773,8 +773,8 @@ function Planner:engage(mode, profile, ego, cars)
       -- centerline point: step from us back across our offset from it
       local latRight = P.laneCenter(loc.r, false, loc.lane) - loc.lat
       local road = { cx = ego.x - loc.dy * latRight, cy = ego.y + loc.dx * latRight, dx = loc.dx, dy = loc.dy, r = loc.r }
-      local seg = Mv.kTurnNext(ego, road, 6, nil)
-      if seg and not self:segsClear({ seg }, ego, cars) then
+      local seg, clearS = self:kTurnLeg(ego, road, nil, cars)
+      if seg and not clearS then
         self.mode = 'off'
         return false, 'not enough room to turn around safely'
       end
@@ -2574,6 +2574,20 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
   return stopS, control, waitingFor
 end
 
+-- The next leg of a multi-point turn, with backups: the usual tight-but-safe leg first, then a tighter radius and smaller margins to the road
+-- edge (a two-lane road is wide enough for a 3-point turn, it just needs the whole width). Returns the leg (or nil when the turn is done) and
+-- whether one was found clear; a false means every variant hit something.
+function Planner:kTurnLeg(ego, road, lastDir, cars)
+  local first
+  for _, v in ipairs({ { 6, 0.6 }, { 5.4, 0.4 }, { 5.0, 0.25 } }) do
+    local seg = Mv.kTurnNext(ego, road, v[1], lastDir, v[2])
+    if not seg then return nil, true end
+    first = first or seg
+    if self:segsClear({ seg }, ego, cars) then return seg, true end
+  end
+  return first, false
+end
+
 function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLen, fsd)
   local lane = self.lane
   local path = self.path
@@ -2785,8 +2799,8 @@ function Planner:tickManeuver(ego, cars, out)
     mv.dwell = mv.dwell + (self.t - (mv.lastT or self.t))
     if mv.dwell > 0.4 then
       if mv.kind == 'kTurn' and self.kturn then
-        local nxt = Mv.kTurnNext(ego, self.kturn.road, 6, self.kturn.lastDir)
-        if nxt and not self:segsClear({ nxt }, ego, cars) then
+        local nxt, clearN = self:kTurnLeg(ego, self.kturn.road, self.kturn.lastDir, cars)
+        if nxt and not clearN then
           self.maneuver, self.kturn = nil, nil
           self.activity = 'drive'
           out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }

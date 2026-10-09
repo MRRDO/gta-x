@@ -1089,6 +1089,19 @@ handlers.lights = function(cmd)
   end
 end
 
+-- The app's Reset lights: hazards and both turn signals off, whatever state we think they are in, and say what the car reports afterwards.
+handlers.resetLights = function()
+  local e = electrics.values
+  local function on(k) return (e[k] or 0) > 0.5 or e[k] == true end
+  local hz, l, r = on('hazard_enabled'), on('signal_left_input'), on('signal_right_input')
+  pcall(electrics.set_warn_signal, 0)
+  if l and electrics.toggle_left_signal then pcall(electrics.toggle_left_signal) end
+  if r and electrics.toggle_right_signal then pcall(electrics.toggle_right_signal) end
+  hazardOn = false
+  ap.sigCheck, ap.lSeen, ap.rSeen = nil, nil, nil
+  geEvent('notice', { detail = string.format('lights reset: hazards %s, left %s, right %s were on; now hazard_enabled=%s', tostring(hz), tostring(l), tostring(r), tostring(e.hazard_enabled)) })
+end
+
 handlers.signal = function(cmd)
   local ok, err = pcall(setSignal, cmd.dir)
   hazardOn = cmd.dir == 'hazard'

@@ -1833,6 +1833,11 @@ handleCommand = function(msg)
     if not veh then event('error', 'no player vehicle'); return end
     ensureVehicleExtension(veh)
     toVehicle(veh, 'command', msg)
+  elseif t == 'resetLights' then
+    crash.active = nil
+    if not veh then event('error', 'no player vehicle'); return end
+    ensureVehicleExtension(veh)
+    toVehicle(veh, 'command', { t = 'resetLights' })
   elseif t == 'signal' then
     if not veh then event('error', 'no player vehicle'); return end
     if msg.dir == nil then crash.active = nil end -- Reset lights / hazards switched off by hand: the crash card ends too
