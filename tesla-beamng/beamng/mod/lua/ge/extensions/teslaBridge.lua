@@ -1159,7 +1159,11 @@ local function computeAlert(vid, st, ps, nag)
     local h = crash.hist
     h[#h + 1] = { t = realTime, d = dmg }
     while #h > 1 and realTime - h[1].t > 1 do table.remove(h, 1) end
-    if crash.active and dmg < math.max(50, crash.active.base * 0.5) then crash.active = nil end -- repaired / reset
+    if crash.active and dmg < math.max(50, crash.active.base * 0.5) then -- repaired / reset: the hazards we put on go off too
+      crash.active = nil
+      local veh = vehicleById(vid)
+      if veh then toVehicle(veh, 'command', { t = 'signal' }) end
+    end
     if not crash.active and dmg - h[1].d > 9000 then
       crash.active = { t = realTime, base = h[1].d + 1 }
       relayEvent({ kind = 'collision', detail = string.format('damage +%.0f', dmg - h[1].d) })
@@ -1430,8 +1434,14 @@ local function engageFromApp(mode, profile)
   local ego = egoSnapshot(veh)
   if mode ~= 'tacc' and math.abs(ego.v or 0) < 1 and ego.gear ~= 'R' then
     -- never launch into a wall/pole right in front (e.g. engaged in Park facing one)
-    local front = sampleRays(ego).front
-    if front and front < 4 then event('error', 'autopilot: something is right in front of the car - back up first'); return end
+    local rays = sampleRays(ego)
+    local front, rear = rays.front, rays.rear
+    if front and front < 4 then
+      -- nose against a wall/pole (in D or N, not only in P): back out of the spot first if the rear is open, never drive forward into it
+      if rear and rear < 3 then event('error', 'autopilot: boxed in (wall ahead, something behind): move the car first'); return end
+      ego.wallAhead = true
+      event('notice', { detail = 'FSD: wall ahead, backing out first' })
+    end
   end
   if planner.mode == 'off' and planner:freshStart() then event('notice', 'FSD: an earlier parking trip was forgotten') end
   local ok, err = planner:engage(mode, profile, ego, trafficList())
@@ -2614,6 +2624,7 @@ local function onVehicleResetted(vid)
     syncVehicleMode(pv)
   end
   beaconLoaded[vid] = nil
+  if pv and pv:getID() == vid then toVehicle(pv, 'command', { t = 'signal' }) end -- a reset is a fresh start: no hazards left on
 end
 
 local function onVehicleDestroyed(vid)

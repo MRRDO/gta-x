@@ -634,6 +634,19 @@ class WheelLeds:
                     self.last_show_log, self.show_logs = now, self.show_logs + 1
                     self.log('no interface accepted the light report yet (the wheel may still be starting, or another program owns it): trying again soon')
 
+    def reset(self) -> None:
+        """The app's Reset lights: drop the handle, forget what was skipped, light nothing, open again at once."""
+        try:
+            if self.dev is not None:
+                self.dev.close()
+        except Exception:
+            pass
+        self.dev, self.mask, self.length, self.layout = None, -1, None, None
+        self.skip.clear()
+        self.retry_at = self.next_try = 0.0
+        self.fails = 0
+        self.log('reset from the app')
+
     def close(self) -> None:
         try:
             if self.dev is not None:
@@ -702,6 +715,10 @@ class Link:
                         # a new car (or the mod reloading) forgets the helper: claim the wheel again
                         if self.ffb and st != 'helper' and time.time() - self.last_claim > 2:
                             self.claim()
+                    elif m.get('t') == 'resetLights' and self.leds:
+                        self.ledstate.d.update(test=None, test_frames=None, green=False)
+                        self.ledstate._red_wait = False
+                        self.leds.reset()
                     elif m.get('t') == 'wheelLights' and self.leds:
                         # the app's effect choices, and a test to play for 5 s
                         self.ledstate.d['fx'] = m.get('map') or {}

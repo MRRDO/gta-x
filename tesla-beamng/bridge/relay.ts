@@ -288,6 +288,14 @@ function handleWheelLights(ws: WebSocket, msg: any): boolean {
     case 'requestWheelLights':
       ws.send(JSON.stringify(wheelLightsMsg()))
       return true
+    case 'resetWheelLights': {
+      // stuck lights (hazards left on after a crash, a test that never ended, a dead wheel handle): clear the test, hazards off in the game, helper reopens the wheel
+      lightTest = null; lightTestFrames = null; lightTestId++
+      sendGame({ t: 'signal', dir: null })
+      broadcast({ t: 'resetLights' })
+      broadcast(wheelLightsMsg())
+      return true
+    }
     case 'setWheelLight': {
       if (!(LIGHT_EVENTS as readonly string[]).includes(msg.event)) return true
       if (typeof msg.effect === 'string' && EFFECT_ID.test(msg.effect)) lightMap[msg.event as LightEvent] = msg.effect

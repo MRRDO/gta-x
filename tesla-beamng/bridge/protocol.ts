@@ -440,6 +440,7 @@ export type Command =
   | { t: 'saveLightFx'; id: string; name: string; frames: LightFrames } // save a pattern from the editor (id c_xxxx)
   | { t: 'deleteLightFx'; id: string } // play an effect on the wheel lights for 5 s (null stops)
   | { t: 'requestWheelLights' }
+  | { t: 'resetWheelLights' }
   | { t: 'hello'; app?: string; version?: string } // the app says hi on connect (logged by the relay)
   | { t: 'camera'; on?: boolean; view?: CamView } // show the backup camera for 15 s without shifting to R (a preview button); false hides it
   | { t: 'wheelButton'; button: number; down: boolean } // from the wheel companion

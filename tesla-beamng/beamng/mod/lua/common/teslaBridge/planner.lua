@@ -735,7 +735,7 @@ function Planner:engage(mode, profile, ego, cars)
     if not ok then self.mode = 'off'; return false, err end
     self.builtFor = self.profile
   end
-  if mode == 'fsd' and stationary and self.graph and ego.gear == 'P' then
+  if mode == 'fsd' and stationary and self.graph and (ego.gear == 'P' or ego.wallAhead) then
     -- start from Park: back out of a spot, or turn around when the route goes the other way
     local loc = P.locate(self.graph, ego.x, ego.y, ego.hx, ego.hy, 40)
     local e, et, ed = P.nearestEdge(self.graph, ego.x, ego.y, nil, nil, 40)
