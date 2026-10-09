@@ -2718,6 +2718,47 @@ function Planner:laneChangeLogic(t, sCar, v, iCar, onPath, lead, nextTurn, egoLe
   end
 end
 
+-- Backups for a maneuver that cannot go on (stuck against something, off its line, no room for the next leg). It used to stop dead and
+-- hand the car back, wherever that was (once in the middle of the road). Now, in order:
+--   1. back off 3 m (the way that is clear), then try the same thing again from there (parking: plan again; turn around: next leg)
+--   2. back off 5 m and try again
+--   3. a turn around is given up and the route goes on without it (no U-turn for 2 minutes); anything else pulls over to the side of the road
+--   4. only if even that is impossible does FSD hand the car back
+-- A new stuck spell more than 90 s after the last one starts at 1 again. Returns true while it is still handling it.
+function Planner:recoverStuck(ego, cars, out, what, sdir, after)
+  local r = self.rec
+  if not r or self.t - r.t > 90 then r = { n = 0, t = self.t }; self.rec = r end
+  r.t, r.n = self.t, r.n + 1
+  self.maneuver = nil
+  self.activity = 'drive'
+  if r.n <= 2 then
+    local len = r.n == 1 and 3 or 5
+    for _, d in ipairs({ -(sdir or 1), sdir or 1 }) do
+      local pts = {}
+      for k = 0, len, 0.5 do pts[#pts + 1] = { x = ego.x + ego.hx * k * d, y = ego.y + ego.hy * k * d, z = ego.z or 0 } end
+      if self:pathClear(pts, ego, cars, 0, 2.6) and not self:aheadBlocked(ego, d) then
+        self:emit('notice', { detail = string.format('%s stuck: backing off %d m and trying again (%d)', tostring(what), len, r.n) })
+        self:startManeuver({ { dir = d, pts = pts, maxSpeed = 1.2, kind = 'unstick' } }, after or 'drive', 'unstick')
+        return true
+      end
+    end
+  end
+  if what == 'autopark' or what == 'backIn' then return false end -- the Banish supervisor tries the next spot
+  if what == 'kTurn' and r.n <= 4 then
+    self.kturn, self.turnAround = nil, nil
+    self.noUturnUntil = self.t + 120
+    self.replanNow = true
+    out.commands[#out.commands + 1] = { t = 'gear', gear = 'D' }
+    self:emit('notice', { detail = 'no room to turn around here: carrying on and routing another way' })
+    return true
+  end
+  if self.mode == 'fsd' and self.path and r.n <= 5 and not self.pullingOver and self:pullOverNow(ego) then
+    self:emit('notice', { detail = tostring(what) .. ' stuck: pulling over to the side instead of stopping in the road' })
+    return true
+  end
+  return false
+end
+
 -- Forward/reverse segments (backing out, 3-point turn, back-in parking, summon, autopark).
 function Planner:tickManeuver(ego, cars, out)
   local mv = self.maneuver
@@ -2730,6 +2771,7 @@ function Planner:tickManeuver(ego, cars, out)
   self.status = { maneuver = { kind = mv.kind, step = mv.idx, total = #mv.segs, dir = seg.dir }, remaining = nil }
   -- failsafe: way off the maneuver's path (bad steering, pushed by something) -> stop, hand back
   if pr and pr.dist > 3 then
+    if self:recoverStuck(ego, cars, out, mv.kind .. ' off course', seg.dir, (mv.kind == 'kTurn' and self.kturn) and 'kturn' or nil) then return end
     self.maneuver, self.kturn = nil, nil
     self.activity = 'drive'
     out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
@@ -2757,6 +2799,7 @@ function Planner:tickManeuver(ego, cars, out)
     if remaining > 1.2 and self.t - mv.segT > 3 and moved < 0.3 then
       local sdir = seg and seg.dir or 1
       local spot = self.spot
+      local kt = self.kturn
       self.maneuver, self.kturn = nil, nil
       self.activity = 'drive'
       if spot and (self.apRetries or 0) < 3 and (mv.kind == 'autopark' or mv.kind == 'backIn') then
@@ -2770,6 +2813,12 @@ function Planner:tickManeuver(ego, cars, out)
           self:emit('notice', { detail = 'autopark: blocked, trying another way' })
           return
         end
+      end
+      if mv.kind ~= 'summon' then
+        self.kturn = kt
+        local after = (mv.kind == 'kTurn' and kt) and 'kturn' or ((mv.kind == 'autopark' or mv.kind == 'backIn') and spot) and 'repeat' or nil
+        if self:recoverStuck(ego, cars, out, mv.kind, sdir, after) then return end
+        self.kturn = nil
       end
       out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
       self:emit('error', { detail = mv.kind .. ' is stuck (something is in the way), stopped' })
@@ -2801,6 +2850,7 @@ function Planner:tickManeuver(ego, cars, out)
       if mv.kind == 'kTurn' and self.kturn then
         local nxt, clearN = self:kTurnLeg(ego, self.kturn.road, self.kturn.lastDir, cars)
         if nxt and not clearN then
+          if self:recoverStuck(ego, cars, out, 'kTurn', mv.segs[mv.idx] and mv.segs[mv.idx].dir or 1, 'kturn') then return end
           self.maneuver, self.kturn = nil, nil
           self.activity = 'drive'
           out.commands[#out.commands + 1] = { t = 'gear', gear = 'P' }
@@ -2829,6 +2879,16 @@ function Planner:tickManeuver(ego, cars, out)
             self:disengage('error', 'autopark ' .. tostring(err))
           end
           return
+        end
+        if mv.after == 'kturn' and self.kturn then
+          -- backed off a blockage during a turn around: carry on with the turn from where the car is now
+          local nxt, clearN = self:kTurnLeg(ego, self.kturn.road, nil, cars)
+          if nxt and clearN then
+            self.kturn.lastDir = nxt.dir
+            self:startManeuver({ nxt }, 'drive', 'kTurn')
+            return
+          end
+          self.kturn = nil
         end
         if mv.after == 'park' then
           -- where did we end up, against where the maneuver meant to (and the spot's own data)?

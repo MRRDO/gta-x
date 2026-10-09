@@ -1657,5 +1657,27 @@ scenario('boostHold', function()
   check(v30 < vPush - 2, string.format('and eventually comes back down (%.1f m/s after 40 s)', v30))
 end)
 
+-- backups for a stuck maneuver: back off and retry, then give a turn around up and carry on, never just stop in the road
+scenario('recoverStuck', function()
+  local w = W.new({ nodes = grid(2, 2, 150), ego = { x = 40, y = LANE1, psi = 0, v = 0 } })
+  w.planner:setRoute({ 300, LANE1, 0 }, nil, 'Driveway')
+  check(w:engage('fsd', 'standard'), 'engage (recover)')
+  local pl = w.planner
+  local ego = { x = 40, y = LANE1, z = 0, hx = 1, hy = 0, v = 0, gear = 'D', len = 4.6, wid = 1.9 }
+  local out = { commands = {} }
+  pl.kturn = { road = { cx = 40, cy = 0, dx = 1, dy = 0, r = 4 }, lastDir = 1 }
+  local r1 = pl:recoverStuck(ego, {}, out, 'kTurn', 1, 'kturn')
+  check(r1 and pl.maneuver and pl.maneuver.kind == 'unstick', 'first: backs off to try again')
+  check(pl.maneuver and pl.maneuver.segs[1].dir == -1, 'first: backs off away from what it hit')
+  local r2 = pl:recoverStuck(ego, {}, out, 'kTurn', 1, 'kturn')
+  check(r2 and pl.maneuver and pl.maneuver.kind == 'unstick', 'second: a longer back off')
+  local r3 = pl:recoverStuck(ego, {}, out, 'kTurn', 1, 'kturn')
+  check(r3 and pl.maneuver == nil and pl.kturn == nil and pl.noUturnUntil, 'third: gives the turn around up and routes on')
+  pl.rec = nil
+  check(pl:recoverStuck(ego, {}, out, 'backIn', 1, 'repeat') and pl.maneuver and pl.maneuver.kind == 'unstick', 'parking: one back off then plans again')
+  pl.rec.n = 2
+  check(pl:recoverStuck(ego, {}, out, 'backIn', 1, 'repeat') == false, 'parking: after that it is the Banish supervisor next spot')
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)
