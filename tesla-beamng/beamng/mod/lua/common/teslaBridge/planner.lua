@@ -220,13 +220,29 @@ function Planner:spotAllowed(sp)
   return (self.settings and self.settings.allowDriveways) or not self:isDriveway(sp)
 end
 
-function Planner:pickSpot(dest, cars, radius)
+function Planner:pickSpot(dest, cars, radius, path, ego)
   if self.chosenSpot and not spotOccupied(self.chosenSpot, cars, self.castRay) then return self.chosenSpot end
+  -- The best spot is not only the one closest to the pin: with a route in hand, a spot the car reaches sooner (and that sits close to
+  -- the road it is on) wins against one a few metres closer to the pin that means driving past a row of free ones; a spot behind the
+  -- car costs a turn around.
+  local s0 = 0
+  if path and ego then
+    local pr0 = P.project(path, ego.x, ego.y)
+    s0 = pr0 and pr0.s or 0
+  end
   local best, bestScore
   for _, sp in ipairs(self.parking) do
     local d = sqrt((sp.x - dest[1]) ^ 2 + (sp.y - dest[2]) ^ 2)
     if d < (radius or 80) and not spotOccupied(sp, cars, self.castRay) and self:spotAllowed(sp) then
       local score = d
+      if path then
+        local pr = P.project(path, sp.x, sp.y)
+        if pr then
+          local ahead = pr.s - s0
+          if ahead < -3 then score = score + 60 else score = score + 1.0 * max(0, ahead) end
+          score = score + 0.6 * max(0, pr.dist - 4) -- how far it sits off the road we are on
+        end
+      end
       if not bestScore or score < bestScore then best, bestScore = sp, score end
     end
   end
@@ -419,6 +435,79 @@ function Planner:planBackIn(ego, cars, spot, road, ox, oy)
   return q, rev
 end
 
+-- Pull forward into a perpendicular stall: straight along the aisle, one arc of radius R into the stall's axis, straight to its centre. Checked
+-- against the neighbours; returns the new path, or nil (the caller backs in instead).
+function Planner:planPullIn(ego, cars, path, pr, spot, ox, oy)
+  local hx, hy = -ox, -oy -- into the stall: the opposite of the way it opens
+  local P0 = path.pts[pr.i]
+  local P1 = path.pts[min(#path.pts, pr.i + 1)]
+  local tx, ty = P1.x - P0.x, P1.y - P0.y
+  local tl = sqrt(tx * tx + ty * ty)
+  if tl < 1e-6 then return nil end
+  tx, ty = tx / tl, ty / tl
+  local cr = tx * hy - ty * hx -- cross(t, h): which way the turn goes, and its size
+  if abs(cr) < 0.3 then return nil end -- not a real turn in: leave it to the back-in
+  local wx, wy = spot.x - P0.x, spot.y - P0.y
+  local u = (wx * hy - wy * hx) / cr
+  local bb = (tx * wy - ty * wx) / cr
+  if bb < 0.5 then return nil end
+  local X = { x = P0.x + tx * u, y = P0.y + ty * u } -- where the aisle line meets the stall's axis
+  local theta = math.acos(max(-1, min(1, tx * hx + ty * hy)))
+  local sgn = cr > 0 and 1 or -1
+  for _, R in ipairs({ 5.4, 6.2, 7.5 }) do
+    local TL = R * math.tan(theta / 2)
+    if bb >= TL + 1.8 then -- (a short straight at the end leaves the car still turning when it stops: only pull in with room to settle square)
+      local T1 = { x = X.x - tx * TL, y = X.y - ty * TL }
+      local T2 = { x = X.x + hx * TL, y = X.y + hy * TL }
+      local C = { x = T1.x - sgn * ty * R * -1 * -1, y = T1.y + sgn * tx * R * -1 * -1 }
+      -- centre of the arc: from T1, R to the side we turn toward (left of t when sgn > 0)
+      C = { x = T1.x + (-ty) * sgn * R, y = T1.y + tx * sgn * R }
+      local z = spot.z or P0.z or 0
+      local curve = {}
+      local nArc = max(6, math.ceil(theta * R / 0.6))
+      local v0x, v0y = T1.x - C.x, T1.y - C.y
+      for i = 1, nArc do
+        local ph = sgn * theta * i / nArc
+        local cph, sph = math.cos(ph), math.sin(ph)
+        curve[#curve + 1] = { x = C.x + v0x * cph - v0y * sph, y = C.y + v0x * sph + v0y * cph, z = z }
+      end
+      local last = curve[#curve]
+      local run = sqrt((spot.x - last.x) ^ 2 + (spot.y - last.y) ^ 2)
+      for m = 1, max(1, math.floor(run / 0.6)) do curve[#curve + 1] = { x = last.x + hx * 0.6 * m, y = last.y + hy * 0.6 * m, z = z } end
+      curve[#curve + 1] = { x = spot.x, y = spot.y, z = z }
+      -- the route up to 2 m before the arc starts, then a straight run to it
+      local j = pr.i
+      while j > 1 and ((X.x - path.pts[j].x) * tx + (X.y - path.pts[j].y) * ty) < TL + 2 do j = j - 1 end
+      local head = {}
+      for i = 1, j do head[#head + 1] = path.pts[i] end
+      local A = path.pts[j]
+      local run0 = sqrt((T1.x - A.x) ^ 2 + (T1.y - A.y) ^ 2)
+      local pre = {}
+      for m = 1, max(1, math.floor(run0 / 1.0)) do pre[#pre + 1] = { x = A.x + (T1.x - A.x) * m / math.max(1, math.floor(run0 / 1.0)), y = A.y + (T1.y - A.y) * m / math.max(1, math.floor(run0 / 1.0)), z = z } end
+      local all = {}
+      for _, q in ipairs(pre) do all[#all + 1] = q end
+      for _, q in ipairs(curve) do all[#all + 1] = q end
+      local rev = {}
+      for i = #all, 1, -1 do rev[#rev + 1] = all[i] end -- the sweep check wants the nose pointing back along the points (it was written for reversing)
+      if sweepClear(rev, ego, cars, spot, ox, oy) then
+        local cut = {}
+        for i = 1, j do cut[i] = path.pts[i] end
+        for _, q in ipairs(all) do
+          local pt = {}
+          for kk, vv in pairs(A) do pt[kk] = vv end
+          pt.x, pt.y, pt.z, pt.node, pt.lim = q.x, q.y, q.z, nil, 2.0
+          cut[#cut + 1] = pt
+        end
+        path.pts = cut
+        path.s = P.cumulative(cut)
+        path.parked = true
+        return path
+      end
+    end
+  end
+  return nil
+end
+
 -- Build self.path from the ego pose (route to dest via stops, or follow the road).
 function Planner:planPath(ego, cars)
   local g = self.graph
@@ -460,7 +549,7 @@ function Planner:planPath(ego, cars)
     if self.arrival then self.arrivalMemory[key] = self.arrival else self.arrival = self.arrivalMemory[key] end
     local kind = self.arrival or 'auto'
     -- a pin near a business with parking just parks there (the driver picked Street / Driveway / Curbside otherwise): look wider for a free spot
-    local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars, kind == 'auto' and 120 or 160) or nil
+    local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars, kind == 'auto' and 120 or 160, path, ego) or nil
     path.arrivalKind = 'point'
     -- tell the app what the car is doing about parking (a banner: "Looking for parking" / "Parking spot found"), once per
     -- destination and state
@@ -485,8 +574,16 @@ function Planner:planPath(ego, cars)
       local perpendicular = abs(ox * rdy - oy * rdx) > 0.8 and ol > 3
       if perpendicular then ox, oy = snapToSpotAxis(spot, ox, oy) end
       self.spot = spot
-      if perpendicular then
-        -- FSD backs into perpendicular spots: stop past it, then reverse in
+      local pulled = false
+      if perpendicular and (self.settings.parkStyle or 'auto') ~= 'backIn' and (self.settings.parkStyle == 'pullIn' or true) then
+        -- pull in nose-first when the curve fits and the neighbours allow it (easier than backing in); otherwise back in
+        pulled = self:planPullIn(ego, cars, path, pr, spot, ox, oy) ~= nil
+        if pulled then path.arrivalKind = 'parking' end
+      end
+      if pulled then
+        -- (path already runs into the stall)
+      elseif perpendicular then
+        -- back into the stall: stop past it, then reverse in
         local q, rev = self:planBackIn(ego, cars, { x = spot.x, y = spot.y, z = spot.z, outx = ox, outy = oy },
           { x = pr.x, y = pr.y, z = spot.z, dx = rdx, dy = rdy }, ox, oy)
         -- cut the route at the spot and run on to q

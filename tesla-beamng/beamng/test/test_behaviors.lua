@@ -234,6 +234,7 @@ end)
 scenario('backInParking', function()
   local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 },
     parking = { { x = 300, y = 9, z = 0, dx = 0, dy = 1 } } })
+  w.planner.settings.parkStyle = 'backIn' -- (the default now pulls in when the stall is deep enough: see pullInParking)
   w.planner:setRoute({ 300, 5, 0 }, nil, 'Parking Lot')
   check(w:engage('fsd', 'standard'), 'engage for parking')
   w:run(120, function(ww) return ww:saw('arrived') ~= nil end)
@@ -1454,6 +1455,7 @@ scenario('angledSpot', function()
   local a = math.rad(20)
   local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 },
     parking = { { x = 300, y = 9, z = 0, dx = -math.sin(a), dy = math.cos(a), known = true } } })
+  w.planner.settings.parkStyle = 'backIn'
   w.planner:setRoute({ 300, 5, 0 }, nil, 'Parking Lot')
   w:engage('fsd', 'standard')
   w:run(140, function(ww) return ww:saw('arrived') ~= nil end)
@@ -1695,6 +1697,34 @@ scenario('noSharpTurnAtSpeed', function()
   local still, fast = firstTurnX(0), firstTurnX(15)
   check(still ~= nil and fast ~= nil, 'both routes have a turn (' .. tostring(still) .. ', ' .. tostring(fast) .. ')')
   check(still and fast and fast > still + 100, 'moving: the sharp turn waits for a later junction (' .. tostring(still) .. ' vs ' .. tostring(fast) .. ')')
+end)
+
+-- a stall deep enough to swing into: it pulls in nose first, square in the stall, and no reversing
+scenario('pullInParking', function()
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 },
+    parking = { { x = 300, y = 12, z = 0, dx = 0, dy = 1, known = true } } })
+  w.planner:setRoute({ 300, 8, 0 }, nil, 'Parking Lot')
+  check(w:engage('fsd', 'standard'), 'engage for pull-in parking')
+  w:run(120, function(ww) return ww:saw('arrived') ~= nil end)
+  local x, y = w:refPos()
+  check(w:saw('arrived') ~= nil, 'arrived')
+  check(w:saw('maneuver', function(e) return e.what == 'backIn' end) == nil, 'did not need to back in')
+  check(math.abs(x - 300) < 1.5 and y > 8, string.format('in the stall (%.1f, %.1f)', x, y))
+  check(math.abs(math.deg(w.ego.psi) - 90) < 12, string.format('square in the stall, heading %.0f', math.deg(w.ego.psi)))
+  check(not w.collided, 'no collision')
+end)
+
+-- the best spot is not the one a few metres closer to the pin that means driving past a row of free ones
+scenario('bestSpot', function()
+  local parking = {}
+  for i = 0, 9 do parking[#parking + 1] = { x = 640 + i * 3, y = 9, z = 0, dx = 0, dy = 1, known = true } end
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 }, parking = parking })
+  w.planner:setRoute({ 667, 5, 0 }, nil, 'Parking Lot')
+  w:engage('fsd', 'standard')
+  local sp = w.planner.spot
+  check(sp ~= nil, 'a spot is chosen')
+  check(sp and sp.x <= 673, string.format('takes a spot at the near end, not the far one (x=%s)', tostring(sp and sp.x)))
+  -- every spot behind the pin's side is free: the pin is at x=667, the car comes from x=0
 end)
 
 print(string.format('%d passed, %d failed', passes, failures))

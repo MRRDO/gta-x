@@ -357,6 +357,8 @@ export type Command =
       /** Banish / park-nearby may use a lone driveway space (default off; a spot tapped on the map always works). */
       allowDriveways?: boolean
       /** Light Countdown: seconds to the next change of the light ahead, shown on the screen and/or the wheel lights (default off in the game; the app sends its choice). */
+      /** Perpendicular stalls: 'auto' pulls in nose first when the stall is deep enough and backs in otherwise, or always one way. */
+      parkStyle?: 'auto' | 'pullIn' | 'backIn'
       signalCountdown?: 'off' | 'screen' | 'wheel' | 'both'
       /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'
