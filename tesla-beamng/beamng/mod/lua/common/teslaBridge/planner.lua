@@ -217,11 +217,31 @@ function Planner:isDriveway(sp)
   return sp.driveway
 end
 
+-- A kerbside bay: sits in the roadside band and runs along the road (parallel parking), not a stall of a lot.
+function Planner:isStreetSpot(sp)
+  if sp.street ~= nil then return sp.street end
+  sp.street = false
+  if self.graph and sp.dx then
+    local e, _, ed = P.nearestEdge(self.graph, sp.x, sp.y, nil, nil, 30)
+    if e then
+      local a, b = self.graph.nodes[e.a], self.graph.nodes[e.b]
+      local ex, ey = b.x - a.x, b.y - a.y
+      local el = sqrt(ex * ex + ey * ey)
+      local sl = sqrt(sp.dx * sp.dx + sp.dy * sp.dy)
+      if el > 1e-6 and sl > 1e-6 then
+        local along = abs(ex * sp.dx + ey * sp.dy) / (el * sl)
+        sp.street = ed < ((a.r or 4) + 3.5) and along > 0.75
+      end
+    end
+  end
+  return sp.street
+end
+
 function Planner:spotAllowed(sp)
   return (self.settings and self.settings.allowDriveways) or not self:isDriveway(sp)
 end
 
-function Planner:pickSpot(dest, cars, radius, path, ego)
+function Planner:pickSpot(dest, cars, radius, path, ego, wantLot)
   if self.chosenSpot and not spotOccupied(self.chosenSpot, cars, self.castRay) then return self.chosenSpot end
   -- The best spot is not only the one closest to the pin: with a route in hand, a spot the car reaches sooner (and that sits close to
   -- the road it is on) wins against one a few metres closer to the pin that means driving past a row of free ones; a spot behind the
@@ -231,11 +251,13 @@ function Planner:pickSpot(dest, cars, radius, path, ego)
     local pr0 = P.project(path, ego.x, ego.y)
     s0 = pr0 and pr0.s or 0
   end
-  local best, bestScore
+  local best, bestScore, bestStreet, bestStreetScore
   for _, sp in ipairs(self.parking) do
     local d = sqrt((sp.x - dest[1]) ^ 2 + (sp.y - dest[2]) ^ 2)
     if d < (radius or 80) and not spotOccupied(sp, cars, self.castRay) and self:spotAllowed(sp) then
-      local score = d
+      -- walking: the first 25 m from the pin are all "right there"; beyond that every metre counts double (a spot beside the car,
+      -- 150 m from the pin, must not tie with one at the pin that costs 150 m of driving)
+      local score = min(d, 25) + 2.0 * max(0, d - 25)
       if path then
         local pr = P.project(path, sp.x, sp.y)
         if pr then
@@ -244,10 +266,12 @@ function Planner:pickSpot(dest, cars, radius, path, ego)
           score = score + 0.6 * max(0, pr.dist - 4) -- how far it sits off the road we are on
         end
       end
-      if not bestScore or score < bestScore then best, bestScore = sp, score end
+      if wantLot and self:isStreetSpot(sp) then
+        if not bestStreetScore or score < bestStreetScore then bestStreet, bestStreetScore = sp, score end
+      elseif not bestScore or score < bestScore then best, bestScore = sp, score end
     end
   end
-  return best
+  return best or bestStreet -- "Parking Lot" takes a lot stall when there is one, a kerbside bay only when there is nothing else
 end
 
 -- The nearest free parking spot to the car (index into self.parking and the spot), within `radius` m; nil if none.
@@ -550,7 +574,7 @@ function Planner:planPath(ego, cars)
     if self.arrival then self.arrivalMemory[key] = self.arrival else self.arrival = self.arrivalMemory[key] end
     local kind = self.arrival or 'auto'
     -- a pin near a business with parking just parks there (the driver picked Street / Driveway / Curbside otherwise): look wider for a free spot
-    local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars, kind == 'auto' and 120 or 160, path, ego) or nil
+    local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars, kind == 'auto' and 120 or 160, path, ego, kind ~= 'auto') or nil
     path.arrivalKind = 'point'
     -- tell the app what the car is doing about parking (a banner: "Looking for parking" / "Parking spot found"), once per
     -- destination and state
@@ -606,7 +630,10 @@ function Planner:planPath(ego, cars)
         path.afterKind = 'backIn'
         path.arrivalKind = 'parking'
       else
-        P.appendParking(path, spot.x, spot.y, spot.z, spot.dx, spot.dy)
+        -- a kerbside bay: park facing the way traffic goes (the stall axis has no sign)
+        local sdx, sdy = spot.dx, spot.dy
+        if sdx and (sdx * rdx + sdy * rdy) < -0.2 and self:isStreetSpot(spot) then sdx, sdy = -sdx, -sdy end
+        P.appendParking(path, spot.x, spot.y, spot.z, sdx, sdy)
         path.arrivalKind = 'parking'
       end
     elseif kind == 'Street' and self:parallelPark(path, cars) then
@@ -2419,7 +2446,12 @@ function Planner:tick(snap)
   -- virtual lidar (FSD only)
   self.lastCars = cars
   self:lidarAssist(ego, pr, sCar, v, cap, fsd)
-  if fsd and self.settings.lidarDebug and self.lidar then st.lidar = self.lidar:debugPoints() end
+  if fsd and self.lidar then
+    -- always filled (the black box keeps it; the app only draws it when Service Mode asks)
+    st.lidar = self.lidar:debugPoints()
+    local lo = self.lidarOut
+    if lo then st.lidarInfo = { gap = lo.gap and floor(lo.gap * 10 + 0.5) / 10 or nil, nudge = lo.nudge and floor(lo.nudge * 100 + 0.5) / 100 or nil, curb = lo.curb, blocked = lo.blocked or nil } end
+  end
   if self.lidarTryRecover then
     self.lidarTryRecover = nil
     if self:recoverStuck(ego, cars, out, 'wall ahead', 1) then return self:finish(out) end
@@ -3205,7 +3237,10 @@ function Planner:tickManeuver(ego, cars, out)
     Ld:scan(ego, seg.dir < 0 and -1 or 1, 6, self.t)
     local f = Ld:straightAhead((ego.wid or 1.9) * 0.5 + 0.1)
     if f then segMax = min(segMax, max(0.35, 0.35 + 0.5 * (f - (ego.len or 4.6) * 0.5 - 0.8))) end
-    if self.settings.lidarDebug then self.status = self.status or {}; self.status.lidar = Ld:debugPoints(); self.status.lidarRear = seg.dir < 0 or nil end
+    self.status = self.status or {}
+    self.status.lidar = Ld:debugPoints()
+    self.status.lidarRear = seg.dir < 0 or nil
+    self.status.lidarInfo = { gap = f and floor((f - (ego.len or 4.6) * 0.5) * 10 + 0.5) / 10 or nil, rear = seg.dir < 0 or nil }
   end
   local flat, vcap = {}, {}
   for i, p in ipairs(seg.pts) do

@@ -9,7 +9,7 @@ const WINDOW_MS = 90_000 // 90 s: covers the 45 s before the hotkey and the 45 s
 const MIN_GAP_MS = 100
 const r = (v: unknown, d = 2) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 10 ** d) / 10 ** d : null)
 
-type Sample = { at: number; t: number | null; fsd: boolean; mode: string; v: number | null; thr: number | null; brk: number | null; str: number | null; wheelDeg: number | null; gear: string | null; sig: string | null; lead: number | null; ctl: string | null; lane: number | null; fps: number | null; pos: number[] | null; target: number | null; ai: string | null; dmg: number | null }
+type Sample = { at: number; t: number | null; fsd: boolean; mode: string; v: number | null; thr: number | null; brk: number | null; str: number | null; wheelDeg: number | null; gear: string | null; sig: string | null; lead: number | null; ctl: string | null; lane: number | null; fps: number | null; pos: number[] | null; target: number | null; ai: string | null; dmg: number | null; lid?: (number | boolean | null)[] | null; pts?: number[][] | null }
 type Tag = { at: number; n: number; sample: Sample | null; label: string }
 type Ev = { at: number; kind: string; detail: string | null; data?: unknown }
 
@@ -28,6 +28,9 @@ function aiNote(a: any): string | null {
   if (a.nextTurn) p.push(`turn ${a.nextTurn.dir}@${r(a.nextTurn.dist, 0)}`)
   if (typeof a.confidence === 'number' && a.confidence < 0.8) p.push(`conf ${r(a.confidence)}`)
   if (a.alert?.kind) p.push(`alert:${a.alert.kind}`)
+  if (a.lidarInfo?.blocked) p.push(`lidar:blocked@${r(a.lidarInfo.gap, 1)}`)
+  else if (a.lidarInfo?.nudge) p.push(`lidar:nudge ${r(a.lidarInfo.nudge, 2)}`)
+  else if (a.lidarInfo?.curb) p.push(`lidar:curb ${r(a.lidarInfo.curb, 2)}`)
   if (a.lastDisengage && typeof a.lastDisengage.reason === 'string') p.push(`lastOff:${a.lastDisengage.reason}`)
   return p.length ? p.join(' | ') : null
 }
@@ -52,6 +55,9 @@ export class BlackBox {
         wheelDeg: r(msg.steeringWheelDeg, 1), gear: typeof msg.gear === 'string' ? msg.gear : null, sig: msg.signal ?? null, lead: r(a.leadGap, 1),
         ctl: a.control ? `${a.control.kind}@${r(a.control.dist, 0)}${a.control.state ? ':' + a.control.state : ''}` : null, lane: a.lane?.index ?? null, fps: r(msg.fps, 0),
         pos: Array.isArray(msg.pos) ? msg.pos.map((x: number) => r(x, 1) as number) : null, target: r(a.targetSpeed), ai: aiNote(a), dmg: r(msg.damage, 0),
+        // the virtual lidar: [gap m, nudge m, curb nudge m, blocked, rear] every sample; the raw points ([forward, left, 1 solid | 0 low] in the car frame) 3 times a second
+        lid: a.lidarInfo ? [r(a.lidarInfo.gap, 1), r(a.lidarInfo.nudge, 2), r(a.lidarInfo.curb, 2), !!a.lidarInfo.blocked, !!(a.lidarInfo.rear || a.lidarRear)] : null,
+        pts: Array.isArray(a.lidar) && this.samples.length % 3 === 0 ? a.lidar : null,
       })
       while (this.samples.length && now - this.samples[0].at > WINDOW_MS) this.samples.shift()
     } else if (msg?.t === 'event' && typeof msg.kind === 'string') {
@@ -180,9 +186,19 @@ export function buildReport(j: any, fileName: string): string {
       lines.push('')
     }
     if (merged.length) {
-      lines.push('## Damage', '', '| when | damage | speed mph | gear | FSD | position | planner |', '|---|---|---|---|---|---|---|')
-      for (const h of merged) lines.push(`| ${rel(h.at)} | +${Math.round(h.d)} | ${h.s.v != null ? (h.s.v * 2.237).toFixed(0) : '?'} | ${h.s.gear ?? '?'} | ${h.s.fsd ? 'on' : 'off'} | ${h.s.pos ? h.s.pos.slice(0, 2).join(', ') : '?'} | ${md(h.s.ai ?? '')} |`)
+      lines.push('## Damage', '', '| when | damage | speed mph | gear | FSD | position | lidar gap m | planner |', '|---|---|---|---|---|---|---|---|')
+      for (const h of merged) lines.push(`| ${rel(h.at)} | +${Math.round(h.d)} | ${h.s.v != null ? (h.s.v * 2.237).toFixed(0) : '?'} | ${h.s.gear ?? '?'} | ${h.s.fsd ? 'on' : 'off'} | ${h.s.pos ? h.s.pos.slice(0, 2).join(', ') : '?'} | ${h.s.lid ? (h.s.lid[0] ?? 'clear') : 'n/a'} | ${md(h.s.ai ?? '')} |`)
       lines.push('')
+    }
+    // the virtual lidar: when it saw something solid on the line, steered around it, braked for it or nudged off a curb
+    const L = S.filter((x) => x.lid)
+    if (L.length) {
+      const near = L.filter((x) => typeof x.lid![0] === 'number')
+      const nudged = L.filter((x) => x.lid![1]), blocked = L.filter((x) => x.lid![3]), curb = L.filter((x) => x.lid![2])
+      lines.push('## Lidar', '', `- ${near.length} of ${L.length} samples had something solid on the driven line (closest ${near.length ? Math.min(...near.map((x) => x.lid![0] as number)) : '-'} m); steered around it in ${nudged.length}, braked for it in ${blocked.length}, curb nudges in ${curb.length}`)
+      const last = [...L].reverse().find((x) => typeof x.lid![0] === 'number')
+      if (last) lines.push(`- last solid ahead: ${last.lid![0]} m, ${rel(last.at)}, at ${last.pos ? last.pos.slice(0, 2).join(', ') : '?'}${last.lid![4] ? ' (behind the car)' : ''}`)
+      lines.push(`- the raw points (forward m, left m, 1 solid / 0 curb height) are in the json: samples[].pts, 3 times a second`, '')
     }
     const interesting = E.filter((e) => /disengage|error|notice|arrived|maneuver|parking|collision|crash|autoparkPlan|banish|aeb|swerve|laneChange/.test(e.kind)).slice(-40)
     if (interesting.length) {
@@ -190,7 +206,7 @@ export function buildReport(j: any, fileName: string): string {
       for (const e of interesting) lines.push(`| ${rel(e.at)} | ${md(e.kind)} | ${md(e.detail)} |`)
       lines.push('')
     }
-    lines.push('## Files', '', `- blackbox/mark-${stamp}.json (all samples at 10 Hz, the path, the events), mark-${stamp}.jpg (screenshot when saved), mark-${stamp}.wheel-helper.txt`, '')
+    lines.push('## Files', '', `- blackbox/mark-${stamp}.json (all samples at 10 Hz, the path, the events, the lidar points), mark-${stamp}.jpg (screenshot when saved), mark-${stamp}.wheel-helper.txt`, '')
     return lines.join('\n')
   } catch (e) {
     return `# Black box\n\nCould not build the report: ${(e as Error).message}`

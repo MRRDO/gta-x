@@ -1342,7 +1342,7 @@ function M.onVehicleState(vid, json)
     nextTurn = ps.nextTurn and { dir = ps.nextTurn.dir, dist = num(ps.nextTurn.dist, 0), road = ps.nextTurn.road } or nil,
     remaining = ps.remaining and num(ps.remaining, 0) or nil,
     lane = ps.lane,
-    lidar = ps.lidar, lidarRear = ps.lidarRear, -- the debug view's points (only when Service Mode asks for them)
+    lidar = ps.lidar, lidarRear = ps.lidarRear, lidarInfo = ps.lidarInfo, -- the lidar points (the black box keeps them; the app draws them only when Service Mode asks)
     creeping = ps.creeping or false,
     waitingFor = ps.waitingFor,
     goAround = ps.goAround or false,

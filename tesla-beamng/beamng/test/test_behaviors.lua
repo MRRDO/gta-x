@@ -1787,5 +1787,15 @@ scenario('lidarCurbNotAWall', function()
   check(w.ego.x > 330, string.format('drove past a curb-height bump (x %.0f)', w.ego.x))
 end)
 
+-- a spot beside the car must not tie with one at the pin 150 m away
+scenario('spotNearPin', function()
+  local parking = { { x = 20, y = 9, z = 0, dx = 0, dy = 1, known = true }, { x = 700, y = 9, z = 0, dx = 0, dy = 1, known = true } }
+  local w = W.new({ nodes = straight(0, 1000, 5, 13.4), ego = { x = 0, y = LANE1, psi = 0, v = 0 }, parking = parking })
+  w.planner:setRoute({ 705, 5, 0 }, nil, 'Parking Lot')
+  w:engage('fsd', 'standard')
+  local sp = w.planner.spot
+  check(sp and sp.x > 600, string.format('parks at the pin, not beside the car (x=%s)', tostring(sp and sp.x)))
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)

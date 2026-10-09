@@ -120,6 +120,8 @@ export type AutopilotState = {
   /** Lidar debug view (Service Mode): the points the lidar sees, car frame [forward m, left m, 1 solid | 0 low]. */
   lidar?: [number, number, number][]
   lidarRear?: boolean
+  /** nearest solid on the driven line (m from the bumper), the nudge / curb nudge it made (m, + = left), blocked = it is braking for it; in a maneuver gap is in the direction of travel. */
+  lidarInfo?: { gap?: number; nudge?: number; curb?: number; blocked?: boolean; rear?: boolean }
   lane?: { index: number; count: number; changing?: { dir: 'left' | 'right'; reason: 'route' | 'pass' | 'merge' | 'return' | 'driver' | 'moveOver' | 'madMax' | 'evasion'; phase: 'signal' | 'moving' } }
   creeping?: boolean // "Creeping for visibility"
   waitingFor?: 'gap' | 'crossTraffic' | 'emergencyVehicle' | 'pedestrian' | null
