@@ -308,6 +308,35 @@ local function levelName()
   return f:match('levels/([^/]+)/') or (f ~= '' and f) or nil
 end
 
+-- Light clocks: BeamNG does not hand us "seconds left", so each light learns how long its colours last. A colour only counts when we saw
+-- it start (the first colour seen is partial), and a 1 s sweep over every light keeps them learning while the car is elsewhere.
+function M._sigTrack(rec, st)
+  if not st then return end
+  local c = rec.clk
+  if not c then rec.clk = { st = st, since = realTime, full = false, dur = {} }; return end
+  if st ~= c.st then
+    if c.full then c.dur[c.st] = realTime - c.since end
+    c.st, c.since, c.full = st, realTime, true
+  end
+end
+-- seconds until the next change that matters to a driver: red -> green, green/yellow -> red. nil when not learned yet.
+function M._sigCountdown(rec)
+  local c = rec.clk
+  if not c then return nil end
+  local el = realTime - c.since
+  if c.st == 'red' then
+    local d = c.dur.red
+    if d and d - el > 0 then return d - el, 'green' end
+  elseif c.st == 'green' then
+    local d = c.dur.green
+    if d and d - el > -2 then return math.max(0, d - el) + (c.dur.yellow or 3), 'red' end
+  elseif c.st == 'yellow' then
+    local d = c.dur.yellow or 3
+    return math.max(0, d - el), 'red'
+  end
+  return nil
+end
+
 local function findSignals()
   signals = {}
   local found = {}
@@ -357,8 +386,13 @@ local function findSignals()
         end
         rec = {
           id = 'sig:' .. name, x = p.x, y = p.y, z = p.z, kind = kind, type = typ .. (ctype ~= '' and ('/' .. ctype) or ''),
-          dirx = d and d.x or nil, diry = d and d.y or nil, get = kind == 'signal' and getState or nil,
+          dirx = d and d.x or nil, diry = d and d.y or nil,
         }
+        if kind == 'signal' then
+          -- every read also feeds the light's clock: how long each colour lasts, learned from full colours we watched (see sigTrack)
+          rec.get = function() local r = getState(); M._sigTrack(rec, r); return r end
+          rec.countdown = function() return M._sigCountdown(rec) end
+        end
         signals[#signals + 1] = rec
         found.ts = (found.ts or 0) + 1
       end
@@ -2476,6 +2510,10 @@ local function onUpdate(dtReal, dtSim)
   if bindingsRefreshAt then
     bindingsRefreshAt = bindingsRefreshAt - dtReal
     if bindingsRefreshAt <= 0 then bindingsRefreshAt = nil; if refreshBindings then refreshBindings() end end
+  end
+  if realTime - (M._sigSweepT or -9) >= 1 then
+    M._sigSweepT = realTime
+    for _, sg in ipairs(signals or {}) do if sg.get then pcall(sg.get) end end
   end
   gameTime = gameTime + (dtSim or dtReal)
   pcall(launchTick, dtReal)

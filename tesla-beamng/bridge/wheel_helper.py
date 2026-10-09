@@ -27,6 +27,7 @@ Ctrl+C stops it and hands the wheel back to the mod.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import json
 import signal
@@ -377,6 +378,9 @@ def led_mask(t: float, s: dict) -> int:
         return (1 << n) - 1
     if s.get('green'):
         return show('green')                               # the light turned green and we have not moved yet
+    cd = s.get('countdown')
+    if cd is not None and s.get('cd_wheel') and 0 < cd <= 5:
+        return (1 << max(1, min(5, int(math.ceil(cd))))) - 1   # Light Countdown: the lights drain as the light ahead is about to change
     sig = s.get('signal')
     if sig == 'hazard':
         return show('hazard')
@@ -456,6 +460,9 @@ class LedState:
         self.d['speed_warn'] = bool(m.get('speedWarning'))
         # a stop light turning green while we wait at it: flash until we move (or 25 s)
         ctl = ap.get('control') or {}
+        cdv = ctl.get('countdown') if ctl.get('kind') == 'signal' else None
+        self.d['countdown'] = float(cdv) if isinstance(cdv, (int, float)) else None
+        self.d['cd_wheel'] = bool(ctl.get('cdWheel'))
         red = ctl.get('kind') == 'signal' and (bool(ctl.get('red')) or ctl.get('state') == 'red')
         if red and self.d['speed'] < 1.5:
             self._red_wait = True

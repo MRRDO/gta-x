@@ -76,7 +76,8 @@ function M.laneModel(r, ow)
     n = clamp(floor(2 * r / 3.4), 1, 5)
     w = min(3.7, 2 * r / n)
   else
-    n = clamp(floor(r / 3.4), 1, 4)
+    -- (3.7 not 3.4: a two-lane road with wide shoulders read as two lanes our way, and FSD changed "lanes" over the double yellow)
+    n = clamp(floor(r / 3.7), 1, 4)
     w = min(3.7, r / n)
   end
   return n, w
@@ -87,7 +88,8 @@ function M.laneCenter(r, ow, k)
   local n, w = M.laneModel(r, ow)
   k = clamp(k or 0, 0, n - 1)
   if ow then return ((n - 1) / 2 - k) * w end
-  return (n - 1 - k + 0.5) * w
+  -- never closer than 1.75 m to the centre line: the car is 1.9 m wide and the painted line is not exactly on the node
+  return max((n - 1 - k + 0.5) * w, 1.75)
 end
 
 ---------------------------------------------------------------------------

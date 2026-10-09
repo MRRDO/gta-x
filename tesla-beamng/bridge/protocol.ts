@@ -106,7 +106,7 @@ export type AutopilotState = {
   targetSpeed: number // m/s
   speedLimit: number | null // m/s at the car, from the road graph (or a class default)
   leadGap: number | null // m to the car ahead in our lane
-  control: { kind: 'stop' | 'signal' | 'crosswalk'; dist: number; red: boolean; state?: 'red' | 'yellow' | 'green' | 'stop' | null; id?: string; dot?: number; lat?: number } | null // id, dot (signal dir . our heading), lat: debug
+  control: { kind: 'stop' | 'signal' | 'crosswalk'; dist: number; red: boolean; state?: 'red' | 'yellow' | 'green' | 'stop' | null; countdown?: number; countTo?: 'green' | 'red'; cdWheel?: boolean; id?: string; dot?: number; lat?: number } | null // id, dot (signal dir . our heading), lat: debug
   nextTurn: { dir: 'left' | 'right' | 'straight'; dist: number; road: string } | null
   remaining: number | null // m to destination
   lastDisengage: { reason: DisengageReason; time: number } | null
@@ -356,6 +356,8 @@ export type Command =
       autoShift?: boolean
       /** Banish / park-nearby may use a lone driveway space (default off; a spot tapped on the map always works). */
       allowDriveways?: boolean
+      /** Light Countdown: seconds to the next change of the light ahead, shown on the screen and/or the wheel lights (default off in the game; the app sends its choice). */
+      signalCountdown?: 'off' | 'screen' | 'wheel' | 'both'
       /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'
       /**

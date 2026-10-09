@@ -2428,6 +2428,14 @@ function Planner:controls(t, win, sCar, v, cars, ego, cap, waitingFor)
     dot = sg.dbg and sg.dbg.dot, lat = sg.dbg and sg.dbg.lat }
   local stopS
   local stt = sg.kind == 'signal' and sg.get and sg.get() or nil
+  if stt and sg.countdown and (self.settings.signalCountdown or 'off') ~= 'off' then
+    local secs, to = sg.countdown()
+    if secs then
+      local m = self.settings.signalCountdown
+      control.countdown, control.countTo = math.floor(secs * 10 + 0.5) / 10, to
+      control.cdWheel = (m == 'wheel' or m == 'both') or nil
+    end
+  end
 
   -- a red that never changes while we wait at it (a broken or unreadable light) is treated
   -- like an all-way stop after 90 s, so FSD can't be stranded forever
