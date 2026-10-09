@@ -21,13 +21,14 @@ function M:scan(ego, dirSign, range, t)
   range = range or 24
   local hx, hy = ego.hx * dirSign, ego.hy * dirSign
   local half = (ego.len or 4.6) * 0.5
-  local ox, oy = ego.x + hx * (half - 0.1), ego.y + hy * (half - 0.1)
+  local ox, oy = ego.x + hx * (half + 0.05), ego.y + hy * (half + 0.05) -- (a hair outside the bumper: a ray that starts inside the car hits the car)
   local z0 = ego.z or 0
   local pts = {}
   -- denser straight ahead (where the car is going), sparser to the sides
+  -- (out to 110 degrees each way: on a turn the inside corner of the car sweeps past things that are beside the nose, not in front of it)
   local angs = {}
-  for a = -70, 70, 5 do angs[#angs + 1] = a end
-  for _, a in ipairs({ -2.5, 2.5, -7.5, 7.5 }) do angs[#angs + 1] = a end
+  for a = -110, 110, 5 do angs[#angs + 1] = a end
+  for a = -27.5, 27.5, 5 do angs[#angs + 1] = a end
   for _, a in ipairs(angs) do
     local r = a * pi / 180
     local c, s = cos(r), sin(r)
@@ -52,8 +53,9 @@ end
 -- Distance from the fan origin along `poly` (list of {x, y}, starting at or near the car) to the first solid hit
 -- that lies within `halfW` of the polyline, plus the hit's signed lateral offset (+ = left of the polyline's direction).
 -- kinds: a set like { solid = true } (default) or { solid = true, low = true }.
-function M:alongHit(poly, halfW, kinds, skip)
+function M:alongHit(poly, halfW, kinds, skip, minF)
   kinds = kinds or { solid = true }
+  minF = minF or 0.3 -- hits beside the bumper are not 'ahead' (they are the walls the car is already passing)
   local best, bestLat, bestP
   local run = 0
   for i = 1, #poly - 1 do
@@ -63,7 +65,7 @@ function M:alongHit(poly, halfW, kinds, skip)
     if sl > 1e-6 then
       local ux, uy = sx / sl, sy / sl
       for _, p in ipairs(self.pts) do
-        if kinds[p.kind] and not (skip and skip(p)) then
+        if kinds[p.kind] and (p.f >= minF or abs(p.a) <= 35) and not (skip and skip(p)) then
           local rx, ry = p.x - a.x, p.y - a.y
           local along = rx * ux + ry * uy
           if along >= -0.2 and along <= sl + 0.2 then

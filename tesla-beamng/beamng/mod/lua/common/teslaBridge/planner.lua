@@ -1014,22 +1014,25 @@ function Planner:lidarAssist(ego, pr, sCar, v, cap, fsd)
     self.lidarT = self.t
     Ld:scan(ego, 1, range, self.t)
   end
+  local out = { gap = nil, nudge = nil, curb = nil }
+  self.lidarOut = out
   local half, wid = (ego.len or 4.6) * 0.5, (ego.wid or 1.9) * 0.5
   local S = path.s
-  -- the line we will drive (the lane shift included), from the car forward
-  local poly = { { x = ego.x, y = ego.y } }
+  -- The line we will drive (the lane shift included), from the nose forward. (The first real flight data, 2026-10-09: walls beside an
+  -- aisle and stall-end walls are normal in a car park; the lidar only acts on things ON the line, and not at all in the final
+  -- approach to a stall or below walking pace, where the planner's own checks and the parking assist handle it.)
+  local poly = { { x = Ld.ox or ego.x, y = Ld.oy or ego.y } }
   for i = pr.i, #path.pts do
-    if S[i] - sCar > range then break end
+    if S[i] - sCar > range + half then break end
     local a, b = path.pts[max(1, i - 1)], path.pts[min(#path.pts, i + 1)]
     local tx, ty = b.x - a.x, b.y - a.y
     local tl = sqrt(tx * tx + ty * ty)
-    if tl > 1e-6 and S[i] > sCar + 0.3 then
+    if tl > 1e-6 and S[i] > sCar + half then
       local sh = self:shiftAt(S[i], i)
       poly[#poly + 1] = { x = path.pts[i].x - ty / tl * sh, y = path.pts[i].y + tx / tl * sh }
     end
   end
   if #poly < 2 then return end
-  -- other cars are not walls (they are handled by following / passing); anything within a car's reach of one is skipped
   local cars = self.lastCars or {}
   local function isCar(p)
     for _, c in ipairs(cars) do
@@ -1038,68 +1041,49 @@ function Planner:lidarAssist(ego, pr, sCar, v, cap, fsd)
     end
     return false
   end
-  local halfW = wid + 0.25 + min(0.2, v * 0.015)
+  local halfW = wid + 0.12 -- the car's own width plus a hand: walls beside the line are not in the way
   local s, lat = Ld:alongHit(poly, halfW, nil, isCar)
-  local out = { gap = nil, nudge = nil, curb = nil }
-  self.lidarOut = out
-  local _, w = self:laneAt(pr.i)
-  local maxShift = clamp(((w or 3.4) - wid * 2) * 0.5 + 0.5, 0.6, 1.4)
-  if s then
-    local gap = s - half
-    out.gap = gap
-    if gap < max(14, v * 2.2 + 8) then
+  local remaining = S[#S] - sCar
+  local arriving = (path.arrivalKind == 'parking' and remaining < 40) or self.maneuver or self.pullingOver
+  if s then out.gap = s end
+  -- arriving at a stall: report only (the black box keeps it), never act; below walking pace only a hold about 1 m short
+  if s and v < 2.0 and not arriving and s < 5 then cap(sqrt(2 * 2.5 * max(0, s - 1.0))); out.blocked = s < 2 or nil end -- creeping up to a solid thing: hold short of it
+  if s and v >= 2.0 and not arriving then
+    local gap = s
+    local stopD = v * v / (2 * 2.5) + 1.5
+    local slow = v < 4.5 -- a car park crawl: only when it could not stop in time
+    if gap < (slow and stopD or max(14, v * v / (2 * 2.5) + 6)) then
       local hasNudge = false
       for _, b in ipairs(self.bumps) do if b.kind == 'lidar' and b.s1 > sCar then hasNudge = true end end
-      if not hasNudge then
-        local sh = Ld:clearShift(poly, wid + 0.2, s + 4, maxShift, isCar)
-        if sh and gap > 3.5 and v > 1.5 then
+      local _, w = self:laneAt(pr.i)
+      local maxShift = clamp(((w or 3.4) - wid * 2) * 0.5 + 0.5, 0.6, 1.4)
+      if not hasNudge and not slow then
+        local sh = Ld:clearShift(poly, wid + 0.3, s + 4, maxShift, isCar)
+        if sh and gap > 3.5 then
           self.bumps[#self.bumps + 1] = { s0 = sCar + max(1, gap - 5), s1 = sCar + s + 6, off = sh * 1.2, ramp = max(5, min(gap * 0.5, v * 0.8)), kind = 'lidar' }
           out.nudge = sh
-          self:emit('notice', { detail = string.format('lidar: something solid %.0f m ahead, steering %.1f m %s around it', gap, abs(sh), sh > 0 and 'left' or 'right') })
           hasNudge = true
         end
       end
       if hasNudge then
-        cap(max(4, min(v, sqrt(2 * 3.5 * max(0, gap - 1.5)) + 3)))
-        self.lidarBlockedT = nil
+        cap(max(4, min(v, sqrt(2 * 2.5 * max(0, gap - 1.0)) + 3)))
       else
-        cap(sqrt(2 * 4.0 * max(0, gap - 2.4)))
+        cap(sqrt(2 * 2.5 * max(0, gap - 1.5)))
         out.blocked = true
-        self.lidarBlockedT = self.lidarBlockedT or self.t
-      end
-    else
-      self.lidarBlockedT = nil
-    end
-  else
-    self.lidarBlockedT = nil
-    -- a curb on the line: a small nudge away from it (never a stop; not when arriving, parking or pulling over)
-    local calm = v > 6 and not self.pullingOver and not self.maneuver and (not self.dest or (path.s[#path.s] - sCar) > 45)
-    if calm then
-      local hasCurb = false
-      for _, b in ipairs(self.bumps) do if b.kind == 'lidarCurb' and b.s1 > sCar then hasCurb = true end end
-      if not hasCurb then
-        local cs, clat = Ld:alongHit(poly, wid + 0.05, { low = true }, isCar)
-        if cs and cs - half > 2 and cs - half < 12 then
-          local sh = clamp(-(clat or 0) / abs(clat or 1) * 0.35, -0.35, 0.35) -- away from the curb's side
-          if clat and abs(clat) > 0.01 then
-            self.bumps[#self.bumps + 1] = { s0 = sCar + cs - 3, s1 = sCar + cs + 6, off = sh, ramp = 6, kind = 'lidarCurb' }
-            out.curb = sh
-          end
-        end
       end
     end
-  end
-  -- blocked for good: back off and look again, then hand it to the driver
-  if self.lidarBlockedT and v < 0.5 then
-    local waited = self.t - self.lidarBlockedT
-    if waited > 4 and (not self.lidarRecT or self.t - self.lidarRecT > 10) then
-      self.lidarRecT = self.t
-      self:emit('notice', { detail = 'lidar: the way ahead is blocked' })
-      self.lidarTryRecover = true
+  elseif not s and v > 6 and not arriving and (not self.dest or remaining > 45) then
+    -- a curb on the line: a small nudge away from it (never a stop)
+    local hasCurb = false
+    for _, b in ipairs(self.bumps) do if b.kind == 'lidarCurb' and b.s1 > sCar then hasCurb = true end end
+    if not hasCurb then
+      local cs, clat = Ld:alongHit(poly, wid + 0.05, { low = true }, isCar)
+      if cs and cs > 2 and cs < 12 and clat and abs(clat) > 0.01 then
+        local sh = (clat > 0 and -1 or 1) * 0.35
+        self.bumps[#self.bumps + 1] = { s0 = sCar + cs - 3, s1 = sCar + cs + 6, off = sh, ramp = 6, kind = 'lidarCurb' }
+        out.curb = sh
+      end
     end
-    if waited > 25 then self.status.lowConfidence = true; self.conf = min(self.conf or 1, 0.3) end
-  else
-    if not self.lidarBlockedT then self.lidarRecT = nil end
   end
 end
 
@@ -1444,9 +1428,15 @@ function Planner:autopark(ego, cars, want, retry)
   if want then
     best = (not spotOccupied(want, cars, self.castRay)) and want or nil
   else
+    -- the same rule as the app's suggested spot (the bigger P): the nearest free one ahead of the car or beside it. (The nearest by
+    -- distance alone picked the stall just behind the nose whenever the car had rolled past a free one: always "one spot off".)
     for _, sp in ipairs(self.parking) do
-      local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-      if d < 25 and self:spotAllowed(sp) and not spotOccupied(sp, cars, self.castRay) and (not bd or d < bd) then best, bd = sp, d end
+      local dx, dy = sp.x - ego.x, sp.y - ego.y
+      local d = sqrt(dx * dx + dy * dy)
+      if d < 25 and self:spotAllowed(sp) and not spotOccupied(sp, cars, self.castRay) then
+        local key = d + ((dx * ego.hx + dy * ego.hy) > -2 and 0 or 100)
+        if not bd or key < bd then best, bd = sp, key end
+      end
     end
   end
   if not best then return false, 'no free parking spot nearby' end
@@ -2451,10 +2441,6 @@ function Planner:tick(snap)
     st.lidar = self.lidar:debugPoints()
     local lo = self.lidarOut
     if lo then st.lidarInfo = { gap = lo.gap and floor(lo.gap * 10 + 0.5) / 10 or nil, nudge = lo.nudge and floor(lo.nudge * 100 + 0.5) / 100 or nil, curb = lo.curb, blocked = lo.blocked or nil } end
-  end
-  if self.lidarTryRecover then
-    self.lidarTryRecover = nil
-    if self:recoverStuck(ego, cars, out, 'wall ahead', 1) then return self:finish(out) end
   end
   -- stuck while it should be moving (against a curb or wall, wheels spinning): stop instead of pushing on
   do

@@ -818,8 +818,22 @@ local function sense(dt)
   return { x = px, y = py, z = pz, hx = hx, hy = hy, v = vf, yawRate = yaw }
 end
 
+local sigPrevL, sigPrevR = false, false
+-- Using a turn signal always clears stuck hazards (after a crash or a reset they stayed on): a stalk press while hazards are on and nobody
+-- (FSD) is driving them turns the hazards off first.
+local function hazardAutoClear(e)
+  local function on(k) return (e[k] or 0) > 0.5 or e[k] == true end
+  local l, r = on('signal_left_input'), on('signal_right_input')
+  if on('hazard_enabled') and not (ap and ap.engaged) and ((l and not sigPrevL) or (r and not sigPrevR)) then
+    pcall(electrics.set_warn_signal, 0)
+    hazardOn = false
+  end
+  sigPrevL, sigPrevR = l, r
+end
+
 local function buildState(s)
   local e = electrics.values
+  hazardAutoClear(e)
   local lock = (v and v.data and v.data.input and v.data.input.steeringWheelLock) or 450
   local steerIn = e.steering_input or 0
   local wheelDeg = e.steering and -e.steering or steerIn * lock
