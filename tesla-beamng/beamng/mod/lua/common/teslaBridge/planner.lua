@@ -434,7 +434,10 @@ function Planner:planPath(ego, cars)
     local sx, sy = ego.x, ego.y
     local all
     for li, goal in ipairs(legs) do
-      local rt, err = P.route(g, { x = sx, y = sy, hx = hx, hy = hy, uturnCost = (li == 1 and self:mayUTurn(ego)) and 40 or nil }, { x = goal[1], y = goal[2] })
+      -- moving: no sharp turn at the next junction (inside ~2.5 s of travel); the car goes on and turns at a later one
+      local moving = li == 1 and (ego.v or 0) > 3 and ego.gear ~= 'R' and (self.t or 0) < (self.noSharpUntil or -1)
+      local rt, err = P.route(g, { x = sx, y = sy, hx = hx, hy = hy, uturnCost = (li == 1 and self:mayUTurn(ego)) and 40 or nil,
+        sharpTurnWithin = moving and max(14, (ego.v or 0) * 2.5 + 6) or nil }, { x = goal[1], y = goal[2] })
       if not rt then return false, err end
       if li == 1 and rt.uturn then self.uturnNeeded = true end
       local leg = P.buildPath(g, rt)
@@ -680,6 +683,7 @@ end
 
 function Planner:setRoute(dest, stops, arrival)
   self.dest, self.stops, self.arrival = dest, stops, arrival
+  self.noSharpUntil = (self.t or 0) + 20 -- a new place picked while driving: no sharp turn at the junction right ahead for the next 20 s (see planPath)
   self.turnVia, self.chosenSpot = nil, nil
   self.pullingOver, self.unresponsive = nil, nil -- a new trip replaces a pull-over in progress
   self.arrivingFor = nil

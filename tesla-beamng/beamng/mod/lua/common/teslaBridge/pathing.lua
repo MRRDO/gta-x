@@ -411,15 +411,37 @@ function M.routeToEdge(g, start, ge, gt)
     if not closed[id] then
       closed[id] = true
       iterations = iterations + 1
+      local prev = came[id]
       if goalVia[id] then
         local c = gScore[id] + goalVia[id]
+        -- the goal's own road leaves this junction: a sharp turn onto it, right after a route change at speed, counts the same way
+        if prev == '__start' and (start.sharpTurnWithin or 0) > 0 and ge ~= se then
+          local n0 = g.nodes[id]
+          local n1 = g.nodes[ge.a == id and ge.b or ge.a]
+          local ix, iy = n0.x - startPt.x, n0.y - startPt.y
+          local il = len2(ix, iy)
+          local ox, oy = n1.x - n0.x, n1.y - n0.y
+          local ol = len2(ox, oy)
+          if il < start.sharpTurnWithin and il > 0.5 and ol > 0.5 and (ix * ox + iy * oy) / (il * ol) < 0.64 then c = c + 60 end
+        end
         if c < bestGoalCost then bestGoal, bestGoalCost = id, c end
       end
-      local prev = came[id]
       for other, e in pairs(g.adj[id] or {}) do
         if not closed[other] and canTraverse(e, id) and not (e == se and prev == '__start') then
           local c = gScore[id] + edgeCost(g, e)
           if other == prev then c = c + UTURN end
+          -- a route that changes while the car is moving must not ask for a sharp turn at the very next junction: leave that turn to
+          -- the next one down the road (start.sharpTurnWithin = metres; 0 / nil = no limit, e.g. from a standstill)
+          if prev == '__start' and (start.sharpTurnWithin or 0) > 0 then
+            local n0, n1 = g.nodes[id], g.nodes[other]
+            local ix, iy = n0.x - startPt.x, n0.y - startPt.y
+            local il = len2(ix, iy)
+            if il < start.sharpTurnWithin and il > 0.5 then
+              local ox, oy = n1.x - n0.x, n1.y - n0.y
+              local ol = len2(ox, oy)
+              if ol > 0.5 and (ix * ox + iy * oy) / (il * ol) < 0.64 then c = c + 60 end
+            end
+          end
           if gScore[other] == nil or c < gScore[other] then
             gScore[other] = c
             came[other] = id

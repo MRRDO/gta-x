@@ -1679,5 +1679,23 @@ scenario('recoverStuck', function()
   check(pl:recoverStuck(ego, {}, out, 'backIn', 1, 'repeat') == false, 'parking: after that it is the Banish supervisor next spot')
 end)
 
+-- a route that changes while the car is moving does not ask for a sharp turn at the very next junction
+scenario('noSharpTurnAtSpeed', function()
+  local function firstTurnX(v)
+    local w = W.new({ nodes = grid(3, 3, 150), ego = { x = 110, y = LANE1, psi = 0, v = v } })
+    w.planner:setRoute({ 150, 100, 0 }, nil, 'Driveway')
+    w:engage('fsd', 'standard')
+    local path = w.planner.path
+    local tx
+    for _, t in ipairs(path and path.turns or {}) do
+      if t.angle and math.abs(t.angle) > math.rad(50) then tx = path.pts[1] and select(1, (function() local pr = require('teslaBridge/pathing').pointAt(path, t.s, 1); return pr end)()); break end
+    end
+    return tx
+  end
+  local still, fast = firstTurnX(0), firstTurnX(15)
+  check(still ~= nil and fast ~= nil, 'both routes have a turn (' .. tostring(still) .. ', ' .. tostring(fast) .. ')')
+  check(still and fast and fast > still + 100, 'moving: the sharp turn waits for a later junction (' .. tostring(still) .. ' vs ' .. tostring(fast) .. ')')
+end)
+
 print(string.format('%d passed, %d failed', passes, failures))
 os.exit(failures == 0 and 0 or 1)
