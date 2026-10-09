@@ -1209,6 +1209,17 @@ local function computeAlert(vid, st, ps, nag)
       if veh then toVehicle(veh, 'command', { t = 'signal', dir = 'hazard' }) end
     end
   end
+  if crash.active then
+    -- the crash card (and the hazards and the urgent wheel lights that go with it) used to stay until the car was repaired: a reset or a
+    -- recover keeps the damage. Now it also ends when the car drives on (over 9 mph for 3 s), after 3 minutes, or on a reset / Reset lights.
+    local ca = crash.active
+    if (st.speed or 0) > 4 then ca.moveSince = ca.moveSince or realTime else ca.moveSince = nil end
+    if (ca.moveSince and realTime - ca.moveSince > 3) or realTime - ca.t > 180 then
+      crash.active = nil
+      local veh = vehicleById(vid)
+      if veh then toVehicle(veh, 'command', { t = 'signal' }) end
+    end
+  end
   if crash.active then return { kind = 'crash', message = 'Pull over immediately', level = 3 } end
   local engaged = st.autopilot and st.autopilot.engaged
   local lim = ps.speedLimit
@@ -1824,6 +1835,7 @@ handleCommand = function(msg)
     toVehicle(veh, 'command', msg)
   elseif t == 'signal' then
     if not veh then event('error', 'no player vehicle'); return end
+    if msg.dir == nil then crash.active = nil end -- Reset lights / hazards switched off by hand: the crash card ends too
     -- the stalk while FSD / Autosteer drives: change lanes that way
     if planner and (planner.mode == 'fsd' or planner.mode == 'autosteer') and (msg.dir == 'left' or msg.dir == 'right') then
       planner:requestLaneChange(msg.dir)
@@ -2662,7 +2674,7 @@ local function onVehicleResetted(vid)
     syncVehicleMode(pv)
   end
   beaconLoaded[vid] = nil
-  if pv and pv:getID() == vid then toVehicle(pv, 'command', { t = 'signal' }) end -- a reset is a fresh start: no hazards left on
+  if pv and pv:getID() == vid then crash.active = nil; toVehicle(pv, 'command', { t = 'signal' }) end -- a reset is a fresh start: no hazards left on
 end
 
 local function onVehicleDestroyed(vid)
