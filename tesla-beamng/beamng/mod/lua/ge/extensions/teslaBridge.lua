@@ -1316,7 +1316,12 @@ function M.onVehicleState(vid, json)
   if not levelName() then return end
   local ok, st = pcall(jsonDecode, json)
   if not ok or type(st) ~= 'table' then return end
-  lastVehSt = { speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil,
+  -- Dashcam: save on honk (Settings > Safety > Dashcam): a horn press saves the black box, like a Tesla keeps a dashcam clip
+  if st.horn and not lastVehSt.horn and plannerSettings.honkSave and realTime - (M._honkT or -99) > 10 then
+    M._honkT = realTime
+    relayEvent({ kind = 'honkSave', detail = 'horn' })
+  end
+  lastVehSt = { horn = st.horn, speed = st.speed or 0, gear = st.gear, throttle = st.rawThrottle or st.throttle, signal = st.signal ~= false and st.signal or nil,
     lights = st.lights, accelOverride = st.autopilot and st.autopilot.accelOverride or false }
   -- trip stats / Safety Score / emergency-braking hazards
   do

@@ -217,6 +217,7 @@ export type EventKind =
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
   | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver|driveThru}; answer with {t:'arrivalChoice'}
   | 'arrivalChoice'    // the choice was applied
+  | 'honkSave'         // the horn was pressed with Save on Honk on: the relay saves the black box
   | 'sentry'           // Sentry Mode: data {what: 'approach' | 'hit'}, detail says what (a car came within 1.2 m, damage +40)
   | 'greenLight'       // hand driving: stopped at a red, it just turned green (the app plays the chime)
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
@@ -373,6 +374,8 @@ export type Command =
       perf?: boolean
       /** Sentry Mode: parked in P, watch for a car coming within ~2.5 m or a knock; sends 'sentry' events, wakes the cameras, flashes the hazards on a hit. */
       sentry?: boolean
+      /** Dashcam: a horn press saves the black box (sends 'honkSave'; the relay saves it). */
+      honkSave?: boolean
       signalCountdown?: 'off' | 'screen' | 'wheel' | 'both'
       /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'

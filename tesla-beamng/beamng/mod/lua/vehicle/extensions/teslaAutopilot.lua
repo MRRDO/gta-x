@@ -851,6 +851,7 @@ local function buildState(s)
   return {
     speed = e.wheelspeed or abs(s.v),
     gear = gearLetter(),
+    horn = ((e.horn or 0) > 0 or e.horn == true) or nil,
     throttle = e.throttle_input or e.throttle or 0,
     brake = e.brake_input or e.brake or 0,
     parkingbrake = e.parkingbrake_input or e.parkingbrake or 0,

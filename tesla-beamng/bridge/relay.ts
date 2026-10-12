@@ -509,6 +509,7 @@ function onGameLine(line: string) {
   msg = normalize_(msg)
   recordDrive(msg, RECORD)
   blackBox.push(msg)
+  if (msg?.t === 'event' && msg.kind === 'honkSave') void markBlackBox('Saved by honking the horn (dashcam)')
   switch (msg.t) {
     case 'hello':
       gameVersion = msg.version
