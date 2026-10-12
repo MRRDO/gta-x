@@ -280,9 +280,12 @@ function Planner:freeSpotsNear(ego, cars, radius, n)
   local list = {}
   for i, sp in ipairs(self.parking or {}) do
     local d = sqrt((sp.x - ego.x) ^ 2 + (sp.y - ego.y) ^ 2)
-    if d < (radius or 200) and self:spotAllowed(sp) and not spotOccupied(sp, cars, self.castRay) then list[#list + 1] = { id = i, d = d } end
+    if d < (radius or 200) and self:spotAllowed(sp) and not spotOccupied(sp, cars, self.castRay) then
+      -- Banish tries lot stalls before kerbside bays (a bay beside the car it just left made it fail with "path car", black box #64)
+      list[#list + 1] = { id = i, d = d, key = d + (self:isStreetSpot(sp) and 60 or 0) }
+    end
   end
-  table.sort(list, function(a, b) return a.d < b.d end)
+  table.sort(list, function(a, b) return a.key < b.key end)
   local out = {}
   for i = 1, math.min(n or 5, #list) do out[i] = list[i].id end
   return out
@@ -1041,13 +1044,19 @@ function Planner:lidarAssist(ego, pr, sCar, v, cap, fsd)
     end
     return false
   end
-  local halfW = wid + 0.12 -- the car's own width plus a hand: walls beside the line are not in the way
+  local halfW = wid - 0.05 -- the car's own half width, no more: a wall a hand away beside a curving line (a narrow street, a ramp) is not in the way (black box #79: held the car at a wall 1.1 m to the side)
   local s, lat = Ld:alongHit(poly, halfW, nil, isCar)
   local remaining = S[#S] - sCar
   local arriving = (path.arrivalKind == 'parking' and remaining < 40) or self.maneuver or self.pullingOver
   if s then out.gap = s end
   -- arriving at a stall: report only (the black box keeps it), never act; below walking pace only a hold about 1 m short
-  if s and v < 2.0 and not arriving and s < 5 then cap(sqrt(2 * 2.5 * max(0, s - 1.0))); out.blocked = s < 2 or nil end -- creeping up to a solid thing: hold short of it
+  if s and v < 2.0 and not arriving and s < 5 then
+    -- creeping: slow to a walk before a solid thing and stop a hand short of it, but never freeze a car that is merely close (it must be able to start)
+    local c = sqrt(2 * 2.5 * max(0, s - 0.6))
+    cap(s < 0.7 and 0 or max(0.5, c)); out.blocked = s < 2 or nil
+  end
+  -- arriving at a stall (black box #78: hit a wall at 6 mph): only when it could not stop in time at the car's own pace
+  if s and arriving and v >= 1.5 and s < v * v / (2 * 3.0) + 0.6 + 0.3 * v then cap(sqrt(2 * 3.0 * max(0, s - 0.5))); out.blocked = true end -- creeping up to a solid thing: hold short of it
   if s and v >= 2.0 and not arriving then
     local gap = s
     local stopD = v * v / (2 * 2.5) + 1.5

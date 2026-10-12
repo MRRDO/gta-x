@@ -1212,7 +1212,12 @@ handlers.door = function(cmd)
       return
     end
   end
-  errorEvent('this car has no door "' .. tostring(want) .. '"')
+  -- (a car with no latches for it, like the Model 3 mod's hood or boot: the app still shows it open; say so once, not as an error each tap)
+  ap.noDoorSaid = ap.noDoorSaid or {}
+  if not ap.noDoorSaid[tostring(want)] then
+    ap.noDoorSaid[tostring(want)] = true
+    geEvent('notice', { detail = 'this car has no door "' .. tostring(want) .. '": shown open in the app only' })
+  end
 end
 
 handlers.throttleOverride = function(cmd)
