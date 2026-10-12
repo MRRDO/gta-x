@@ -578,6 +578,8 @@ function Planner:planPath(ego, cars)
     local kind = self.arrival or 'auto'
     -- a pin near a business with parking just parks there (the driver picked Street / Driveway / Curbside otherwise): look wider for a free spot
     local spot = (kind == 'Parking Lot' or kind == 'Parking Garage' or kind == 'auto') and self:pickSpot(self.dest, cars, kind == 'auto' and 120 or 160, path, ego, kind ~= 'auto') or nil
+    -- nothing free near the pin and the driver asked for a lot: a lot a short walk away beats the curb (black box #56); up to ~300 m
+    if not spot and (kind == 'Parking Lot' or kind == 'Parking Garage') then spot = self:pickSpot(self.dest, cars, 300, path, ego, true) end
     path.arrivalKind = 'point'
     -- tell the app what the car is doing about parking (a banner: "Looking for parking" / "Parking spot found"), once per
     -- destination and state
