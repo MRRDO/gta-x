@@ -1948,6 +1948,7 @@ handleCommand = function(msg)
       elseif c.quality == 'medium' then cam.settings.width, cam.settings.height = 480, 270
       elseif c.quality == 'high' then cam.settings.width, cam.settings.height = 640, 360 end
     end
+    if plannerSettings.perf then cam.settings.backup, cam.settings.side = false, false end -- Performance Mode: no camera renders in the game
     if planner then planner:configure(plannerSettings) end
     if veh then pushVehicleSettings(veh) end
     if type(msg.safety) == 'table' then

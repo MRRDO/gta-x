@@ -1013,7 +1013,7 @@ function Planner:lidarAssist(ego, pr, sCar, v, cap, fsd)
     self.lidar = Ld
   end
   local range = clamp(v * 3.5 + 14, 18, 40)
-  if self.t - (self.lidarT or -9) >= 0.09 then
+  if self.t - (self.lidarT or -9) >= (self.settings.perf and 0.2 or 0.09) then
     self.lidarT = self.t
     Ld:scan(ego, 1, range, self.t)
   end

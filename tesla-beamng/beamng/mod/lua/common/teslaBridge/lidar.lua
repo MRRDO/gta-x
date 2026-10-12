@@ -36,10 +36,13 @@ function M:scan(ego, dirSign, range, t)
     local dx, dy = hx * c - hy * s, hy * c + hx * s
     local dHi = cast(ox, oy, z0 + 0.6, dx, dy, 0, range)
     local dLo = cast(ox, oy, z0 + 0.12, dx, dy, 0, range)
+    local dTop = dHi and cast(ox, oy, z0 + 1.15, dx, dy, 0, range) -- (only asked when there is something at bumper height)
     local d, kind
-    -- upright = both rays agree (wall, pole, car); a high ray alone is something raised (a bar, a car's overhang);
-    -- a low ray that hits well before the high one is the ground rising or a curb: never solid
-    if dHi and (not dLo or abs(dHi - dLo) < 0.8) then d, kind = dLo or dHi, 'solid'
+    -- upright = the rays agree (wall, pole, car); a high ray alone is something raised (a bar, a car's overhang); a low ray that hits well
+    -- before the higher ones is the ground rising or a curb. The ground on a steep hill or a dip fools two rays but not three: its hit
+    -- distance grows with height (black box #79: held at a hill start by "solid" 1 m ahead).
+    if dHi and dTop and abs(dTop - dHi) > 0.8 then d, kind = dLo or dHi, 'low'
+    elseif dHi and (not dLo or abs(dHi - dLo) < 0.8) then d, kind = dLo or dHi, 'solid'
     elseif dLo then d, kind = dLo, 'low' end
     if d then
       pts[#pts + 1] = { a = a, d = d, x = ox + dx * d, y = oy + dy * d, f = d * c, l = d * s, kind = kind } -- f: forward, l: left of the fan's direction

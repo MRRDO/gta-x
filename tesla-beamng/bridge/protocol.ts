@@ -368,6 +368,8 @@ export type Command =
       /** Virtual lidar (FSD only; default on) and its debug points in the state (Service Mode). */
       lidar?: boolean
       lidarDebug?: boolean
+      /** Performance Mode (a slow PC): no camera renders in the game, the lidar scans at 5 Hz. */
+      perf?: boolean
       signalCountdown?: 'off' | 'screen' | 'wheel' | 'both'
       /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'
