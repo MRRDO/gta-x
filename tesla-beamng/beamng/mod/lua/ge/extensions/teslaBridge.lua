@@ -1210,6 +1210,41 @@ local function damageOf(vid)
   return mo and tonumber(mo.damage) or nil
 end
 
+-- Sentry Mode (the app arms it when the car is locked and Sentry is on): parked, it watches for a car that comes close and moves, or
+-- for a knock (damage), and tells the app (a Sentry event with what happened), flashes the hazards, and wakes the rear and front cameras
+-- for a few seconds so the app can show and keep a picture.
+local sentry = { lastT = -1e9, dmg = nil }
+local function sentryTick(veh)
+  if not plannerSettings.sentry or not veh then sentry.dmg = nil; return end
+  if (lastVehSt.speed or 0) > 0.3 or lastVehSt.gear ~= 'P' then sentry.dmg = nil; return end
+  local ego = egoSnapshot(veh)
+  local what, detail
+  local d = damageOf(veh:getID())
+  if d then
+    if sentry.dmg and d - sentry.dmg > 30 then what, detail = 'hit', string.format('the car was hit (damage +%.0f)', d - sentry.dmg) end
+    sentry.dmg = d
+  end
+  if not what then
+    for _, c in ipairs(trafficList()) do
+      local dist = math.sqrt((c.x - ego.x) ^ 2 + (c.y - ego.y) ^ 2) - ((c.l or 4.6) + (ego.len or 4.6)) * 0.25
+      if dist < 2.5 and math.abs(c.v or 0) > 0.4 then what, detail = 'approach', string.format('a car came within %.1f m', math.max(0, dist)); break end
+    end
+  end
+  if what and realTime - sentry.lastT > 20 then
+    sentry.lastT = realTime
+    relayEvent({ kind = 'sentry', what = what, detail = detail, data = { what = what, x = ego.x, y = ego.y } })
+    cam.previews.rear, cam.previews.front = realTime + 6, realTime + 6
+    if what == 'hit' then
+      toVehicle(veh, 'command', { t = 'signal', dir = 'hazard' })
+      sentry.hazardUntil = realTime + 8
+    end
+  end
+  if sentry.hazardUntil and realTime > sentry.hazardUntil then
+    sentry.hazardUntil = nil
+    toVehicle(veh, 'command', { t = 'signal' })
+  end
+end
+
 local function computeAlert(vid, st, ps, nag)
   if crash.vid ~= vid then crash = { hist = {}, active = nil, vid = vid } end -- another car: its own baseline
   local dmg = damageOf(vid)
@@ -2650,6 +2685,8 @@ local function onUpdate(dtReal, dtSim)
     tAids = realTime + 0.5
     local okD, errD = pcall(driveAidsTick, veh)
     if not okD then logW('drive aids: ' .. tostring(errD)) end
+    local okS, errS = pcall(sentryTick, veh)
+    if not okS then logW('sentry: ' .. tostring(errS)) end
   end
 
   if realTime >= tTraffic then

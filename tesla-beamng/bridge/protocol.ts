@@ -217,6 +217,7 @@ export type EventKind =
   | 'longRoute'        // a trip far longer than the straight line ({length, straight}), for debugging
   | 'arriving'         // point-to-point: the destination is close. data {dist, current, freeSpots, options: park|street|pullOver|driveway|takeOver|driveThru}; answer with {t:'arrivalChoice'}
   | 'arrivalChoice'    // the choice was applied
+  | 'sentry'           // Sentry Mode: data {what: 'approach' | 'hit'}, detail says what (a car came within 1.2 m, damage +40)
   | 'greenLight'       // hand driving: stopped at a red, it just turned green (the app plays the chime)
   | 'speedWarning'     // Speed Assist chime: over the limit (detail '47 in a 35')
   | 'autoHighBeams'    // auto high beams switched (detail 'on' | 'off')
@@ -370,6 +371,8 @@ export type Command =
       lidarDebug?: boolean
       /** Performance Mode (a slow PC): no camera renders in the game, the lidar scans at 5 Hz. */
       perf?: boolean
+      /** Sentry Mode: parked in P, watch for a car coming within ~2.5 m or a knock; sends 'sentry' events, wakes the cameras, flashes the hazards on a hit. */
+      sentry?: boolean
       signalCountdown?: 'off' | 'screen' | 'wheel' | 'both'
       /** Unresponsive driver: 'park' (default) = drive to a free spot within 500 m and park, else pull over; 'pullOver' = always just pull over. */
       unresponsive?: 'park' | 'pullOver'
