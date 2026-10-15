@@ -1,0 +1,92 @@
+{
+    "teslaToggleFSD": {
+        "cat": "tesla",
+        "order": 0,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleAutopilot('fsd') end",
+        "isBasic": true,
+        "title": "Toggle FSD",
+        "desc": "Engage or disengage the Tesla UI autopilot (FSD). Bind it to a wheel button."
+    },
+    "teslaToggleAutosteer": {
+        "cat": "tesla",
+        "order": 1,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleAutopilot('autosteer') end",
+        "isBasic": true,
+        "title": "Toggle Autosteer",
+        "desc": "Engage or disengage steering-only autopilot. Bind it to a wheel button."
+    },
+    "teslaVoiceNote": {
+        "cat": "tesla",
+        "order": 2,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.voiceNote() end",
+        "isBasic": true,
+        "title": "Voice note (iPad mic)",
+        "desc": "Opens the iPad mic in the app so you can record a voice note for a future update."
+    },
+    "teslaNudge": {
+        "cat": "tesla",
+        "order": 3,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.nudge() end",
+        "isBasic": true,
+        "title": "Hands-on nudge",
+        "desc": "Counts as a steering-wheel nudge for the FSD attention monitor."
+    },
+    "teslaPaddleLeft": {
+        "cat": "tesla",
+        "order": 4,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.paddle('left') end",
+        "isBasic": true,
+        "title": "Paddle left (turn signal)",
+        "desc": "Left turn signal; with FSD it asks for a left turn / lane change."
+    },
+    "teslaPaddleRight": {
+        "cat": "tesla",
+        "order": 5,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.paddle('right') end",
+        "isBasic": true,
+        "title": "Paddle right (turn signal)",
+        "desc": "Right turn signal; with FSD it asks for a right turn / lane change."
+    },
+    "teslaDialUp": {
+        "cat": "tesla",
+        "order": 6,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.dial('up') end",
+        "isBasic": true,
+        "title": "Dial turn up",
+        "desc": "The G29 red dial: volume / follow distance / speed / profile up."
+    },
+    "teslaDialDown": {
+        "cat": "tesla",
+        "order": 7,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.dial('down') end",
+        "isBasic": true,
+        "title": "Dial turn down",
+        "desc": "The G29 red dial turned the other way."
+    },
+    "teslaDialClick": {
+        "cat": "tesla",
+        "order": 8,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.dial('click') end",
+        "isBasic": true,
+        "title": "Dial press",
+        "desc": "Cycles what the dial controls."
+    },
+    "teslaToggleLKA": {
+        "cat": "tesla",
+        "order": 9,
+        "ctx": "tlua",
+        "onDown": "if teslaBridge then teslaBridge.toggleLaneKeep() end",
+        "isBasic": true,
+        "title": "Toggle Lane Keep Assist",
+        "desc": "A tiny nudge back toward the middle of your lane while you drive yourself. Bind it to a wheel button."
+    }
+}

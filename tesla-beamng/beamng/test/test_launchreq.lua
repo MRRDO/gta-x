@@ -1,0 +1,25 @@
+package.path = 'beamng/mod/lua/common/?.lua;' .. package.path
+local L = require('teslaBridge/launchreq')
+local pass, fail = 0, 0
+local function check(c, m) if c then pass = pass + 1 else fail = fail + 1; print('FAIL: ' .. m) end end
+local now = 1000000
+local p = L.parse({ ts = now - 10, mode = 'new', level = 'east_coast_usa', vehicle = 'etk800', config = 'etk854t' }, now)
+check(p and p.mode == 'new' and p.level == 'east_coast_usa' and p.vehicle == 'etk800' and p.config == 'etk854t', 'parses a new-world request')
+check(L.parse({ ts = now - 10, mode = 'menu' }, now).mode == 'menu', 'menu request')
+check(L.parse({ ts = now - 10, mode = 'menu', level = 'x' }, now).level == nil, 'menu ignores a level')
+check(L.parse({ ts = now - 5000, mode = 'resume' }, now) == nil, 'an old request is ignored')
+check(L.parse({ ts = now + 9000, mode = 'resume' }, now) == nil, 'a request from the future is ignored')
+check(L.parse({ ts = now, mode = 'hack' }, now) == nil, 'unknown mode rejected')
+check(L.parse('x', now) == nil and L.parse({ mode = 'new' }, now) == nil, 'garbage rejected')
+local q = L.parse({ ts = now, mode = 'new', level = '../../etc/passwd', vehicle = 'a b', config = 'ok' }, now)
+check(q.level == nil and q.vehicle == nil and q.config == 'ok', 'unsafe ids dropped, never used to build a path')
+check(L.levelFile('east_coast_usa') == '/levels/east_coast_usa/info.json', 'level file path')
+check(L.levelFile('../x') == nil, 'level file refuses odd ids')
+local l = L.last('east_coast_usa', 'tesla_x', nil, 'Tesla Model X')
+check(l and l.level == 'east_coast_usa' and l.vehicle == 'tesla_x' and l.name == 'Tesla Model X', 'last session')
+check(L.last(nil, 'x') == nil, 'no level = nothing to remember')
+local lv = L.levels({ { title = 'West Coast', fullfilename = '/levels/west_coast_usa/info.json' }, { title = 'East Coast', fullfilename = '/levels/east_coast_usa/info.json' }, { title = 'dup', fullfilename = '/levels/east_coast_usa/main.level.json' } })
+check(#lv == 2 and lv[1].id == 'east_coast_usa', 'levels: ids from paths, sorted, deduped')
+local vh = L.vehicles({ models = { etk800 = { key = 'etk800', Name = '800 Series', Brand = 'ETK', Type = 'Car' }, tr = { key = 'boxutility_trailer', Name = 'Trailer', Type = 'Trailer' }, tesla_x = { Name = 'Model X', Brand = 'Tesla' } } })
+check(#vh == 2 and vh[1].id == 'etk800', 'vehicles: trailers dropped, keyed by model')
+print(string.format('%d passed, %d failed', pass, fail)); os.exit(fail == 0 and 0 or 1)
