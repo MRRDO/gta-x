@@ -5,5 +5,8 @@ New work, docs, archives and notes for the Tesla / BeamNG project go in the proj
 
 - **MRRDO/tesla-ui-atv** (private). Email archive: `docs/email-archive/`.
 
+**2026-10-15: the BeamNG car software moved.** `tesla-beamng/` (mod, relay, tests) now lives in MRRDO/tesla-ui-atv under
+`tesla-beamng/`, and the PC updater pulls it from there (branch main). The copy here is frozen at the move and is no longer
+updated; it stays only so a PC that has not updated yet keeps working.
+
 This repo (gta-x) is public, so it should not hold emails, tokens, access codes or personal details.
-Existing files here (including `tesla-beamng/`) stay as they are; only commit here if Quentin says so.
